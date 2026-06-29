@@ -1,0 +1,31 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ── Build output ────────────────────────────────────────
+build/
+dist/
+*.spec.bak
+
+# ── User data (NEVER commit — this is a finance app) ────
+# In dev the DB lives next to app/main.py; in a packaged build it lives at
+# %APPDATA%\FinanceBook\. Either way it must never enter the repo.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# ── Local editor / OS noise ─────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ── Update staging / backups created at runtime ─────────
+app_backup/
+.update/

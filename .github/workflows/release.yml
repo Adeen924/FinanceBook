@@ -1,0 +1,86 @@
+name: Release
+
+# Ship a release two ways:
+#   1. Push a version tag:   git tag v1.0.3 && git push origin v1.0.3
+#   2. Actions tab -> "Run workflow" -> type a version + notes (no git needed)
+#
+# Either way this builds on Windows and publishes a GitHub Release with two
+# assets: the app payload zip (one-click updates) and the full zip (first
+# installs + runtime-change fallback). See UPDATE_PLAN.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, no leading v (e.g. 1.0.3)"
+        required: true
+      notes:
+        description: "Release notes"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # required to create the GitHub Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"   # has wheels for PyQt6 6.7.1, pandas, etc.
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="${{ github.event.inputs.version }}"
+          fi
+          echo "version=$V"  >> "$GITHUB_OUTPUT"
+          echo "tag=v$V"     >> "$GITHUB_OUTPUT"
+
+      - name: Auto-bump app/VERSION from the tag (Option A)
+        shell: bash
+        run: printf '%s' "${{ steps.ver.outputs.version }}" > app/VERSION
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary -r requirements.txt pyinstaller
+
+      - name: Build thin launcher (PyInstaller)
+        run: pyinstaller FinanceBook.spec --noconfirm
+
+      - name: Assemble dist (launcher + app/)
+        shell: bash
+        run: cp -r app dist/FinanceBook/app
+
+      - name: Package app payload zip (one-click updates)
+        shell: pwsh
+        run: Compress-Archive -Path app/* -DestinationPath "app-${{ steps.ver.outputs.version }}.zip"
+
+      - name: Package full zip (first install + fallback)
+        shell: pwsh
+        run: Compress-Archive -Path dist/FinanceBook/* -DestinationPath "FinanceBook-${{ steps.ver.outputs.version }}.zip"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: FinanceBook ${{ steps.ver.outputs.tag }}
+          body: ${{ github.event.inputs.notes }}
+          files: |
+            app-${{ steps.ver.outputs.version }}.zip
+            FinanceBook-${{ steps.ver.outputs.version }}.zip
