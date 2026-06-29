@@ -214,6 +214,11 @@ def _perform_update(parent, info: dict) -> None:
     progress.setAutoReset(False)
     progress.setWindowModality(Qt.WindowModality.WindowModal)
 
+    # Cancellation crosses threads via an Event, not a GUI-widget call: the
+    # worker thread must never touch the QProgressDialog directly.
+    cancel_event = threading.Event()
+    progress.canceled.connect(cancel_event.set)
+
     class _Worker(QObject):
         progressed = pyqtSignal(int)
         done = pyqtSignal()
@@ -224,7 +229,7 @@ def _perform_update(parent, info: dict) -> None:
                 _download_and_prepare(
                     asset, staging_root, zip_path, new_app_dir,
                     on_progress=self.progressed.emit,
-                    should_cancel=lambda: progress.wasCanceled())
+                    should_cancel=cancel_event.is_set)
                 self.done.emit()
             except _Cancelled:
                 self.failed.emit("")  # empty == user cancelled, stay silent
