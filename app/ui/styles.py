@@ -127,6 +127,25 @@ QHeaderView::section {{
     border-right: 1px solid {BORDER};
 }}
 
+/* ── Trees / Lists ───────────────────────────────────── */
+QTreeWidget, QListWidget {{
+    background: {CARD_BG};
+    alternate-background-color: #f9fafb;
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    selection-background-color: #dbeafe;
+    selection-color: {TEXT};
+    outline: none;
+}}
+QTreeWidget::item, QListWidget::item {{
+    padding: 5px 4px;
+    border: none;
+}}
+QTreeWidget::item:selected, QListWidget::item:selected {{
+    background: #dbeafe;
+    color: {TEXT};
+}}
+
 /* ── Buttons ─────────────────────────────────────────── */
 QPushButton {{
     background: {ACCENT};
@@ -195,6 +214,63 @@ QDateEdit {{
     min-height: 20px;
 }}
 QDateEdit::drop-down {{ border: none; width: 24px; }}
+
+/* ── Calendar button (next to From/To date fields) ───── */
+QPushButton#CalendarButton {{
+    background: white;
+    color: {TEXT};
+    border: 1px solid {BORDER};
+    border-radius: 5px;
+    padding: 6px 0;
+    font-size: 15px;
+    min-height: 20px;
+}}
+QPushButton#CalendarButton:hover {{
+    background: #eef4ff;
+    border: 1px solid {ACCENT};
+}}
+QPushButton#CalendarButton:pressed {{ background: #dbeafe; }}
+
+/* ── Calendar popup ──────────────────────────────────── */
+QCalendarWidget#PopupCalendar {{
+    background: white;
+    border: 1px solid {BORDER};
+}}
+/* Navigation bar: month / year picker across the top */
+QCalendarWidget#PopupCalendar QWidget#qt_calendar_navigationbar {{
+    background: {ACCENT};
+}}
+QCalendarWidget#PopupCalendar QToolButton {{
+    color: white;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 13px;
+    font-weight: 600;
+    icon-size: 16px;
+}}
+QCalendarWidget#PopupCalendar QToolButton:hover {{
+    background: {SIDEBAR_SEL};
+}}
+QCalendarWidget#PopupCalendar QToolButton::menu-indicator {{ image: none; }}
+/* The year spin-box that appears when you click the year */
+QCalendarWidget#PopupCalendar QSpinBox {{
+    color: {TEXT};
+    background: white;
+    selection-background-color: #dbeafe;
+}}
+/* The grid of days */
+QCalendarWidget#PopupCalendar QAbstractItemView:enabled {{
+    color: {TEXT};
+    background: white;
+    selection-background-color: {ACCENT};
+    selection-color: white;
+    outline: none;
+}}
+QCalendarWidget#PopupCalendar QAbstractItemView:disabled {{
+    color: #c0c7d0;
+}}
 
 /* ── Dialogs ─────────────────────────────────────────── */
 QDialog {{

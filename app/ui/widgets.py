@@ -1,8 +1,8 @@
 """Shared reusable widgets."""
 from PyQt6.QtWidgets import (QPushButton, QLabel, QFrame, QTableWidget,
                               QTableWidgetItem, QHeaderView, QHBoxLayout,
-                              QWidget, QSizePolicy)
-from PyQt6.QtCore import Qt, QSize
+                              QWidget, QSizePolicy, QDateEdit, QCalendarWidget)
+from PyQt6.QtCore import Qt, QSize, QDate
 from PyQt6.QtGui import QColor, QFont
 
 
@@ -99,6 +99,59 @@ class DataTable(QTableWidget):
 
     def clear_rows(self):
         self.setRowCount(0)
+
+
+class DateField(QWidget):
+    """
+    A date box paired with a clearly visible 📅 calendar button. Click the
+    button to open a day / month / year picker; the chosen day fills the field.
+    You can also still type or arrow through the date directly in the box.
+
+    Exposes date() / setDate() so it drops in wherever a QDateEdit was used.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        self._edit = QDateEdit()
+        self._edit.setDisplayFormat("yyyy-MM-dd")
+        self._edit.setButtonSymbols(QDateEdit.ButtonSymbols.NoButtons)
+        self._edit.setMinimumWidth(108)
+        lay.addWidget(self._edit)
+
+        self._btn = QPushButton("📅")
+        self._btn.setObjectName("CalendarButton")
+        self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn.setFixedWidth(36)
+        self._btn.setToolTip("Pick a date")
+        self._btn.clicked.connect(self._open_calendar)
+        lay.addWidget(self._btn)
+
+        self._cal = QCalendarWidget()
+        self._cal.setWindowFlags(Qt.WindowType.Popup)
+        self._cal.setObjectName("PopupCalendar")
+        self._cal.setGridVisible(True)
+        self._cal.setVerticalHeaderFormat(
+            QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+        self._cal.clicked.connect(self._on_pick)
+
+    def _open_calendar(self):
+        self._cal.setSelectedDate(self._edit.date())
+        self._cal.move(self._btn.mapToGlobal(self._btn.rect().bottomLeft()))
+        self._cal.show()
+
+    def _on_pick(self, date: QDate):
+        self._edit.setDate(date)
+        self._cal.hide()
+
+    # ── QDateEdit-compatible API ──
+    def date(self) -> QDate:
+        return self._edit.date()
+
+    def setDate(self, d: QDate):
+        self._edit.setDate(d)
 
 
 def hbox(*widgets, spacing=8) -> QWidget:

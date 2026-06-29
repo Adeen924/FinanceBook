@@ -27,7 +27,7 @@ DB_PATH  = os.path.join(BASE_DIR, "finances.db")
 
 def main():
     from PyQt6.QtWidgets import QApplication, QMessageBox, QInputDialog
-    from PyQt6.QtGui import QFont
+    from PyQt6.QtGui import QFont, QIcon
     from PyQt6.QtCore import Qt
 
     # On fractional Windows display scaling (125% / 150% / 175%) the default
@@ -45,6 +45,14 @@ def main():
     app.setApplicationDisplayName("FinanceBook")
     app.setStyle("Fusion")
     app.setFont(QFont("Segoe UI", 10))
+
+    # App icon (taskbar + window). Drop an .ico at app/assets/icon.ico to set it;
+    # absent is fine — Qt falls back to the default. The icon ships inside app/,
+    # so it lives next to this file whether running frozen or from source.
+    _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "assets", "icon.ico")
+    if os.path.exists(_icon_path):
+        app.setWindowIcon(QIcon(_icon_path))
 
     from ui.styles import QSS
     app.setStyleSheet(QSS)

@@ -1,9 +1,9 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QComboBox, QLineEdit, QMessageBox, QCheckBox,
-                              QLabel, QDateEdit, QHeaderView, QMenu)
+                              QLabel, QHeaderView, QMenu)
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QAction
-from ui.widgets import PageTitle, DataTable, SecondaryButton, DangerButton
+from ui.widgets import PageTitle, DataTable, SecondaryButton, DangerButton, DateField
 from ui.styles  import SUCCESS, DANGER, WARNING
 
 
@@ -41,18 +41,12 @@ class TransactionsPage(QWidget):
         filt.addWidget(self._cat_filter)
 
         filt.addWidget(QLabel("From:"))
-        self._date_from = QDateEdit()
-        self._date_from.setCalendarPopup(True)
-        self._date_from.setDisplayFormat("yyyy-MM-dd")
-        self._date_from.setMinimumWidth(120)
+        self._date_from = DateField()
         self._date_from.setDate(QDate(QDate.currentDate().year(), 1, 1))
         filt.addWidget(self._date_from)
 
         filt.addWidget(QLabel("To:"))
-        self._date_to = QDateEdit()
-        self._date_to.setCalendarPopup(True)
-        self._date_to.setDisplayFormat("yyyy-MM-dd")
-        self._date_to.setMinimumWidth(120)
+        self._date_to = DateField()
         self._date_to.setDate(QDate.currentDate())
         filt.addWidget(self._date_to)
 
