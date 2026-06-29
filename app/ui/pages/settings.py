@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from ui.widgets import PageTitle, DataTable, MutedLabel
 from ui.styles  import SUCCESS, DANGER, WARNING
-from updater    import CURRENT_VERSION
+from updater    import read_local_version
 
 
 class SettingsPage(QWidget):
@@ -834,7 +834,7 @@ class SettingsPage(QWidget):
     def _build_about_section(self) -> QGroupBox:
         grp = QGroupBox("About")
         lay = QVBoxLayout(grp)
-        lay.addWidget(QLabel(f"<b>FinanceBook</b>  v{CURRENT_VERSION}"))
+        lay.addWidget(QLabel(f"<b>FinanceBook</b>  v{read_local_version()}"))
         muted = QLabel("Local-first personal and business finance — data stored in SQLite, "
                        "synced via OneDrive / Google Drive.")
         muted.setObjectName("Muted")

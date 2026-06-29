@@ -72,7 +72,7 @@ def main():
     window.show()
 
     # Non-blocking update check — runs on a background thread.
-    # Set VERSION_URL in updater.py before shipping.
+    # Reads the latest GitHub release and compares it to app/VERSION.
     from updater import run_update_check
     run_update_check(window)
 
