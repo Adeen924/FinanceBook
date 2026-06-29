@@ -338,23 +338,27 @@ def _launch_helper_and_exit(parent, new_app_dir: str) -> None:
     exe_path = sys.executable                 # the frozen FinanceBook.exe
     app_dir = _app_dir()                      # current app/ to be replaced
     backup_dir = app_dir + "_backup"          # rollback copy
-    helper_path = os.path.join(_temp_dir(), "FinanceBook_update.bat")
+    helper_path = os.path.join(_temp_dir(), "FinanceBook_update.ps1")
     pid = os.getpid()
 
-    _write_helper_bat(helper_path, pid, exe_path, app_dir, backup_dir,
+    _write_helper_ps1(helper_path, pid, exe_path, app_dir, backup_dir,
                       new_app_dir)
 
-    # DETACHED so the helper outlives this process; no console window.
-    DETACHED = 0x00000008
-    NO_WINDOW = 0x08000000
-    subprocess.Popen(["cmd", "/c", helper_path],
-                     creationflags=DETACHED | NO_WINDOW,
-                     close_fds=True)
-
+    # Tell the user FIRST and block on it, so the helper only starts waiting
+    # once we're about to exit (avoids a race where it times out waiting).
     QMessageBox.information(
         parent, "Restarting to Finish Update",
         "FinanceBook will now close and reopen on the new version.\n"
         "Your data is safe — it is stored separately from the app.")
+
+    # Launch the PowerShell helper hidden. It outlives this process (Windows
+    # does not kill child processes when the parent exits) and uses
+    # Wait-Process / Move-Item / Start-Process, none of which need a console.
+    NO_WINDOW = 0x08000000
+    subprocess.Popen(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+         "-WindowStyle", "Hidden", "-File", helper_path],
+        creationflags=NO_WINDOW, close_fds=True)
 
     # Quit cleanly so the .py files unlock for the helper.
     app = QApplication.instance()
@@ -363,46 +367,64 @@ def _launch_helper_and_exit(parent, new_app_dir: str) -> None:
     os._exit(0)
 
 
-def _write_helper_bat(path, pid, exe_path, app_dir, backup_dir,
+def _write_helper_ps1(path, pid, exe_path, app_dir, backup_dir,
                       new_app_dir) -> None:
-    """Write the batch helper that performs the swap after the app exits."""
+    """Write the PowerShell helper that swaps app/ and relaunches after exit."""
     staging_root = os.path.dirname(new_app_dir)
-    script = f"""@echo off
-setlocal
-set "PID={pid}"
-set "EXE={exe_path}"
-set "APPDIR={app_dir}"
-set "BACKUP={backup_dir}"
-set "NEWDIR={new_app_dir}"
-set "STAGING={staging_root}"
 
-REM ── Wait for FinanceBook.exe to fully exit so app/ unlocks ──────────────
-:waitloop
-tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL
-if not errorlevel 1 (
-    timeout /t 1 /nobreak >NUL
-    goto waitloop
-)
+    def q(s: str) -> str:
+        # Single-quoted PowerShell literal; escape any embedded single quotes.
+        return "'" + s.replace("'", "''") + "'"
 
-REM ── Back up the current app/ for rollback ──────────────────────────────
-if exist "%BACKUP%" rmdir /S /Q "%BACKUP%"
-move "%APPDIR%" "%BACKUP%" >NUL
+    script = f"""$ErrorActionPreference = 'SilentlyContinue'
+$procId  = {pid}
+$exe     = {q(exe_path)}
+$appDir  = {q(app_dir)}
+$backup  = {q(backup_dir)}
+$newDir  = {q(new_app_dir)}
+$staging = {q(staging_root)}
 
-REM ── Install the new app/ (robocopy handles cross-volume temp dirs) ──────
-mkdir "%APPDIR%"
-robocopy "%NEWDIR%" "%APPDIR%" /E /NFL /NDL /NJH /NJS /NP >NUL
-if %ERRORLEVEL% GEQ 8 (
-    REM Install failed — roll back to the backup.
-    rmdir /S /Q "%APPDIR%" 2>NUL
-    move "%BACKUP%" "%APPDIR%" >NUL
-)
+# ── Wait for FinanceBook.exe to fully exit so app/ unlocks ──────────────
+try {{ Wait-Process -Id $procId -Timeout 120 -ErrorAction Stop }} catch {{ }}
+Start-Sleep -Milliseconds 500
 
-REM ── Clean up staged download and relaunch ──────────────────────────────
-rmdir /S /Q "%STAGING%" 2>NUL
-start "" "%EXE%"
+# ── Back up the current app/ for rollback ──────────────────────────────
+if (Test-Path -LiteralPath $backup) {{
+    Remove-Item -LiteralPath $backup -Recurse -Force
+}}
+Move-Item -LiteralPath $appDir -Destination $backup -Force
 
-REM ── Self-delete this helper ────────────────────────────────────────────
-(goto) 2>NUL & del "%~f0"
+# ── Install the new app/ ────────────────────────────────────────────────
+# Try a fast rename first; fall back to robocopy for cross-volume temp dirs.
+$installed = $false
+try {{
+    Move-Item -LiteralPath $newDir -Destination $appDir -Force -ErrorAction Stop
+    $installed = $true
+}} catch {{
+    New-Item -ItemType Directory -Path $appDir -Force | Out-Null
+    robocopy $newDir $appDir /E /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -lt 8) {{ $installed = $true }}
+}}
+
+# ── Verify, or roll back to the backup ──────────────────────────────────
+if (-not (Test-Path -LiteralPath (Join-Path $appDir 'main.py'))) {{
+    $installed = $false
+}}
+if (-not $installed) {{
+    if (Test-Path -LiteralPath $appDir) {{
+        Remove-Item -LiteralPath $appDir -Recurse -Force
+    }}
+    Move-Item -LiteralPath $backup -Destination $appDir -Force
+}}
+
+# ── Clean up staged download and relaunch ───────────────────────────────
+if (Test-Path -LiteralPath $staging) {{
+    Remove-Item -LiteralPath $staging -Recurse -Force
+}}
+Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)
+
+# ── Self-delete this helper ─────────────────────────────────────────────
+Remove-Item -LiteralPath $PSCommandPath -Force
 """
     with open(path, "w", encoding="utf-8") as f:
         f.write(script)
