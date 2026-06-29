@@ -430,13 +430,25 @@ def _safe_rmtree(path: str) -> None:
 def run_update_check(parent_window) -> None:
     """
     Run the update check on a background daemon thread; never blocks the GUI.
-    Call once from main.py after window.show().
+    Call once from main.py, on the GUI thread, after window.show().
     """
+    from PyQt6.QtCore import QObject, pyqtSignal
+
+    class _Notifier(QObject):
+        found = pyqtSignal(dict)
+
+    # Created on the GUI thread, so emitting `found` from the worker thread is
+    # delivered back on the GUI thread via a queued connection. (A QTimer started
+    # on the worker thread would never fire — that thread has no event loop.)
+    notifier = _Notifier()
+    notifier.found.connect(lambda info: _show_update_dialog(parent_window, info))
+    # Keep a reference alive for the app's lifetime, else it'd be garbage-collected
+    # before the queued signal is delivered.
+    parent_window._fb_update_notifier = notifier
+
     def _worker():
         info = check_for_updates()
-        if info is None:
-            return
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, lambda: _show_update_dialog(parent_window, info))
+        if info is not None:
+            notifier.found.emit(info)
 
     threading.Thread(target=_worker, daemon=True, name="update-check").start()
