@@ -78,16 +78,15 @@ class TransactionsPage(QWidget):
 
         # ── Table ──
         self._table = DataTable(
-            ["Date", "Account", "Payee / Memo", "Category", "Class", "Amount", "R", ""])
+            ["Date", "Account", "Payee / Memo", "Category", "Amount", "R", ""])
         self._table.setColumnWidth(0, 100)
         self._table.setColumnWidth(1, 140)
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self._table.setColumnWidth(3, 170)
-        self._table.setColumnWidth(4, 120)
-        self._table.setColumnWidth(5, 110)
-        self._table.setColumnWidth(6, 36)
-        self._table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(7, 84)
+        self._table.setColumnWidth(3, 280)
+        self._table.setColumnWidth(4, 110)
+        self._table.setColumnWidth(5, 36)
+        self._table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(6, 84)
         self._table.horizontalHeader().setStretchLastSection(False)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._context_menu)
@@ -163,7 +162,6 @@ class TransactionsPage(QWidget):
 
     def _render_table(self):
         cats   = {c["id"]: c for c in self.db.get_categories()}
-        clsmap = {c["id"]: c for c in self.db.get_classes()}
         accts  = {a["id"]: a for a in self.db.get_accounts()}
 
         self._table.clear_rows()
@@ -174,7 +172,6 @@ class TransactionsPage(QWidget):
             cat = cats.get(t.get("category_id",""), {})
             parent = cats.get(cat.get("parent_id",""), {})
             cat_name = f"{parent['name']} → {cat['name']}" if parent else cat.get("name","")
-            cls_name = clsmap.get(t.get("class_id",""), {}).get("name","")
             acct_name = accts.get(t.get("account_id",""), {}).get("name","—")
             payee = t.get("payee") or t.get("memo") or "—"
             amt = float(t.get("amount") or 0)
@@ -195,10 +192,9 @@ class TransactionsPage(QWidget):
             else:
                 self._table.set_item(row, 3, "⚠ Uncategorized",
                                       color=WARNING)
-            self._table.set_item(row, 4, cls_name)
-            self._table.money_item(row, 5, amt)
+            self._table.money_item(row, 4, amt)
             if str(t.get("reconciled","0")) == "1":
-                self._table.set_item(row, 6, "✓",
+                self._table.set_item(row, 5, "✓",
                     align=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
                     color=SUCCESS)
 
@@ -212,7 +208,7 @@ class TransactionsPage(QWidget):
             _cl.addStretch()
             _cl.addWidget(_edit_btn)
             _cl.addStretch()
-            self._table.setCellWidget(row, 7, _cell)
+            self._table.setCellWidget(row, 6, _cell)
 
             self._table.setRowHeight(row, 38)
 
