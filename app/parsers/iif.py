@@ -5,14 +5,15 @@ IIF is a tab-separated text format exported from QuickBooks Desktop.
 Only BANK and CCARD account types become FinanceBook accounts.
 INC and EXP types become FinanceBook categories.
 Everything else (EQUITY, FIXASSET, LTLIAB, OCLIAB, etc.) is skipped —
-those are balance-sheet items that don't map to transactions in this app.
+those are balance-sheet items that don't map to accounts/categories in this app.
+
+This parser reads the Chart of Accounts only. Transactions are imported
+separately from the Transaction Detail Excel export, so any TRNS rows in the
+IIF file are ignored.
 
 How to export from QuickBooks Desktop:
     File → Utilities → Export → Lists to IIF Files → Chart of Accounts
 """
-
-import hashlib
-from datetime import datetime
 
 # QB types → FinanceBook account types
 # These all represent places that actually hold or owe money.
@@ -35,17 +36,18 @@ _QB_EXPENSE_TYPES = {"EXP", "EXEXP"}
 # don't map cleanly to accounts or categories in a personal finance context.
 
 
-def parse_iif(file_bytes: bytes) -> tuple[list[dict], list[dict], list[dict], list[str]]:
+def parse_iif(file_bytes: bytes) -> tuple[list[dict], list[dict], list[str]]:
     """
-    Parse a QuickBooks IIF export file.
+    Parse a QuickBooks IIF export file (Chart of Accounts only).
+
+    Transactions are NOT read here — they come from the Transaction Detail
+    Excel export — so any TRNS rows in the file are ignored.
 
     Returns:
         accounts     — BANK/CCARD dicts ready for db.save_account()
         categories   — INC/EXP dicts with 'type', 'name', 'parent_name'
                        (short display name) and 'qb_full_name' (full QB path).
                        Parent categories always appear before their children.
-        transactions — transaction dicts; each has '_account_name' string —
-                       caller resolves to account_id after creating accounts.
         warnings     — non-fatal issues
     """
     try:
@@ -55,12 +57,9 @@ def parse_iif(file_bytes: bytes) -> tuple[list[dict], list[dict], list[dict], li
 
     accounts: dict[str, dict]   = {}   # qb_full_name → account dict
     categories: dict[str, dict] = {}   # qb_full_name → category dict
-    transactions: list[dict]    = []
     warnings: list[str]         = []
 
     accnt_headers: list[str]  = []
-    trns_headers:  list[str]  = []
-    current_trns:  dict | None = None
 
     for raw_line in text.splitlines():
         line = raw_line.rstrip("\r")
@@ -74,11 +73,6 @@ def parse_iif(file_bytes: bytes) -> tuple[list[dict], list[dict], list[dict], li
         # ── Section header rows ────────────────────────────────────────────
         if record_type == "!ACCNT":
             accnt_headers = [p.strip().upper() for p in values]
-            continue
-        if record_type == "!TRNS":
-            trns_headers = [p.strip().upper() for p in values]
-            continue
-        if record_type in ("!SPL", "!ENDTRNS"):
             continue
         if record_type.startswith("!"):
             continue
@@ -126,51 +120,13 @@ def parse_iif(file_bytes: bytes) -> tuple[list[dict], list[dict], list[dict], li
             # All other QB types (EQUITY, FIXASSET, LTLIAB, etc.) are skipped.
             continue
 
-        # ── Transaction main-line ──────────────────────────────────────────
-        if record_type == "TRNS" and trns_headers:
-            if current_trns:
-                transactions.append(current_trns)
-
-            row          = dict(zip(trns_headers, [_clean(v) for v in values]))
-            date_str     = _parse_qb_date(row.get("DATE", ""))
-            account_name = row.get("ACCNT", "").strip()
-            payee        = row.get("NAME",  "").strip()
-            memo         = row.get("MEMO",  "").strip()
-            amount_raw   = row.get("AMOUNT", "0").replace(",", "").strip()
-            try:
-                amount = float(amount_raw)
-            except ValueError:
-                amount = 0.0
-                warnings.append(f"Could not parse amount '{amount_raw}' — set to 0")
-
-            current_trns = {
-                "_account_name": account_name,
-                "date":          date_str,
-                "payee":         payee,
-                "memo":          memo,
-                "amount":        str(amount),
-                "category_id":   "",
-                "class_id":      "",
-                "is_transfer":   "0",
-                "reconciled":    "0",
-                "notes":         "",
-                "import_hash":   _make_hash(date_str, account_name, amount_raw, payee),
-            }
-            continue
-
-        if record_type == "ENDTRNS":
-            if current_trns:
-                transactions.append(current_trns)
-                current_trns = None
-            continue
-
-    if current_trns:
-        transactions.append(current_trns)
+        # Transaction rows (TRNS / SPL / ENDTRNS) are intentionally ignored —
+        # transactions are imported from the Excel export, not from the IIF.
 
     # ── Order categories: parents before children ──────────────────────────
     ordered_cats = _order_categories(list(categories.values()))
 
-    return list(accounts.values()), ordered_cats, transactions, warnings
+    return list(accounts.values()), ordered_cats, warnings
 
 
 def _order_categories(cats: list[dict]) -> list[dict]:
@@ -188,19 +144,3 @@ def _clean(s: str) -> str:
     if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
         s = s[1:-1]
     return s
-
-
-def _parse_qb_date(s: str) -> str:
-    """Convert QuickBooks date strings to YYYY-MM-DD."""
-    s = s.strip()
-    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%d/%m/%Y"):
-        try:
-            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return s
-
-
-def _make_hash(date: str, account: str, amount: str, payee: str) -> str:
-    key = f"{date}|{account}|{amount}|{payee}"
-    return hashlib.md5(key.encode()).hexdigest()[:16]

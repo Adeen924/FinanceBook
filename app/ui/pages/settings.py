@@ -16,7 +16,6 @@ class SettingsPage(QWidget):
         self.db = db
         self._parsed_accounts:    list[dict] = []
         self._parsed_categories:  list[dict] = []
-        self._parsed_txns:        list[dict] = []
         self._iif_bytes  = b""
         self._iif_name   = ""
         self._qb_xl_bytes: bytes = b""
@@ -112,25 +111,8 @@ class SettingsPage(QWidget):
         self._acct_preview.hide()
         lay.addWidget(self._acct_preview)
 
-        # Preview table — transactions
-        self._txn_preview_label = QLabel("Transactions found:")
-        self._txn_preview_label.setStyleSheet("font-weight:bold;")
-        self._txn_preview_label.hide()
-        lay.addWidget(self._txn_preview_label)
-
-        self._txn_preview = DataTable(["Date", "Account", "Payee / Memo", "Amount", "Status"])
-        self._txn_preview.setColumnWidth(0, 100)
-        self._txn_preview.setColumnWidth(1, 160)
-        self._txn_preview.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.Stretch)
-        self._txn_preview.setColumnWidth(3, 100)
-        self._txn_preview.setColumnWidth(4, 90)
-        self._txn_preview.setMaximumHeight(260)
-        self._txn_preview.hide()
-        lay.addWidget(self._txn_preview)
-
         # Import button
-        self._import_btn = QPushButton("Import Everything into FinanceBook")
+        self._import_btn = QPushButton("Import Accounts & Categories into FinanceBook")
         self._import_btn.setObjectName("Success")
         self._import_btn.setEnabled(False)
         self._import_btn.clicked.connect(self._do_import)
@@ -153,12 +135,10 @@ class SettingsPage(QWidget):
         self._iif_label.setText(self._iif_name)
         # Reset preview
         self._parsed_accounts = []
-        self._parsed_txns = []
+        self._parsed_categories = []
         self._import_btn.setEnabled(False)
         self._acct_preview.hide()
         self._acct_preview_label.hide()
-        self._txn_preview.hide()
-        self._txn_preview_label.hide()
         self._qb_status.setText("")
 
     def _parse_iif(self):
@@ -168,12 +148,11 @@ class SettingsPage(QWidget):
 
         try:
             from parsers.iif import parse_iif
-            accounts, categories, txns, warnings = parse_iif(self._iif_bytes)
+            accounts, categories, warnings = parse_iif(self._iif_bytes)
         except Exception as e:
             QMessageBox.critical(self, "Parse Error", f"Could not parse IIF file:\n{e}")
             return
 
-        existing_hashes     = self.db.get_existing_hashes()
         existing_acct_names = {a["name"].lower() for a in self.db.get_accounts()}
         existing_cat_names  = {c["name"].lower() for c in self.db.get_categories()}
 
@@ -182,13 +161,8 @@ class SettingsPage(QWidget):
         for cat in categories:
             cat["_exists"] = cat["name"].lower() in existing_cat_names
 
-        new_txns  = [t for t in txns if t.get("import_hash") not in existing_hashes]
-        dup_count = len(txns) - len(new_txns)
-        self.db.apply_rules(new_txns)
-
         self._parsed_accounts   = accounts
         self._parsed_categories = categories
-        self._parsed_txns       = new_txns
 
         # ── Account preview ────────────────────────────────────────────────
         self._acct_preview.clear_rows()
@@ -211,38 +185,11 @@ class SettingsPage(QWidget):
         self._acct_preview_label.show()
         self._acct_preview.show()
 
-        # ── Transaction preview ────────────────────────────────────────────
-        preview_txns = new_txns[:200]
-        self._txn_preview.clear_rows()
-        self._txn_preview.setRowCount(len(preview_txns))
-        for row, t in enumerate(preview_txns):
-            self._txn_preview.set_item(row, 0, t.get("date", ""))
-            self._txn_preview.set_item(row, 1, t.get("_account_name", ""))
-            self._txn_preview.set_item(row, 2, t.get("payee") or t.get("memo", "—"))
-            self._txn_preview.money_item(row, 3, float(t.get("amount") or 0))
-            cat = t.get("category_id", "")
-            self._txn_preview.set_item(
-                row, 4,
-                "Auto-cat" if cat else "Uncategorized",
-                color=SUCCESS if cat else "#6b7280")
-            self._txn_preview.setRowHeight(row, 28)
-
-        label = f"Transactions found:  {len(new_txns)} new"
-        if dup_count:
-            label += f"  ({dup_count} duplicates will be skipped)"
-        if len(new_txns) > 200:
-            label += "  — showing first 200 in preview"
-        self._txn_preview_label.setText(label)
-        self._txn_preview_label.show()
-        self._txn_preview.show()
-
         new_accts = sum(1 for a in accounts if not a.get("_exists"))
         new_cats  = sum(1 for c in categories if not c.get("_exists"))
         parts = []
         if new_accts: parts.append(f"{new_accts} account(s) to create")
         if new_cats:  parts.append(f"{new_cats} categor(ies) to create")
-        if new_txns:  parts.append(f"{len(new_txns)} transactions to import")
-        if dup_count: parts.append(f"{dup_count} duplicates skipped")
         self._qb_status.setText("  ·  ".join(parts) or "Nothing new to import")
         self._qb_status.setStyleSheet(f"color: {SUCCESS}; font-weight: bold;")
 
@@ -251,10 +198,10 @@ class SettingsPage(QWidget):
                 "\n".join(warnings[:10]) +
                 ("\n…and more" if len(warnings) > 10 else ""))
 
-        self._import_btn.setEnabled(bool(new_accts or new_cats or new_txns))
+        self._import_btn.setEnabled(bool(new_accts or new_cats))
 
     def _do_import(self):
-        if not self._parsed_accounts and not self._parsed_categories and not self._parsed_txns:
+        if not self._parsed_accounts and not self._parsed_categories:
             return
 
         new_accts = sum(1 for a in self._parsed_accounts if not a.get("_exists"))
@@ -265,19 +212,15 @@ class SettingsPage(QWidget):
             f"• Create {new_accts} account(s)\n"
             f"  — Bank/credit-card accounts start at $0 (transactions set the balance)\n"
             f"  — Loans/assets/liabilities use the QB balance directly\n"
-            f"• Create {new_cats} income/expense categor(ies)\n"
-            f"• Import {len(self._parsed_txns)} transaction(s)\n\n"
+            f"• Create {new_cats} income/expense categor(ies)\n\n"
             "QB income/expense accounts become categories, not accounts. "
-            "Duplicates are skipped. Continue?",
+            "Transactions are imported separately from the Excel export. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes:
             return
 
         try:
-            # 1. Create/find accounts (BANK/CCARD only)
-            name_to_acct_id: dict[str, str] = {}
-            for existing in self.db.get_accounts():
-                name_to_acct_id[existing["name"].lower()] = existing["id"]
+            # 1. Create accounts (BANK/CCARD only)
             for acct in self._parsed_accounts:
                 if not acct.get("_exists"):
                     # Bank/credit-card accounts get opening_balance=0 because
@@ -290,14 +233,13 @@ class SettingsPage(QWidget):
                     # for them — it's their only balance source.
                     is_bank = acct["type"] in ("checking", "savings", "credit card")
                     ob = "0" if is_bank else acct.get("opening_balance", "0")
-                    saved = self.db.save_account({
+                    self.db.save_account({
                         "name":            acct["name"],
                         "type":            acct["type"],
                         "institution":     "",
                         "opening_balance": ob,
                         "currency":        "USD",
                     })
-                    name_to_acct_id[acct["name"].lower()] = saved["id"]
 
             # 2. Create categories (INC/EXP) — parents first, then children
             name_to_cat_id: dict[str, str] = {}
@@ -319,37 +261,17 @@ class SettingsPage(QWidget):
                 })
                 name_to_cat_id[cat["name"].lower()] = saved_cat["id"]
 
-            # 3. Resolve and save transactions (only those in real accounts)
-            skipped = 0
-            ready   = []
-            for t in self._parsed_txns:
-                t = dict(t)
-                acct_name = t.pop("_account_name", "")
-                acct_id   = name_to_acct_id.get(acct_name.lower(), "")
-                if not acct_id:
-                    skipped += 1
-                    continue
-                t["account_id"] = acct_id
-                ready.append(t)
-
-            saved_txns = self.db.bulk_save_transactions(ready)
-
             cats_created = sum(1 for c in self._parsed_categories if not c.get("_exists"))
             msg = (f"Import complete!\n\n"
                    f"• {new_accts} account(s) created\n"
-                   f"• {cats_created} categor(ies) created\n"
-                   f"• {len(saved_txns)} transaction(s) imported")
-            if skipped:
-                msg += f"\n• {skipped} transaction(s) skipped (not a bank/credit-card account)"
+                   f"• {cats_created} categor(ies) created")
             QMessageBox.information(self, "Import Complete", msg)
 
             self._parsed_accounts   = []
             self._parsed_categories = []
-            self._parsed_txns       = []
             self._import_btn.setEnabled(False)
             self._qb_status.setText("✓ Import complete.")
             self._acct_preview.hide();  self._acct_preview_label.hide()
-            self._txn_preview.hide();   self._txn_preview_label.hide()
 
         except Exception as e:
             QMessageBox.critical(self, "Import Failed", str(e))
@@ -776,10 +698,11 @@ class SettingsPage(QWidget):
         lay.setSpacing(10)
 
         warn = QLabel(
-            "<b>This deletes all accounts, transactions, categories, and rules "
-            "in this database.</b> Use this when you want to start over with a "
-            "clean import. The database file and its name are kept — only the "
-            "data inside is cleared. This cannot be undone."
+            "<b>This deletes all accounts, transactions, rules, and "
+            "reconciliations in this database.</b> Use this when you want to "
+            "start over with a clean import. Your categories, the database file, "
+            "and its name are kept — only the data inside is cleared. "
+            "This cannot be undone."
         )
         warn.setWordWrap(True)
         warn.setTextFormat(Qt.TextFormat.RichText)
@@ -802,8 +725,9 @@ class SettingsPage(QWidget):
         db_name = self.db.get_setting("database_name", "this database")
         reply = QMessageBox.warning(
             self, "Clear All Data",
-            f"This will permanently delete ALL accounts, transactions, categories, "
+            f"This will permanently delete ALL accounts, transactions, "
             f"rules, and reconciliations in \"{db_name}\".\n\n"
+            f"Your categories will be kept.\n\n"
             f"Type  DELETE  in the box below to confirm.",
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
         if reply != QMessageBox.StandardButton.Ok:
@@ -821,9 +745,9 @@ class SettingsPage(QWidget):
             self.db.clear_all_data()
             QMessageBox.information(
                 self, "Done",
-                f"\"{db_name}\" has been cleared.\n\n"
+                f"\"{db_name}\" has been cleared. Your categories were kept.\n\n"
                 "You can now re-import your QuickBooks data:\n"
-                "1. Settings → IIF file (accounts + categories)\n"
+                "1. Settings → IIF file (accounts; existing categories are kept)\n"
                 "2. Settings → Excel file (transactions + rules)\n\n"
                 "Restart the app or navigate away and back to refresh all pages.")
         except Exception as e:

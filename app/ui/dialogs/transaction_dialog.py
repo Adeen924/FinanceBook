@@ -2,7 +2,8 @@
 from datetime import date
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
                               QDoubleSpinBox, QDialogButtonBox, QVBoxLayout,
-                              QDateEdit, QTextEdit, QLabel, QCheckBox, QFrame)
+                              QDateEdit, QTextEdit, QLabel, QCheckBox, QFrame,
+                              QPushButton, QMessageBox)
 from PyQt6.QtCore import QDate
 
 
@@ -11,6 +12,9 @@ class TransactionDialog(QDialog):
         super().__init__(parent)
         self.db = db
         self.transaction = transaction or {}
+        # Set True when the user splits from inside this dialog: the split has
+        # already been written, so the caller must NOT re-save get_data() over it.
+        self.did_split = False
         self.setWindowTitle("Edit Transaction" if transaction else "Add Transaction")
         self.setMinimumWidth(500)
         self._build(account_id)
@@ -149,7 +153,48 @@ class TransactionDialog(QDialog):
                                 QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self._accept)
         btns.rejected.connect(self.reject)
+
+        # Split: only for an already-saved transaction that isn't a transfer or
+        # loan payment (those track their own breakdown).
+        can_split = (bool(self.transaction.get("id"))
+                     and str(self.transaction.get("is_transfer", "0")) != "1"
+                     and not self.transaction.get("loan_id"))
+        if can_split:
+            split_btn = QPushButton(
+                "Edit Split…" if self.transaction.get("split_group_id")
+                else "Split into categories…")
+            split_btn.setObjectName("Secondary")
+            split_btn.clicked.connect(self._open_split)
+            btns.addButton(split_btn, QDialogButtonBox.ButtonRole.ActionRole)
+
         lay.addWidget(btns)
+
+    # ── split ───────────────────────────────────────────────────────────────────
+
+    def _open_split(self):
+        total = self.amount_spin.value()
+        if abs(total) < 0.005:
+            QMessageBox.warning(self, "Amount Needed",
+                                "Enter the transaction amount before splitting.")
+            return
+        # Carry any edits made in this dialog into the split's shared fields.
+        base = dict(self.transaction)
+        base.update({
+            "date":       self.date_edit.date().toString("yyyy-MM-dd"),
+            "account_id": self.account_combo.currentData(),
+            "payee":      self.payee_edit.text().strip(),
+            "memo":       self.memo_edit.text().strip(),
+            "amount":     str(total),
+            "class_id":   self.class_combo.currentData() or "",
+            "notes":      self.notes_edit.toPlainText().strip(),
+        })
+
+        from ui.dialogs.split_dialog import SplitDialog
+        dlg = SplitDialog(self.db, base, total_amount=total, parent=self)
+        if dlg.exec() == SplitDialog.DialogCode.Accepted:
+            self.db.split_transaction(base, dlg.get_splits())
+            self.did_split = True
+            self.accept()
 
     # ── loan helpers ──────────────────────────────────────────────────────────
 

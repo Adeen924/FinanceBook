@@ -147,6 +147,34 @@ class Database:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
         self._migrate()
+        self.seed_default_categories()
+
+    def seed_default_categories(self):
+        """
+        Seed the built-in category tree into a brand-new database.
+
+        Runs at most once per database: it is skipped if the database already
+        has categories (e.g. an existing file) or has been seeded before, so a
+        user who deletes the defaults won't have them reappear.
+        """
+        if self.get_setting("default_categories_seeded") == "1":
+            return
+        if self.get_categories():
+            # Existing database with its own categories — mark as handled, never
+            # add the defaults on top of the user's data.
+            self.set_setting("default_categories_seeded", "1")
+            return
+        try:
+            from default_categories import DEFAULT_CATEGORIES
+        except Exception:
+            return
+        for ctype, groups in DEFAULT_CATEGORIES.items():
+            for parent_name, children in groups.items():
+                parent = self.save_category({"name": parent_name, "type": ctype})
+                for child in children:
+                    self.save_category({"name": child, "type": ctype,
+                                        "parent_id": parent["id"]})
+        self.set_setting("default_categories_seeded", "1")
 
     def _migrate(self):
         """Add columns that were introduced after the initial schema."""
@@ -154,6 +182,7 @@ class Database:
             ("transactions", "loan_id",          "TEXT DEFAULT ''"),
             ("transactions", "principal_amount",  "REAL DEFAULT 0"),
             ("transactions", "interest_amount",   "REAL DEFAULT 0"),
+            ("transactions", "split_group_id",    "TEXT DEFAULT ''"),
         ]
         with self._conn() as c:
             for table, col, typedef in new_cols:
@@ -239,20 +268,21 @@ class Database:
         loan_id  = data.get("loan_id") or ""
         prin_amt = float(data.get("principal_amount") or 0)
         int_amt  = float(data.get("interest_amount") or 0)
+        split_gid = data.get("split_group_id") or ""
         with self._conn() as c:
             if data.get("id") and self.get_transaction(data["id"]):
                 c.execute(
                     "UPDATE transactions SET date=?,account_id=?,payee=?,memo=?,amount=?,"
                     "category_id=?,class_id=?,is_transfer=?,transfer_pair_id=?,"
                     "reconciled=?,reconcile_id=?,notes=?,import_hash=?,"
-                    "loan_id=?,principal_amount=?,interest_amount=? WHERE id=?",
+                    "loan_id=?,principal_amount=?,interest_amount=?,split_group_id=? WHERE id=?",
                     (data.get("date",""), data.get("account_id",""),
                      data.get("payee",""), data.get("memo",""), amt,
                      data.get("category_id",""), data.get("class_id",""),
                      is_tr, data.get("transfer_pair_id",""),
                      recon, data.get("reconcile_id",""),
                      data.get("notes",""), data.get("import_hash",""),
-                     loan_id, prin_amt, int_amt, data["id"]))
+                     loan_id, prin_amt, int_amt, split_gid, data["id"]))
             else:
                 data["id"] = self._new_id()
                 data["created_at"] = self._now()
@@ -260,15 +290,15 @@ class Database:
                     "INSERT INTO transactions "
                     "(id,date,account_id,payee,memo,amount,category_id,class_id,"
                     "is_transfer,transfer_pair_id,reconciled,reconcile_id,notes,import_hash,"
-                    "loan_id,principal_amount,interest_amount,created_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "loan_id,principal_amount,interest_amount,split_group_id,created_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (data["id"], data.get("date",""), data.get("account_id",""),
                      data.get("payee",""), data.get("memo",""), amt,
                      data.get("category_id",""), data.get("class_id",""),
                      is_tr, data.get("transfer_pair_id",""),
                      recon, data.get("reconcile_id",""),
                      data.get("notes",""), data.get("import_hash",""),
-                     loan_id, prin_amt, int_amt, data["created_at"]))
+                     loan_id, prin_amt, int_amt, split_gid, data["created_at"]))
         return data
 
     def bulk_save_transactions(self, rows: list[dict]) -> list[dict]:
@@ -300,12 +330,76 @@ class Database:
                     "UPDATE transactions SET is_transfer=0, transfer_pair_id='' "
                     "WHERE transfer_pair_id=?", (row["transfer_pair_id"],))
 
+    # ── splits ────────────────────────────────────────────────────────────────
+    # A "split" lets one real-world payment (e.g. a Costco run) be divided across
+    # several categories. It is stored as N sibling transactions sharing a
+    # split_group_id; they sum to the original amount, so balances and reports
+    # (which aggregate per transaction) keep working with no special handling.
+
+    def get_split_group(self, group_id: str) -> list[dict]:
+        if not group_id:
+            return []
+        with self._conn() as c:
+            return _to_dicts(c.execute(
+                "SELECT * FROM transactions WHERE split_group_id=? ORDER BY created_at",
+                (group_id,)).fetchall())
+
+    def split_transaction(self, base_txn: dict, splits: list[dict]) -> list[dict]:
+        """
+        Replace base_txn — or, if it is already part of a split, its whole group —
+        with the given split lines.
+
+        Each split line is a dict: {category_id, amount, memo (optional),
+        class_id (optional)}. Shared fields (date, account, payee, reconciled,
+        notes) are inherited from base_txn. The original import_hash is preserved
+        on the first line so re-importing the source file still de-duplicates.
+        Returns the saved child transactions.
+        """
+        gid = base_txn.get("split_group_id") or self._new_id()
+        preserved_hash = base_txn.get("import_hash", "") or ""
+        with self._conn() as c:
+            if base_txn.get("split_group_id"):
+                for r in c.execute(
+                        "SELECT import_hash FROM transactions WHERE split_group_id=?",
+                        (gid,)).fetchall():
+                    if r["import_hash"] and not preserved_hash:
+                        preserved_hash = r["import_hash"]
+                c.execute("DELETE FROM transactions WHERE split_group_id=?", (gid,))
+            elif base_txn.get("id"):
+                c.execute("DELETE FROM transactions WHERE id=?", (base_txn["id"],))
+
+        saved = []
+        for i, s in enumerate(splits):
+            child = {
+                "date":          base_txn.get("date", ""),
+                "account_id":    base_txn.get("account_id", ""),
+                "payee":         base_txn.get("payee", ""),
+                "memo":          s.get("memo") or base_txn.get("memo", ""),
+                "amount":        s.get("amount", "0"),
+                "category_id":   s.get("category_id", ""),
+                "class_id":      s.get("class_id") or base_txn.get("class_id", ""),
+                "is_transfer":   "0",
+                "reconciled":    base_txn.get("reconciled", "0"),
+                "notes":         base_txn.get("notes", ""),
+                "import_hash":   preserved_hash if i == 0 else "",
+                "split_group_id": gid,
+            }
+            saved.append(self.save_transaction(child))
+        return saved
+
+    def delete_split_group(self, group_id: str):
+        with self._conn() as c:
+            c.execute("DELETE FROM transactions WHERE split_group_id=?", (group_id,))
+
     def clear_all_data(self):
-        """Delete all user data. Keeps the settings table (database name, etc.)."""
+        """
+        Delete user data, but KEEP the category list (and the settings table:
+        database name, etc.). Categories are part of the app's setup, not the
+        per-import data, so they survive a reset.
+        """
         with self._conn() as c:
             c.execute("DELETE FROM transactions")
             c.execute("DELETE FROM accounts")
-            c.execute("DELETE FROM categories")
             c.execute("DELETE FROM classes")
             c.execute("DELETE FROM reconciliations")
             c.execute("DELETE FROM rules")

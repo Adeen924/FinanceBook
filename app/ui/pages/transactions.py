@@ -177,10 +177,16 @@ class TransactionsPage(QWidget):
             amt = float(t.get("amount") or 0)
             total += amt
 
+            if str(t.get("is_transfer","0")) == "1":
+                disp_payee = f"[Transfer] {payee}"
+            elif t.get("split_group_id"):
+                disp_payee = f"⑂ {payee}"
+            else:
+                disp_payee = payee
+
             self._table.set_item(row, 0, t.get("date",""))
             self._table.set_item(row, 1, acct_name)
-            self._table.set_item(row, 2,
-                f"[Transfer] {payee}" if str(t.get("is_transfer","0")) == "1" else payee)
+            self._table.set_item(row, 2, disp_payee)
             if cat_name:
                 self._table.set_item(row, 3, cat_name)
             else:
@@ -233,7 +239,28 @@ class TransactionsPage(QWidget):
         from ui.dialogs.transaction_dialog import TransactionDialog
         dlg = TransactionDialog(self.db, transaction=txn, parent=self)
         if dlg.exec() == TransactionDialog.DialogCode.Accepted:
-            self.db.save_transaction(dlg.get_data())
+            # The Split button inside the dialog already wrote the new lines —
+            # don't re-save the (now-deleted) original on top of them.
+            if getattr(dlg, "did_split", False):
+                self._apply_filter()
+            else:
+                self.db.save_transaction(dlg.get_data())
+                self._apply_filter()
+
+    def _split_txn(self, txn):
+        if str(txn.get("is_transfer","0")) == "1":
+            QMessageBox.information(self, "Cannot Split",
+                "Transfers can't be split. Remove the transfer link first.")
+            return
+        if txn.get("loan_id"):
+            QMessageBox.information(self, "Cannot Split",
+                "Loan payments can't be split — they already track principal "
+                "and interest separately.")
+            return
+        from ui.dialogs.split_dialog import SplitDialog
+        dlg = SplitDialog(self.db, txn, parent=self)
+        if dlg.exec() == SplitDialog.DialogCode.Accepted:
+            self.db.split_transaction(txn, dlg.get_splits())
             self._apply_filter()
 
     def _context_menu(self, pos):
@@ -246,6 +273,11 @@ class TransactionsPage(QWidget):
         edit_act = QAction("Edit", self)
         edit_act.triggered.connect(lambda: self._edit_txn(txn))
         menu.addAction(edit_act)
+
+        split_label = "Edit Split…" if txn.get("split_group_id") else "Split…"
+        split_act = QAction(split_label, self)
+        split_act.triggered.connect(lambda: self._split_txn(txn))
+        menu.addAction(split_act)
 
         # Quick category submenu
         cat_menu = menu.addMenu("Set Category")
@@ -275,6 +307,30 @@ class TransactionsPage(QWidget):
         self._apply_filter()
 
     def _delete_txn(self, txn):
+        gid = txn.get("split_group_id")
+        if gid:
+            members = self.db.get_split_group(gid)
+            if len(members) > 1:
+                box = QMessageBox(self)
+                box.setWindowTitle("Delete Split Transaction")
+                box.setText(
+                    f"This is one line of a split with {len(members)} parts.\n\n"
+                    "Delete the entire split, or just this one line?")
+                whole_btn = box.addButton("Delete Entire Split",
+                                          QMessageBox.ButtonRole.DestructiveRole)
+                line_btn  = box.addButton("Delete This Line Only",
+                                          QMessageBox.ButtonRole.AcceptRole)
+                box.addButton(QMessageBox.StandardButton.Cancel)
+                box.exec()
+                clicked = box.clickedButton()
+                if clicked == whole_btn:
+                    self.db.delete_split_group(gid)
+                    self._apply_filter()
+                elif clicked == line_btn:
+                    self.db.delete_transaction(txn["id"])
+                    self._apply_filter()
+                return
+
         reply = QMessageBox.question(self, "Delete Transaction",
             f"Delete transaction on {txn.get('date','')} for "
             f"${abs(float(txn.get('amount',0))):,.2f}?",
