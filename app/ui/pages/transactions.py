@@ -56,6 +56,9 @@ class TransactionsPage(QWidget):
         filt.addWidget(self._search_edit)
 
         self._show_transfers = QCheckBox("Show transfers")
+        # Transfers are still real entries on the account, so show them in the
+        # register by default (they're only excluded from P&L / reports).
+        self._show_transfers.setChecked(True)
         filt.addWidget(self._show_transfers)
 
         filter_btn = QPushButton("Filter")
@@ -155,7 +158,7 @@ class TransactionsPage(QWidget):
         self._date_from.setDate(QDate(QDate.currentDate().year(), 1, 1))
         self._date_to.setDate(QDate.currentDate())
         self._search_edit.clear()
-        self._show_transfers.setChecked(False)
+        self._show_transfers.setChecked(True)
         self._apply_filter()
 
     def _render_table(self):
@@ -226,7 +229,9 @@ class TransactionsPage(QWidget):
         from ui.dialogs.transaction_dialog import TransactionDialog
         dlg = TransactionDialog(self.db, parent=self)
         if dlg.exec() == TransactionDialog.DialogCode.Accepted:
-            self.db.save_transaction(dlg.get_data())
+            # A split or transfer is already persisted by the dialog.
+            if not getattr(dlg, "handled", False):
+                self.db.save_transaction(dlg.get_data())
             self._apply_filter()
 
     def _edit_selected(self):
@@ -239,13 +244,11 @@ class TransactionsPage(QWidget):
         from ui.dialogs.transaction_dialog import TransactionDialog
         dlg = TransactionDialog(self.db, transaction=txn, parent=self)
         if dlg.exec() == TransactionDialog.DialogCode.Accepted:
-            # The Split button inside the dialog already wrote the new lines —
-            # don't re-save the (now-deleted) original on top of them.
-            if getattr(dlg, "did_split", False):
-                self._apply_filter()
-            else:
+            # A split or transfer is already persisted by the dialog — don't
+            # re-save the (now-replaced) original on top of it.
+            if not getattr(dlg, "handled", False):
                 self.db.save_transaction(dlg.get_data())
-                self._apply_filter()
+            self._apply_filter()
 
     def _split_txn(self, txn):
         if str(txn.get("is_transfer","0")) == "1":

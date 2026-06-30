@@ -330,6 +330,53 @@ class Database:
                     "UPDATE transactions SET is_transfer=0, transfer_pair_id='' "
                     "WHERE transfer_pair_id=?", (row["transfer_pair_id"],))
 
+    def get_transfer_partner(self, txn: dict) -> dict | None:
+        """The other transaction in a transfer pair, or None."""
+        pid = txn.get("transfer_pair_id", "")
+        if not pid:
+            return None
+        with self._conn() as c:
+            return _to_dict(c.execute(
+                "SELECT * FROM transactions WHERE transfer_pair_id=? AND id!=? LIMIT 1",
+                (pid, txn.get("id", ""))).fetchone())
+
+    def save_transfer_pair(self, source: dict, dest_account_id: str) -> dict:
+        """
+        Record a transfer from one entry: save `source` and auto-create (or update)
+        the mirror transaction in dest_account_id with the opposite amount, both
+        flagged is_transfer and sharing a transfer_pair_id. The user only enters
+        one side; the matching side is kept in sync here.
+
+        Both sides have is_transfer=1, so they are excluded from P&L and the
+        dashboard (which already filter transfers out).
+        """
+        source = dict(source)
+        source["is_transfer"] = "1"
+        pair_id = source.get("transfer_pair_id") or self._new_id()
+        source["transfer_pair_id"] = pair_id
+        saved = self.save_transaction(source)
+
+        mirror = self.get_transfer_partner(saved)
+        mirror_amt = -float(saved.get("amount") or 0)
+        self.save_transaction({
+            "id":               mirror["id"] if mirror else "",
+            "date":             saved.get("date", ""),
+            "account_id":       dest_account_id,
+            "payee":            saved.get("payee", ""),
+            "memo":             saved.get("memo", ""),
+            "amount":           str(mirror_amt),
+            # keep any category the mirror already had; transfers are excluded
+            # from P&L regardless, so this is just preserved metadata.
+            "category_id":      mirror.get("category_id", "") if mirror else "",
+            "class_id":         saved.get("class_id", ""),
+            "is_transfer":      "1",
+            "transfer_pair_id": pair_id,
+            "reconciled":       mirror.get("reconciled", "0") if mirror else "0",
+            "notes":            saved.get("notes", ""),
+            "split_group_id":   "",
+        })
+        return saved
+
     # ── splits ────────────────────────────────────────────────────────────────
     # A "split" lets one real-world payment (e.g. a Costco run) be divided across
     # several categories. It is stored as N sibling transactions sharing a
@@ -344,7 +391,8 @@ class Database:
                 "SELECT * FROM transactions WHERE split_group_id=? ORDER BY created_at",
                 (group_id,)).fetchall())
 
-    def split_transaction(self, base_txn: dict, splits: list[dict]) -> list[dict]:
+    def split_transaction(self, base_txn: dict, splits: list[dict],
+                          transfer_to: str = "") -> list[dict]:
         """
         Replace base_txn — or, if it is already part of a split, its whole group —
         with the given split lines.
@@ -353,9 +401,15 @@ class Database:
         class_id (optional)}. Shared fields (date, account, payee, reconciled,
         notes) are inherited from base_txn. The original import_hash is preserved
         on the first line so re-importing the source file still de-duplicates.
-        Returns the saved child transactions.
+
+        If transfer_to is given, the split is ALSO a transfer: every split line is
+        flagged is_transfer and a single mirror for the total is created in the
+        transfer_to account, all sharing one transfer_pair_id. Returns the saved
+        source-side child transactions.
         """
         gid = base_txn.get("split_group_id") or self._new_id()
+        is_transfer = bool(transfer_to)
+        pair_id = base_txn.get("transfer_pair_id") or (self._new_id() if is_transfer else "")
         preserved_hash = base_txn.get("import_hash", "") or ""
         with self._conn() as c:
             if base_txn.get("split_group_id"):
@@ -367,24 +421,48 @@ class Database:
                 c.execute("DELETE FROM transactions WHERE split_group_id=?", (gid,))
             elif base_txn.get("id"):
                 c.execute("DELETE FROM transactions WHERE id=?", (base_txn["id"],))
+            # Remove any prior transfer mirror tied to this entry before rebuilding.
+            old_pair = base_txn.get("transfer_pair_id", "")
+            if old_pair:
+                c.execute("DELETE FROM transactions WHERE transfer_pair_id=?", (old_pair,))
 
         saved = []
+        total = 0.0
         for i, s in enumerate(splits):
+            amt = float(s.get("amount") or 0)
+            total += amt
             child = {
                 "date":          base_txn.get("date", ""),
                 "account_id":    base_txn.get("account_id", ""),
                 "payee":         base_txn.get("payee", ""),
                 "memo":          s.get("memo") or base_txn.get("memo", ""),
-                "amount":        s.get("amount", "0"),
+                "amount":        str(amt),
                 "category_id":   s.get("category_id", ""),
                 "class_id":      s.get("class_id") or base_txn.get("class_id", ""),
-                "is_transfer":   "0",
+                "is_transfer":   "1" if is_transfer else "0",
+                "transfer_pair_id": pair_id,
                 "reconciled":    base_txn.get("reconciled", "0"),
                 "notes":         base_txn.get("notes", ""),
                 "import_hash":   preserved_hash if i == 0 else "",
                 "split_group_id": gid,
             }
             saved.append(self.save_transaction(child))
+
+        if is_transfer:
+            self.save_transaction({
+                "date":             base_txn.get("date", ""),
+                "account_id":       transfer_to,
+                "payee":            base_txn.get("payee", ""),
+                "memo":             base_txn.get("memo", ""),
+                "amount":           str(-round(total, 2)),
+                "category_id":      "",
+                "class_id":         base_txn.get("class_id", ""),
+                "is_transfer":      "1",
+                "transfer_pair_id": pair_id,
+                "reconciled":       "0",
+                "notes":            base_txn.get("notes", ""),
+                "split_group_id":   "",
+            })
         return saved
 
     def delete_split_group(self, group_id: str):

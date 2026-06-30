@@ -3,8 +3,9 @@ from datetime import date
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
                               QDoubleSpinBox, QDialogButtonBox, QVBoxLayout,
                               QDateEdit, QTextEdit, QLabel, QCheckBox, QFrame,
-                              QPushButton, QMessageBox)
+                              QPushButton, QMessageBox, QWidget, QHBoxLayout)
 from PyQt6.QtCore import QDate
+from ui.widgets import FilterComboBox
 
 
 class TransactionDialog(QDialog):
@@ -12,9 +13,10 @@ class TransactionDialog(QDialog):
         super().__init__(parent)
         self.db = db
         self.transaction = transaction or {}
-        # Set True when the user splits from inside this dialog: the split has
-        # already been written, so the caller must NOT re-save get_data() over it.
-        self.did_split = False
+        # When True, this dialog already persisted the result (a split and/or a
+        # transfer), so the caller must NOT re-save get_data() on top of it.
+        self.handled = False
+        self._pending_splits: list[dict] | None = None
         self.setWindowTitle("Edit Transaction" if transaction else "Add Transaction")
         self.setMinimumWidth(500)
         self._build(account_id)
@@ -69,23 +71,53 @@ class TransactionDialog(QDialog):
         note.setObjectName("Muted")
         form.addRow("", note)
 
-        # Category
-        self.cat_combo = QComboBox()
-        self.cat_combo.addItem("— Uncategorized —", "")
-        cats = self.db.get_categories()
-        self._cats = cats
-        roots = [c for c in cats if not c.get("parent_id")]
-        for cat in roots:
-            self.cat_combo.addItem(cat["name"], cat["id"])
-            for sub in cats:
-                if sub.get("parent_id") == cat["id"]:
-                    self.cat_combo.addItem(f"    ↳ {sub['name']}", sub["id"])
-        cur_cat = self.transaction.get("category_id","")
-        for i in range(self.cat_combo.count()):
-            if self.cat_combo.itemData(i) == cur_cat:
-                self.cat_combo.setCurrentIndex(i)
-                break
+        # Category — type-to-filter, starts blank with a placeholder
+        self.cat_combo = self._build_category_combo()
+        self.cat_combo.select_by_data(self.transaction.get("category_id",""))
         form.addRow("Category", self.cat_combo)
+
+        # ── Transfer section ───────────────────────────────────────────────────
+        sep0 = QFrame(); sep0.setFrameShape(QFrame.Shape.HLine); sep0.setObjectName("Muted")
+        form.addRow(sep0)
+
+        self._transfer_chk = QCheckBox("This is a transfer between my accounts")
+        self._transfer_chk.toggled.connect(self._on_transfer_toggled)
+        form.addRow("Transfer", self._transfer_chk)
+
+        self._transfer_box = QWidget()
+        _tb = QVBoxLayout(self._transfer_box)
+        _tb.setContentsMargins(0, 0, 0, 0)
+        _tb.setSpacing(4)
+        self._transfer_acct_combo = QComboBox()
+        for a in self._accounts:
+            self._transfer_acct_combo.addItem(a["name"], a["id"])
+        _tb.addWidget(self._transfer_acct_combo)
+        _hint = QLabel("Money moves into this account. A matching entry is created "
+                       "there automatically, and transfers are left out of P&L.")
+        _hint.setObjectName("Muted"); _hint.setWordWrap(True)
+        _tb.addWidget(_hint)
+        form.addRow("Goes to account", self._transfer_box)
+        self._transfer_box.setVisible(False)
+
+        # ── Split section ──────────────────────────────────────────────────────
+        self._split_chk = QCheckBox("Split this transaction across multiple categories")
+        self._split_chk.toggled.connect(self._on_split_toggled)
+        form.addRow("Split", self._split_chk)
+
+        self._split_box = QWidget()
+        _sb = QHBoxLayout(self._split_box)
+        _sb.setContentsMargins(0, 0, 0, 0)
+        _sb.setSpacing(8)
+        self._split_btn = QPushButton("Choose categories & amounts…")
+        self._split_btn.setObjectName("Secondary")
+        self._split_btn.clicked.connect(self._define_split)
+        _sb.addWidget(self._split_btn)
+        self._split_summary = QLabel("No split defined yet.")
+        self._split_summary.setObjectName("Muted")
+        self._split_summary.setWordWrap(True)
+        _sb.addWidget(self._split_summary, 1)
+        form.addRow("", self._split_box)
+        self._split_box.setVisible(False)
 
         # ── Loan Payment section ───────────────────────────────────────────────
         sep = QFrame()
@@ -115,31 +147,10 @@ class TransactionDialog(QDialog):
         self._loan_preview.setWordWrap(True)
         form.addRow("", self._loan_preview)
 
-        # Show/hide loan controls
         self._loan_combo.setVisible(self._loan_chk.isChecked())
         self._loan_preview.setVisible(self._loan_chk.isChecked())
-
         if self._loan_chk.isChecked():
             self._update_loan_preview()
-
-        # ─────────────────────────────────────────────────────────────────────
-
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setObjectName("Muted")
-        form.addRow(sep2)
-
-        # Class
-        self.class_combo = QComboBox()
-        self.class_combo.addItem("— No Class —", "")
-        for cls in self.db.get_classes():
-            self.class_combo.addItem(cls["name"], cls["id"])
-        cur_cls = self.transaction.get("class_id","")
-        for i in range(self.class_combo.count()):
-            if self.class_combo.itemData(i) == cur_cls:
-                self.class_combo.setCurrentIndex(i)
-                break
-        form.addRow("Class", self.class_combo)
 
         # Notes
         self.notes_edit = QTextEdit(self.transaction.get("notes",""))
@@ -153,57 +164,105 @@ class TransactionDialog(QDialog):
                                 QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self._accept)
         btns.rejected.connect(self.reject)
-
-        # Split: only for an already-saved transaction that isn't a transfer or
-        # loan payment (those track their own breakdown).
-        can_split = (bool(self.transaction.get("id"))
-                     and str(self.transaction.get("is_transfer", "0")) != "1"
-                     and not self.transaction.get("loan_id"))
-        if can_split:
-            split_btn = QPushButton(
-                "Edit Split…" if self.transaction.get("split_group_id")
-                else "Split into categories…")
-            split_btn.setObjectName("Secondary")
-            split_btn.clicked.connect(self._open_split)
-            btns.addButton(split_btn, QDialogButtonBox.ButtonRole.ActionRole)
-
         lay.addWidget(btns)
 
-    # ── split ───────────────────────────────────────────────────────────────────
+        # Pre-fill an existing transfer so it can be reviewed / kept in sync.
+        if self.transaction.get("id") and str(self.transaction.get("is_transfer","0")) == "1":
+            partner = self.db.get_transfer_partner(self.transaction)
+            if partner:
+                self._transfer_chk.setChecked(True)
+                for i in range(self._transfer_acct_combo.count()):
+                    if self._transfer_acct_combo.itemData(i) == partner.get("account_id"):
+                        self._transfer_acct_combo.setCurrentIndex(i)
+                        break
 
-    def _open_split(self):
+        self._update_loan_lock()
+
+    # ── combo builders ──────────────────────────────────────────────────────────
+
+    def _build_category_combo(self) -> FilterComboBox:
+        """Filterable category combo: roots as 'Name', subs as 'Parent → Child'."""
+        combo = FilterComboBox(placeholder="Type to search categories…")
+        cats = self.db.get_categories()
+        self._cats = cats
+        roots = [c for c in cats if not c.get("parent_id")]
+        for cat in roots:
+            combo.add_option(cat["name"], cat["id"])
+            for sub in cats:
+                if sub.get("parent_id") == cat["id"]:
+                    combo.add_option(f"{cat['name']} → {sub['name']}", sub["id"])
+        return combo
+
+    # ── mode handling ────────────────────────────────────────────────────────────
+    # Transfer + Split + Category can all be used together. Only a loan payment
+    # is exclusive (its principal/interest split conflicts with the others).
+
+    def _force_off(self, *checkboxes):
+        for c in checkboxes:
+            c.blockSignals(True)
+            c.setChecked(False)
+            c.blockSignals(False)
+
+    def _update_loan_lock(self):
+        busy = self._transfer_chk.isChecked() or self._split_chk.isChecked()
+        self._loan_chk.setEnabled(not busy)
+        loan_on = self._loan_chk.isChecked()
+        self._transfer_chk.setEnabled(not loan_on)
+        self._split_chk.setEnabled(not loan_on)
+
+    def _on_transfer_toggled(self, on: bool):
+        self._transfer_box.setVisible(on)
+        if on and self._loan_chk.isChecked():
+            self._force_off(self._loan_chk)
+            self._loan_combo.setVisible(False)
+            self._loan_preview.setVisible(False)
+        self._update_loan_lock()
+
+    def _on_split_toggled(self, on: bool):
+        self._split_box.setVisible(on)
+        if on and self._loan_chk.isChecked():
+            self._force_off(self._loan_chk)
+            self._loan_combo.setVisible(False)
+            self._loan_preview.setVisible(False)
+        self._update_loan_lock()
+
+    def _define_split(self):
         total = self.amount_spin.value()
         if abs(total) < 0.005:
             QMessageBox.warning(self, "Amount Needed",
-                                "Enter the transaction amount before splitting.")
+                                "Enter the transaction amount first, then set the split.")
             return
-        # Carry any edits made in this dialog into the split's shared fields.
         base = dict(self.transaction)
-        base.update({
-            "date":       self.date_edit.date().toString("yyyy-MM-dd"),
-            "account_id": self.account_combo.currentData(),
-            "payee":      self.payee_edit.text().strip(),
-            "memo":       self.memo_edit.text().strip(),
-            "amount":     str(total),
-            "class_id":   self.class_combo.currentData() or "",
-            "notes":      self.notes_edit.toPlainText().strip(),
-        })
-
+        base["amount"] = str(total)
         from ui.dialogs.split_dialog import SplitDialog
         dlg = SplitDialog(self.db, base, total_amount=total, parent=self)
         if dlg.exec() == SplitDialog.DialogCode.Accepted:
-            self.db.split_transaction(base, dlg.get_splits())
-            self.did_split = True
-            self.accept()
+            self._pending_splits = dlg.get_splits()
+            self._update_split_summary()
+
+    def _update_split_summary(self):
+        if not self._pending_splits:
+            self._split_summary.setText("No split defined yet.")
+            return
+        cats = {c["id"]: c for c in self.db.get_categories()}
+        parts = []
+        for s in self._pending_splits:
+            nm = cats.get(s.get("category_id",""), {}).get("name", "Uncategorized")
+            parts.append(f"{nm}: ${abs(float(s.get('amount') or 0)):,.2f}")
+        self._split_summary.setText("  ·  ".join(parts))
 
     # ── loan helpers ──────────────────────────────────────────────────────────
 
     def _on_loan_toggled(self, checked: bool):
+        if checked:
+            self._force_off(self._transfer_chk, self._split_chk)
+            self._transfer_box.setVisible(False)
+            self._split_box.setVisible(False)
         self._loan_combo.setVisible(checked)
         self._loan_preview.setVisible(checked)
+        self._update_loan_lock()
         if checked:
             self._update_loan_preview()
-            # Auto-fill interest category from loan
             self._apply_loan_category()
         else:
             self._loan_preview.setText("")
@@ -254,12 +313,8 @@ class TransactionDialog(QDialog):
         if not loan:
             return
         cat_id = loan.get("interest_category_id", "")
-        if not cat_id:
-            return
-        for i in range(self.cat_combo.count()):
-            if self.cat_combo.itemData(i) == cat_id:
-                self.cat_combo.setCurrentIndex(i)
-                break
+        if cat_id:
+            self.cat_combo.select_by_data(cat_id)
 
     # ── accept ────────────────────────────────────────────────────────────────
 
@@ -267,8 +322,46 @@ class TransactionDialog(QDialog):
         if not self.account_combo.currentData():
             self.account_combo.setFocus()
             return
+
+        split_on    = self._split_chk.isChecked()
+        transfer_on = self._transfer_chk.isChecked()
+        dest = self._transfer_acct_combo.currentData() if transfer_on else ""
+
+        if split_on and (not self._pending_splits or len(self._pending_splits) < 2):
+            QMessageBox.warning(self, "Define the Split",
+                "Click “Choose categories & amounts…” and set at least two "
+                "lines that add up to the total.")
+            return
+
+        if transfer_on:
+            if not dest:
+                QMessageBox.warning(self, "Choose an Account",
+                                    "Select the account the money is going into.")
+                return
+            if dest == self.account_combo.currentData():
+                QMessageBox.warning(self, "Same Account",
+                    "The destination account must be different from the source.")
+                return
+            if abs(self.amount_spin.value()) < 0.005:
+                QMessageBox.warning(self, "Amount Needed", "Enter the amount.")
+                return
+
+        # Split (optionally also a transfer)
+        if split_on:
+            self.db.split_transaction(self.get_data(), self._pending_splits,
+                                      transfer_to=dest)
+            self.handled = True
+            self.accept()
+            return
+
+        # Transfer only
+        if transfer_on:
+            self.db.save_transfer_pair(self.get_data(), dest)
+            self.handled = True
+            self.accept()
+            return
+
         if self._loan_chk.isChecked() and not self._loans:
-            from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "No Loans",
                                 "No loans exist yet. Add one on the Loans page first.")
             return
@@ -282,8 +375,7 @@ class TransactionDialog(QDialog):
             "payee":      self.payee_edit.text().strip(),
             "memo":       self.memo_edit.text().strip(),
             "amount":     str(self.amount_spin.value()),
-            "category_id": self.cat_combo.currentData() or "",
-            "class_id":   self.class_combo.currentData() or "",
+            "category_id": self.cat_combo.current_data() or "",
             "notes":      self.notes_edit.toPlainText().strip(),
         })
 
@@ -298,7 +390,6 @@ class TransactionDialog(QDialog):
                 data["loan_id"]          = loan["id"]
                 data["principal_amount"] = str(split["principal"])
                 data["interest_amount"]  = str(split["interest"])
-                # Auto-set interest category if not manually overridden
                 if not data["category_id"] and loan.get("interest_category_id"):
                     data["category_id"] = loan["interest_category_id"]
             else:

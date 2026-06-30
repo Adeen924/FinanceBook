@@ -1,9 +1,59 @@
 """Shared reusable widgets."""
 from PyQt6.QtWidgets import (QPushButton, QLabel, QFrame, QTableWidget,
                               QTableWidgetItem, QHeaderView, QHBoxLayout,
-                              QWidget, QSizePolicy, QDateEdit, QCalendarWidget)
+                              QWidget, QSizePolicy, QDateEdit, QCalendarWidget,
+                              QComboBox, QCompleter)
 from PyQt6.QtCore import Qt, QSize, QDate
 from PyQt6.QtGui import QColor, QFont
+
+
+class FilterComboBox(QComboBox):
+    """
+    Editable combo box with type-to-filter. As you type, the dropdown narrows to
+    items that *contain* what you typed (case-insensitive), so you can find a
+    category/subcategory/class without scrolling a huge list.
+
+    Populate it with add_option(text, data). current_data() resolves the typed /
+    selected text back to its stored data ("" when nothing matches), and
+    select_by_data() restores a selection.
+    """
+    def __init__(self, parent=None, placeholder: str = "Type to search…"):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.setMaxVisibleItems(15)
+        # Start blank with a placeholder rather than a pre-selected first item.
+        self.setCurrentIndex(-1)
+        self.lineEdit().setPlaceholderText(placeholder)
+        # filter against the full item list, matching anywhere in the text
+        completer = QCompleter(self.model(), self)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.setCompleter(completer)
+
+    def add_option(self, text: str, data) -> None:
+        self.addItem(text, data)
+
+    def current_data(self):
+        """Stored data for the currently shown text, or '' if it matches nothing."""
+        text = self.currentText().strip()
+        if not text:
+            return ""
+        idx = self.findText(text, Qt.MatchFlag.MatchFixedString)
+        return self.itemData(idx) if idx >= 0 else ""
+
+    def select_by_data(self, data) -> None:
+        if data in (None, ""):
+            self.setCurrentIndex(-1)
+            self.clearEditText()
+            return
+        for i in range(self.count()):
+            if self.itemData(i) == data:
+                self.setCurrentIndex(i)
+                return
+        self.setCurrentIndex(-1)
+        self.clearEditText()
 
 
 class NavButton(QPushButton):
