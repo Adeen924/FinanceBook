@@ -438,18 +438,30 @@ class Database:
         with the given split lines.
 
         Each split line is a dict: {category_id, amount, memo (optional),
-        class_id (optional)}. Shared fields (date, account, payee, reconciled,
-        notes) are inherited from base_txn. The original import_hash is preserved
-        on the first line so re-importing the source file still de-duplicates.
+        class_id (optional), transfer (optional bool)}. Shared fields (date,
+        account, payee, reconciled, notes) are inherited from base_txn. The
+        original import_hash is preserved on the first line so re-importing the
+        source file still de-duplicates.
 
-        If transfer_to is given, the split is ALSO a transfer: every split line is
-        flagged is_transfer and a single mirror for the total is created in the
-        transfer_to account, all sharing one transfer_pair_id. Returns the saved
-        source-side child transactions.
+        If transfer_to is given, the split is a transfer split: ALL lines are
+        outflows from the source account (negative), but only the lines flagged
+        "transfer" move to the destination account. Those flagged lines are
+        is_transfer=1, filed under "Account Transfers", and summed into ONE mirror
+        in transfer_to (positive — money arriving). Unflagged lines are ordinary
+        spending in the source account (e.g. loan interest) and stay out of the
+        transfer. (For backward compatibility, a line with no "transfer" key in a
+        transfer split is treated as a transfer.) Returns the saved source-side
+        child transactions.
         """
         gid = base_txn.get("split_group_id") or self._new_id()
-        is_transfer = bool(transfer_to)
-        pair_id = base_txn.get("transfer_pair_id") or (self._new_id() if is_transfer else "")
+        has_dest = bool(transfer_to)
+
+        def _is_tr(s):
+            return has_dest and bool(s.get("transfer", True))
+
+        any_transfer_line = any(_is_tr(s) for s in splits)
+        tcat = self.get_transfer_category_id() if any_transfer_line else ""
+        pair_id = base_txn.get("transfer_pair_id") or (self._new_id() if any_transfer_line else "")
         preserved_hash = base_txn.get("import_hash", "") or ""
         with self._conn() as c:
             if base_txn.get("split_group_id"):
@@ -467,20 +479,27 @@ class Database:
                 c.execute("DELETE FROM transactions WHERE transfer_pair_id=?", (old_pair,))
 
         saved = []
-        total = 0.0
+        moved_total = 0.0   # sum of the parts that move to the destination account
         for i, s in enumerate(splits):
-            amt = float(s.get("amount") or 0)
-            total += amt
+            raw = float(s.get("amount") or 0)
+            line_is_transfer = _is_tr(s)
+            # In a transfer split every line leaves the source account (negative);
+            # a plain split keeps the sign the user entered.
+            amt = -abs(raw) if has_dest else raw
+            cat = s.get("category_id", "")
+            if line_is_transfer:
+                moved_total += abs(raw)
+                cat = cat or tcat
             child = {
                 "date":          base_txn.get("date", ""),
                 "account_id":    base_txn.get("account_id", ""),
                 "payee":         base_txn.get("payee", ""),
                 "memo":          s.get("memo") or base_txn.get("memo", ""),
-                "amount":        str(amt),
-                "category_id":   s.get("category_id", ""),
+                "amount":        str(round(amt, 2)),
+                "category_id":   cat,
                 "class_id":      s.get("class_id") or base_txn.get("class_id", ""),
-                "is_transfer":   "1" if is_transfer else "0",
-                "transfer_pair_id": pair_id,
+                "is_transfer":   "1" if line_is_transfer else "0",
+                "transfer_pair_id": pair_id if line_is_transfer else "",
                 "reconciled":    base_txn.get("reconciled", "0"),
                 "notes":         base_txn.get("notes", ""),
                 "import_hash":   preserved_hash if i == 0 else "",
@@ -488,14 +507,15 @@ class Database:
             }
             saved.append(self.save_transaction(child))
 
-        if is_transfer:
+        # One mirror in the destination for the portion that actually moved.
+        if any_transfer_line and moved_total > 0.005:
             self.save_transaction({
                 "date":             base_txn.get("date", ""),
                 "account_id":       transfer_to,
                 "payee":            base_txn.get("payee", ""),
                 "memo":             base_txn.get("memo", ""),
-                "amount":           str(-round(total, 2)),
-                "category_id":      "",
+                "amount":           str(round(moved_total, 2)),   # money arriving
+                "category_id":      tcat,
                 "class_id":         base_txn.get("class_id", ""),
                 "is_transfer":      "1",
                 "transfer_pair_id": pair_id,

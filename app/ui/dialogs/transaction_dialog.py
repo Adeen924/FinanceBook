@@ -268,8 +268,11 @@ class TransactionDialog(QDialog):
             return
         base = dict(self.transaction)
         base["amount"] = str(total)
+        base["account_id"] = self.account_combo.currentData() or base.get("account_id", "")
+        dest = self._transfer_acct_combo.currentData() if self._transfer_chk.isChecked() else ""
         from ui.dialogs.split_dialog import SplitDialog
-        dlg = SplitDialog(self.db, base, total_amount=total, parent=self)
+        dlg = SplitDialog(self.db, base, total_amount=total,
+                          transfer_to_id=dest, parent=self)
         if dlg.exec() == SplitDialog.DialogCode.Accepted:
             self._pending_splits = dlg.get_splits()
             self._update_split_summary()
