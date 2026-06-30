@@ -269,6 +269,21 @@ class Database:
         prin_amt = float(data.get("principal_amount") or 0)
         int_amt  = float(data.get("interest_amount") or 0)
         split_gid = data.get("split_group_id") or ""
+        # The category type drives the sign so amounts are always recorded the
+        # right way round, without the user having to type a minus:
+        #   income   -> adds to the account (positive)
+        #   expense  -> subtracts from the account (negative)
+        # Transfers manage their own two-sided signs (money out of the source,
+        # into the destination) and debt repayments are recorded as transfers,
+        # so anything flagged is_transfer is left exactly as given. Uncategorized
+        # transactions also keep the sign as entered — there's no type to infer.
+        if not is_tr and (data.get("category_id") or ""):
+            ctype = self._category_type(data["category_id"])
+            if ctype == "income":
+                amt = abs(amt)
+            elif ctype in ("expense", "debt_repayment"):
+                amt = -abs(amt)
+        data["amount"] = amt   # keep the returned dict in sync with what's stored
         with self._conn() as c:
             if data.get("id") and self.get_transaction(data["id"]):
                 c.execute(
@@ -560,6 +575,15 @@ class Database:
         with self._conn() as c:
             return _to_dict(c.execute(
                 "SELECT * FROM categories WHERE id=?", (cat_id,)).fetchone())
+
+    def _category_type(self, cat_id: str) -> str:
+        """Return a category's type ('expense'/'income'/'debt_repayment'), or ''."""
+        if not cat_id:
+            return ""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT type FROM categories WHERE id=?", (cat_id,)).fetchone()
+        return (row["type"] if row else "") or ""
 
     def save_category(self, data: dict) -> dict:
         with self._conn() as c:
