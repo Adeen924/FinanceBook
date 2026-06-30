@@ -328,16 +328,21 @@ class TransactionsPage(QWidget):
                 clicked = box.clickedButton()
                 if clicked == whole_btn:
                     self.db.delete_split_group(gid)
+                    # If the split was also a transfer, remove the mirror too.
+                    self.db.delete_transfer_pair(txn.get("transfer_pair_id", ""))
                     self._apply_filter()
                 elif clicked == line_btn:
                     self.db.delete_transaction(txn["id"])
                     self._apply_filter()
                 return
 
+        is_transfer = str(txn.get("is_transfer", "0")) == "1" and txn.get("transfer_pair_id")
+        extra = ("\n\nThis is a transfer — the matching entry in the other "
+                 "account will be deleted too.") if is_transfer else ""
         reply = QMessageBox.question(self, "Delete Transaction",
             f"Delete transaction on {txn.get('date','')} for "
-            f"${abs(float(txn.get('amount',0))):,.2f}?",
+            f"${abs(float(txn.get('amount',0))):,.2f}?{extra}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
-            self.db.delete_transaction(txn["id"])
+            self.db.delete_transaction_full(txn)
             self._apply_filter()

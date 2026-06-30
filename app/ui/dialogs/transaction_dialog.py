@@ -24,6 +24,7 @@ class TransactionDialog(QDialog):
     def _build(self, account_id):
         lay  = QVBoxLayout(self)
         form = QFormLayout()
+        self._form = form
         form.setSpacing(10)
 
         # Date
@@ -67,9 +68,9 @@ class TransactionDialog(QDialog):
         self.amount_spin.valueChanged.connect(self._update_loan_preview)
         form.addRow("Amount *", self.amount_spin)
 
-        note = QLabel("Negative = expense/payment out,  Positive = income/deposit in")
-        note.setObjectName("Muted")
-        form.addRow("", note)
+        self._amount_note = QLabel("Negative = expense/payment out,  Positive = income/deposit in")
+        self._amount_note.setObjectName("Muted")
+        form.addRow("", self._amount_note)
 
         # Category — type-to-filter, starts blank with a placeholder
         self.cat_combo = self._build_category_combo()
@@ -164,17 +165,38 @@ class TransactionDialog(QDialog):
                                 QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self._accept)
         btns.rejected.connect(self.reject)
+        # Delete button — only when editing an existing transaction.
+        if self.transaction.get("id"):
+            self.deleted = False
+            del_btn = btns.addButton("Delete", QDialogButtonBox.ButtonRole.DestructiveRole)
+            del_btn.setObjectName("Danger")
+            del_btn.clicked.connect(self._delete_self)
         lay.addWidget(btns)
 
         # Pre-fill an existing transfer so it can be reviewed / kept in sync.
+        # Always present the outflow (negative) side as the source "Account" and
+        # the inflow (positive) side as "Goes to account", no matter which row the
+        # user opened, so re-saving never flips the transfer's direction.
         if self.transaction.get("id") and str(self.transaction.get("is_transfer","0")) == "1":
             partner = self.db.get_transfer_partner(self.transaction)
             if partner:
                 self._transfer_chk.setChecked(True)
+                this_amt = float(self.transaction.get("amount") or 0)
+                if this_amt <= 0:
+                    from_acct = self.transaction.get("account_id")
+                    to_acct   = partner.get("account_id")
+                else:
+                    from_acct = partner.get("account_id")
+                    to_acct   = self.transaction.get("account_id")
+                for i in range(self.account_combo.count()):
+                    if self.account_combo.itemData(i) == from_acct:
+                        self.account_combo.setCurrentIndex(i)
+                        break
                 for i in range(self._transfer_acct_combo.count()):
-                    if self._transfer_acct_combo.itemData(i) == partner.get("account_id"):
+                    if self._transfer_acct_combo.itemData(i) == to_acct:
                         self._transfer_acct_combo.setCurrentIndex(i)
                         break
+                self.amount_spin.setValue(abs(this_amt))
 
         self._update_loan_lock()
 
@@ -210,8 +232,20 @@ class TransactionDialog(QDialog):
         self._transfer_chk.setEnabled(not loan_on)
         self._split_chk.setEnabled(not loan_on)
 
+    def _set_row_visible(self, field_widget, visible: bool):
+        """Hide/show a form row, including its label."""
+        lbl = self._form.labelForField(field_widget)
+        if lbl is not None:
+            lbl.setVisible(visible)
+        field_widget.setVisible(visible)
+
     def _on_transfer_toggled(self, on: bool):
         self._transfer_box.setVisible(on)
+        # Transfers need no payee or category — they're filed automatically under
+        # "Account Transfers" and excluded from P&L. Hide those rows for clarity.
+        self._set_row_visible(self.payee_edit, not on)
+        self._set_row_visible(self.cat_combo, not on)
+        self._amount_note.setVisible(not on)
         if on and self._loan_chk.isChecked():
             self._force_off(self._loan_chk)
             self._loan_combo.setVisible(False)
@@ -258,6 +292,11 @@ class TransactionDialog(QDialog):
             self._force_off(self._transfer_chk, self._split_chk)
             self._transfer_box.setVisible(False)
             self._split_box.setVisible(False)
+            # Transfer was just force-disabled (signals blocked), so restore the
+            # Payee/Category rows it had hidden.
+            self._set_row_visible(self.payee_edit, True)
+            self._set_row_visible(self.cat_combo, True)
+            self._amount_note.setVisible(True)
         self._loan_combo.setVisible(checked)
         self._loan_preview.setVisible(checked)
         self._update_loan_lock()
@@ -315,6 +354,35 @@ class TransactionDialog(QDialog):
         cat_id = loan.get("interest_category_id", "")
         if cat_id:
             self.cat_combo.select_by_data(cat_id)
+
+    # ── delete ──────────────────────────────────────────────────────────────
+
+    def _delete_self(self):
+        """Delete this transaction. For a transfer, both sides are removed; for a
+        split, the whole group is removed."""
+        is_transfer = str(self.transaction.get("is_transfer", "0")) == "1" \
+            and self.transaction.get("transfer_pair_id")
+        members = self.db.get_split_group(self.transaction.get("split_group_id", ""))
+        if is_transfer:
+            extra = "\n\nThis is a transfer — the matching entry in the other " \
+                    "account will be deleted too."
+        elif len(members) > 1:
+            extra = f"\n\nThis is a split with {len(members)} lines — all of " \
+                    "them will be deleted."
+        else:
+            extra = ""
+        reply = QMessageBox.question(
+            self, "Delete Transaction",
+            f"Delete this transaction on {self.transaction.get('date','')} for "
+            f"${abs(float(self.transaction.get('amount',0) or 0)):,.2f}?{extra}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.db.delete_transaction_full(self.transaction)
+        self.deleted = True
+        # Mark handled so the caller doesn't try to re-save the deleted row.
+        self.handled = True
+        self.accept()
 
     # ── accept ────────────────────────────────────────────────────────────────
 

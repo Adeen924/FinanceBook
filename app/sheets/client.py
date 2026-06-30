@@ -313,6 +313,23 @@ class Database:
         with self._conn() as c:
             c.execute("DELETE FROM transactions WHERE id=?", (txn_id,))
 
+    def delete_transaction_full(self, txn: dict):
+        """
+        Delete a transaction together with everything tied to it: the matching
+        side of a transfer (same transfer_pair_id) and every line of a split
+        (same split_group_id). Use this for the "Delete" action so a transfer
+        never leaves an orphaned half behind.
+        """
+        pair = txn.get("transfer_pair_id") or ""
+        gid  = txn.get("split_group_id") or ""
+        with self._conn() as c:
+            if pair:
+                c.execute("DELETE FROM transactions WHERE transfer_pair_id=?", (pair,))
+            if gid:
+                c.execute("DELETE FROM transactions WHERE split_group_id=?", (gid,))
+            if txn.get("id"):
+                c.execute("DELETE FROM transactions WHERE id=?", (txn["id"],))
+
     def link_transfer(self, id_a: str, id_b: str):
         pair_id = self._new_id()
         with self._conn() as c:
@@ -340,34 +357,50 @@ class Database:
                 "SELECT * FROM transactions WHERE transfer_pair_id=? AND id!=? LIMIT 1",
                 (pid, txn.get("id", ""))).fetchone())
 
+    def get_transfer_category_id(self) -> str:
+        """
+        Return the id of the built-in "Account Transfers" category, creating it
+        the first time it is needed. Both sides of every transfer are filed under
+        this category so transfers never show up as uncategorized. Transfers are
+        excluded from P&L regardless, so this is just a clean, consistent label.
+        """
+        for c in self.get_categories():
+            if c.get("name") == "Account Transfers" and not c.get("parent_id"):
+                return c["id"]
+        return self.save_category({"name": "Account Transfers", "type": "expense"})["id"]
+
     def save_transfer_pair(self, source: dict, dest_account_id: str) -> dict:
         """
         Record a transfer from one entry: save `source` and auto-create (or update)
-        the mirror transaction in dest_account_id with the opposite amount, both
-        flagged is_transfer and sharing a transfer_pair_id. The user only enters
-        one side; the matching side is kept in sync here.
+        the mirror transaction in dest_account_id, both flagged is_transfer and
+        sharing a transfer_pair_id. The user only enters one side; the matching
+        side is kept in sync here.
 
-        Both sides have is_transfer=1, so they are excluded from P&L and the
-        dashboard (which already filter transfers out).
+        Direction is fixed regardless of the sign the user typed: money LEAVES the
+        source account (negative) and ARRIVES in the destination account
+        (positive). Both sides are filed under the "Account Transfers" category and
+        need no payee. Both have is_transfer=1, so they are excluded from P&L and
+        the dashboard (which already filter transfers out).
         """
         source = dict(source)
+        amt = abs(float(source.get("amount") or 0))
+        tcat = self.get_transfer_category_id()
         source["is_transfer"] = "1"
+        source["amount"] = str(-amt)          # money out of the source account
+        source["category_id"] = tcat
         pair_id = source.get("transfer_pair_id") or self._new_id()
         source["transfer_pair_id"] = pair_id
         saved = self.save_transaction(source)
 
         mirror = self.get_transfer_partner(saved)
-        mirror_amt = -float(saved.get("amount") or 0)
         self.save_transaction({
             "id":               mirror["id"] if mirror else "",
             "date":             saved.get("date", ""),
             "account_id":       dest_account_id,
             "payee":            saved.get("payee", ""),
             "memo":             saved.get("memo", ""),
-            "amount":           str(mirror_amt),
-            # keep any category the mirror already had; transfers are excluded
-            # from P&L regardless, so this is just preserved metadata.
-            "category_id":      mirror.get("category_id", "") if mirror else "",
+            "amount":           str(amt),       # money into the destination account
+            "category_id":      tcat,
             "class_id":         saved.get("class_id", ""),
             "is_transfer":      "1",
             "transfer_pair_id": pair_id,
@@ -376,6 +409,13 @@ class Database:
             "split_group_id":   "",
         })
         return saved
+
+    def delete_transfer_pair(self, pair_id: str):
+        """Delete both sides of a transfer (every row sharing the pair id)."""
+        if not pair_id:
+            return
+        with self._conn() as c:
+            c.execute("DELETE FROM transactions WHERE transfer_pair_id=?", (pair_id,))
 
     # ── splits ────────────────────────────────────────────────────────────────
     # A "split" lets one real-world payment (e.g. a Costco run) be divided across
