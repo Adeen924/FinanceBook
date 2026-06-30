@@ -1,6 +1,6 @@
 """
-Parse QFX (Quicken) and QBO (QuickBooks Online) OFX-format files.
-Both formats are OFX/SGML — ofxparse handles them identically.
+Parse OFX, QFX (Quicken) and QBO (QuickBooks Online) files.
+All three are the same OFX/SGML format — ofxparse handles them identically.
 """
 import hashlib
 from datetime import datetime

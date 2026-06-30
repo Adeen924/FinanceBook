@@ -1,4 +1,4 @@
-"""Import transactions from QFX / QBO / CSV / XLSX."""
+"""Import transactions from OFX / QFX / QBO / CSV / XLSX."""
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QComboBox, QLabel, QFileDialog, QMessageBox,
                               QGroupBox, QFormLayout, QLineEdit,
@@ -108,7 +108,7 @@ class ImportPage(QWidget):
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Select bank export file", "",
-            "Bank Files (*.qfx *.qbo *.csv *.xlsx *.xls);;All Files (*)")
+            "Bank Files (*.ofx *.qfx *.qbo *.csv *.xlsx *.xls);;All Files (*)")
         if not path:
             return
         with open(path, "rb") as f:
@@ -132,7 +132,7 @@ class ImportPage(QWidget):
         ext      = self._filename.rsplit(".", 1)[-1].lower()
         warnings = []
         try:
-            if ext in ("qfx", "qbo"):
+            if ext in ("ofx", "qfx", "qbo"):
                 from parsers.qfx import parse_ofx
                 from io import BytesIO
                 parsed = parse_ofx(BytesIO(self._file_bytes), acct_id)
