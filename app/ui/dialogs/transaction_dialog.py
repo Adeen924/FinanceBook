@@ -26,6 +26,9 @@ class TransactionDialog(QDialog):
         form = QFormLayout()
         self._form = form
         form.setSpacing(10)
+        # Loaded once up front so _category_sign() works before the category
+        # combo is built (the amount field needs it to decide its display sign).
+        self._cats = self.db.get_categories()
 
         # Date
         self.date_edit = QDateEdit()
@@ -64,12 +67,20 @@ class TransactionDialog(QDialog):
         self.amount_spin.setDecimals(2)
         self.amount_spin.setPrefix("$")
         self.amount_spin.setSingleStep(1.0)
-        self.amount_spin.setValue(float(self.transaction.get("amount") or 0))
+        # Stored amounts are signed (expense negative); the field shows them in
+        # entry terms (positive for an expense), so flip the sign for display.
+        # Done before connecting valueChanged so it triggers no side effects.
+        self.amount_spin.setValue(
+            float(self.transaction.get("amount") or 0)
+            * self._category_sign(self.transaction.get("category_id", "")))
         self.amount_spin.valueChanged.connect(self._update_loan_preview)
         form.addRow("Amount *", self.amount_spin)
 
-        self._amount_note = QLabel("Negative = expense/payment out,  Positive = income/deposit in")
+        self._amount_note = QLabel(
+            "Enter a positive amount — the category decides the direction "
+            "(Expense subtracts, Income adds). Use a negative for a refund/return.")
         self._amount_note.setObjectName("Muted")
+        self._amount_note.setWordWrap(True)
         form.addRow("", self._amount_note)
 
         # Category — type-to-filter, starts blank with a placeholder
@@ -202,11 +213,19 @@ class TransactionDialog(QDialog):
 
     # ── combo builders ──────────────────────────────────────────────────────────
 
+    def _category_sign(self, cat_id: str) -> int:
+        """-1 for expense / debt-repayment categories (entered positive but stored
+        negative = money out), +1 otherwise. A negative entry therefore becomes a
+        refund (stored positive)."""
+        cat = next((c for c in getattr(self, "_cats", []) if c.get("id") == cat_id), None)
+        if cat and cat.get("type") in ("expense", "debt_repayment"):
+            return -1
+        return 1
+
     def _build_category_combo(self) -> FilterComboBox:
         """Filterable category combo: roots as 'Name', subs as 'Parent → Child'."""
         combo = FilterComboBox(placeholder="Type to search categories…")
-        cats = self.db.get_categories()
-        self._cats = cats
+        cats = self._cats
         roots = [c for c in cats if not c.get("parent_id")]
         for cat in roots:
             combo.add_option(cat["name"], cat["id"])
@@ -261,8 +280,11 @@ class TransactionDialog(QDialog):
         self._update_loan_lock()
 
     def _define_split(self):
-        total = self.amount_spin.value()
-        if abs(total) < 0.005:
+        # Split lines are entered as positive magnitudes; their per-line category
+        # decides each line's sign (see db.split_transaction), so hand the dialog
+        # the magnitude of the total to allocate.
+        total = abs(self.amount_spin.value())
+        if total < 0.005:
             QMessageBox.warning(self, "Amount Needed",
                                 "Enter the transaction amount first, then set the split.")
             return
@@ -318,7 +340,9 @@ class TransactionDialog(QDialog):
         return self._loans[idx]
 
     def _update_loan_preview(self):
-        if not self._loan_chk.isChecked():
+        # Guard: this can fire from amount/date changes during _build, before the
+        # loan widgets exist.
+        if not getattr(self, "_loan_chk", None) or not self._loan_chk.isChecked():
             return
         loan = self._current_loan()
         if not loan:
@@ -440,13 +464,21 @@ class TransactionDialog(QDialog):
 
     def get_data(self) -> dict:
         data = dict(self.transaction)
+        cat_id  = self.cat_combo.current_data() or ""
+        entered = self.amount_spin.value()
+        # The amount is typed as a positive number; the category decides whether
+        # it's stored as money out (expense → negative) or in (income → positive),
+        # and a negative entry flips that (a refund). Transfers manage their own
+        # signs (save_transfer_pair takes the magnitude), so leave them as typed.
+        amount = entered if self._transfer_chk.isChecked() \
+            else entered * self._category_sign(cat_id)
         data.update({
             "date":       self.date_edit.date().toString("yyyy-MM-dd"),
             "account_id": self.account_combo.currentData(),
             "payee":      self.payee_edit.text().strip(),
             "memo":       self.memo_edit.text().strip(),
-            "amount":     str(self.amount_spin.value()),
-            "category_id": self.cat_combo.current_data() or "",
+            "amount":     str(amount),
+            "category_id": cat_id,
             "notes":      self.notes_edit.toPlainText().strip(),
         })
 

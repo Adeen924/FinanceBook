@@ -269,21 +269,6 @@ class Database:
         prin_amt = float(data.get("principal_amount") or 0)
         int_amt  = float(data.get("interest_amount") or 0)
         split_gid = data.get("split_group_id") or ""
-        # The category type drives the sign so amounts are always recorded the
-        # right way round, without the user having to type a minus:
-        #   income   -> adds to the account (positive)
-        #   expense  -> subtracts from the account (negative)
-        # Transfers manage their own two-sided signs (money out of the source,
-        # into the destination) and debt repayments are recorded as transfers,
-        # so anything flagged is_transfer is left exactly as given. Uncategorized
-        # transactions also keep the sign as entered — there's no type to infer.
-        if not is_tr and (data.get("category_id") or ""):
-            ctype = self._category_type(data["category_id"])
-            if ctype == "income":
-                amt = abs(amt)
-            elif ctype in ("expense", "debt_repayment"):
-                amt = -abs(amt)
-        data["amount"] = amt   # keep the returned dict in sync with what's stored
         with self._conn() as c:
             if data.get("id") and self.get_transaction(data["id"]):
                 c.execute(
@@ -498,13 +483,24 @@ class Database:
         for i, s in enumerate(splits):
             raw = float(s.get("amount") or 0)
             line_is_transfer = _is_tr(s)
-            # In a transfer split every line leaves the source account (negative);
-            # a plain split keeps the sign the user entered.
-            amt = -abs(raw) if has_dest else raw
             cat = s.get("category_id", "")
-            if line_is_transfer:
-                moved_total += abs(raw)
-                cat = cat or tcat
+            if has_dest:
+                # In a transfer split every line leaves the source account.
+                amt = -abs(raw)
+                if line_is_transfer:
+                    moved_total += abs(raw)
+                    cat = cat or tcat
+            else:
+                # Plain split: the category type sets the sign, just like a normal
+                # transaction (expense subtracts, income adds, uncategorized keeps
+                # whatever sign was entered so refunds still work).
+                ctype = self._category_type(cat)
+                if ctype == "income":
+                    amt = abs(raw)
+                elif ctype in ("expense", "debt_repayment"):
+                    amt = -abs(raw)
+                else:
+                    amt = raw
             child = {
                 "date":          base_txn.get("date", ""),
                 "account_id":    base_txn.get("account_id", ""),
