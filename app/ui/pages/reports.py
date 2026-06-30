@@ -130,6 +130,7 @@ class ReportsPage(QWidget):
         cats = {c["id"]: c for c in self.db.get_categories()}
         income_groups: dict[str, dict] = {}
         expense_groups: dict[str, dict] = {}
+        debt_groups: dict[str, dict] = {}
 
         for t in txns:
             amt = float(t.get("amount") or 0)
@@ -139,7 +140,12 @@ class ReportsPage(QWidget):
             group    = parent.get("name") or cat.get("name","Uncategorized")
             sub      = cat.get("name","") if cat.get("parent_id") else ""
 
-            bucket = income_groups if (cat_type == "income" or (not cat.get("id") and amt > 0)) else expense_groups
+            if cat_type == "income" or (not cat.get("id") and amt > 0):
+                bucket = income_groups
+            elif cat_type == "debt_repayment":
+                bucket = debt_groups
+            else:
+                bucket = expense_groups
             if group not in bucket:
                 bucket[group] = {"total": 0.0, "subs": {}}
             bucket[group]["total"] += amt
@@ -148,6 +154,9 @@ class ReportsPage(QWidget):
 
         total_income   = sum(g["total"] for g in income_groups.values())
         total_expenses = sum(g["total"] for g in expense_groups.values())
+        total_debt     = sum(g["total"] for g in debt_groups.values())
+        # Debt repayment is principal moving between balances, not a P&L expense,
+        # so it is deliberately excluded from Net Income.
         net = total_income + total_expenses
 
         self._pnl_tree.clear()
@@ -191,12 +200,22 @@ class ReportsPage(QWidget):
         net_item.setFont(0, f); net_item.setFont(1, f)
         self._pnl_tree.addTopLevelItem(net_item)
 
+        # Debt repayment shown separately below Net Income (does not affect it).
+        if debt_groups:
+            debt_root = _add_group("Debt Repayment", debt_groups, -1)
+            self._pnl_tree.addTopLevelItem(debt_root)
+            debt_root.setExpanded(True)
+
         color = SUCCESS if net >= 0 else DANGER
+        debt_html = (f" &nbsp;&nbsp; <b>Debt Repayment:</b> "
+                     f"<span style='color:{DANGER}'>${abs(total_debt):,.2f}</span>"
+                     if debt_groups else "")
         self._pnl_summary.setText(
             f"<b>Period:</b> {start} to {end} &nbsp;&nbsp; "
             f"<b>Income:</b> <span style='color:{SUCCESS}'>${total_income:,.2f}</span> &nbsp;&nbsp; "
             f"<b>Expenses:</b> <span style='color:{DANGER}'>${abs(total_expenses):,.2f}</span> &nbsp;&nbsp; "
             f"<b>Net:</b> <span style='color:{color}'>${net:,.2f}</span>"
+            f"{debt_html}"
         )
         self._pnl_summary.setTextFormat(Qt.TextFormat.RichText)
 

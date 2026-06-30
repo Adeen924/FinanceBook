@@ -7,6 +7,21 @@ from PyQt6.QtGui import QColor, QBrush
 from ui.widgets import PageTitle, SecondaryButton, DangerButton, MutedLabel
 
 
+# The category types a user can choose, as (display label, stored value).
+# "debt_repayment" is reported in its own P&L section, excluded from Net Income.
+CATEGORY_TYPES = [
+    ("Expense", "expense"),
+    ("Income", "income"),
+    ("Debt Repayment", "debt_repayment"),
+]
+_TYPE_LABELS = {val: label for label, val in CATEGORY_TYPES}
+
+
+def type_label(t: str) -> str:
+    """Human-readable label for a stored category type value."""
+    return _TYPE_LABELS.get(t or "", (t or "").replace("_", " ").title())
+
+
 class CategoryDialog(QDialog):
     """Create/edit a Category (top-level) or a Sub-category (child of a Category)."""
     def __init__(self, db, parent_id="", parent=None, edit_cat=None,
@@ -53,9 +68,12 @@ class CategoryDialog(QDialog):
                         self.parent_combo)
 
         self.type_combo = QComboBox()
-        self.type_combo.addItems(["expense", "income"])
-        if (edit_cat or {}).get("type") == "income":
-            self.type_combo.setCurrentIndex(1)
+        for label, val in CATEGORY_TYPES:
+            self.type_combo.addItem(label, val)
+        cur_type = (edit_cat or {}).get("type", "expense")
+        ix = self.type_combo.findData(cur_type)
+        if ix >= 0:
+            self.type_combo.setCurrentIndex(ix)
         form.addRow("Type", self.type_combo)
 
         # A sub-category shares its parent's income/expense nature.
@@ -75,7 +93,9 @@ class CategoryDialog(QDialog):
         pid = self.parent_combo.currentData()
         parent = next((c for c in self.db.get_categories() if c["id"] == pid), None)
         if parent:
-            self.type_combo.setCurrentText(parent.get("type", "expense"))
+            ix = self.type_combo.findData(parent.get("type", "expense"))
+            if ix >= 0:
+                self.type_combo.setCurrentIndex(ix)
 
     def _ok(self):
         if not self.name_edit.text().strip():
@@ -90,7 +110,7 @@ class CategoryDialog(QDialog):
         data.update({
             "name": self.name_edit.text().strip(),
             "parent_id": pid or "",
-            "type": self.type_combo.currentText(),
+            "type": self.type_combo.currentData() or "expense",
         })
         return data
 
@@ -213,10 +233,10 @@ class CategoriesPage(QWidget):
 
         for cat in [c for c in cats if not c.get("parent_id")]:
             cat_item = self._make_item(cat["name"], "Category",
-                                       cat.get("type", "").title(), "category", cat)
+                                       type_label(cat.get("type", "")), "category", cat)
             for sub in [s for s in cats if s.get("parent_id") == cat["id"]]:
                 sub_item = self._make_item(sub["name"], "Sub-category",
-                                           sub.get("type", "").title(), "category", sub)
+                                           type_label(sub.get("type", "")), "category", sub)
                 for cl in classes_by_parent.get(sub["id"], []):
                     sub_item.addChild(self._make_item(
                         cl["name"], "Class", "—", "class", cl))
