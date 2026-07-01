@@ -1,11 +1,10 @@
 """Main application window — sidebar navigation + stacked content pages."""
 import os
 import re
-import glob
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                               QLabel, QStackedWidget, QMessageBox, QPushButton,
-                              QSizePolicy, QComboBox, QInputDialog)
+                              QSizePolicy, QComboBox, QDialog)
 from PyQt6.QtCore import Qt, QTimer
 
 from ui.widgets import NavButton
@@ -61,6 +60,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.db       = db
         self._base_dir = os.path.dirname(os.path.abspath(db.db_path))
+        from db_config import register_database
+        register_database(os.path.abspath(db.db_path))
         self.setWindowTitle("FinanceBook")
         self.setMinimumSize(1100, 700)
         self.resize(1280, 800)
@@ -135,12 +136,17 @@ class MainWindow(QMainWindow):
         self._db_combo.blockSignals(True)
         self._db_combo.clear()
         current_abs = os.path.abspath(self.db.db_path)
+
+        from db_config import get_known_databases
+        db_files = {os.path.abspath(p) for p in get_known_databases()}
+        db_files.add(current_abs)
+        sorted_files = sorted(db_files, key=lambda p: _read_db_name(p).lower())
+
         current_idx = 0
-        db_files = sorted(glob.glob(os.path.join(self._base_dir, "*.db")))
-        for i, path in enumerate(db_files):
+        for i, path in enumerate(sorted_files):
             name = _read_db_name(path)
-            self._db_combo.addItem(name, os.path.abspath(path))
-            if os.path.abspath(path) == current_abs:
+            self._db_combo.addItem(name, path)
+            if path == current_abs:
                 current_idx = i
         self._db_combo.addItem("➕  New Database…", "__new__")
         self._db_combo.setCurrentIndex(current_idx)
@@ -157,20 +163,30 @@ class MainWindow(QMainWindow):
         self._switch_to(Database(path))
 
     def _create_new_database(self):
-        name, ok = QInputDialog.getText(
-            self, "New Database", "Database name:", text="My Finances")
-        if not ok or not name.strip():
+        from ui.database_dialog import DatabaseSetupDialog
+        dialog = DatabaseSetupDialog(
+            self,
+            window_title="New Database",
+            heading="Create a New Database",
+            message="Give your new database a name and choose where to save it.",
+            default_name="My Finances",
+            default_location=self._base_dir,
+            accept_label="Create")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             self._populate_db_combo()  # revert combo to current selection
             return
-        name = name.strip()
+
+        name = dialog.database_name
+        location = dialog.database_location
+        os.makedirs(location, exist_ok=True)
         slug = re.sub(r"[^\w\s]", "", name).strip()
         slug = re.sub(r"\s+", "_", slug).lower() or "database"
-        path = os.path.join(self._base_dir, f"{slug}.db")
+        path = os.path.join(location, f"{slug}.db")
         if os.path.exists(path):
             i = 2
-            while os.path.exists(os.path.join(self._base_dir, f"{slug}_{i}.db")):
+            while os.path.exists(os.path.join(location, f"{slug}_{i}.db")):
                 i += 1
-            path = os.path.join(self._base_dir, f"{slug}_{i}.db")
+            path = os.path.join(location, f"{slug}_{i}.db")
         from sheets.client import Database
         new_db = Database(path)
         new_db.set_setting("database_name", name)
@@ -178,6 +194,8 @@ class MainWindow(QMainWindow):
 
     def _switch_to(self, new_db):
         self.db = new_db
+        from db_config import register_database
+        register_database(os.path.abspath(new_db.db_path), make_active=True)
         for i in list(self._page_cache):
             w = self._page_cache.pop(i)
             self._stack.removeWidget(w)
