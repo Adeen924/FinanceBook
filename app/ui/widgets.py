@@ -2,7 +2,7 @@
 from PyQt6.QtWidgets import (QPushButton, QLabel, QFrame, QTableWidget,
                               QTableWidgetItem, QHeaderView, QHBoxLayout,
                               QWidget, QSizePolicy, QDateEdit, QCalendarWidget,
-                              QComboBox, QCompleter)
+                              QComboBox, QCompleter, QAbstractItemView, QScroller)
 from PyQt6.QtCore import Qt, QSize, QDate
 from PyQt6.QtGui import QColor, QFont
 
@@ -121,6 +121,14 @@ class DataTable(QTableWidget):
         self.horizontalHeader().setStretchLastSection(True)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.setWordWrap(False)
+
+        # Smooth, fine-grained scrolling for the mouse wheel, and finger-drag
+        # (kinetic) scrolling for touchscreens — so long lists don't force you
+        # to grab the thin scrollbar on the right.
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        QScroller.grabGesture(self.viewport(),
+                              QScroller.ScrollerGestureType.TouchGesture)
 
     def set_item(self, row: int, col: int, text: str,
                  align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,

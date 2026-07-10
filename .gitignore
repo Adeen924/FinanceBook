@@ -19,6 +19,9 @@ dist/
 *.sqlite
 *.sqlite3
 
+# Per-machine app settings (known database paths) written at runtime
+app_settings.json
+
 # ── Local editor / OS noise ─────────────────────────────
 .vscode/
 .idea/

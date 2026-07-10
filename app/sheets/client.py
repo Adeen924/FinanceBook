@@ -201,10 +201,25 @@ class Database:
 
     # ── accounts ──────────────────────────────────────────────────────────────
 
-    def get_accounts(self) -> list[dict]:
+    def get_accounts(self, active: int | None = 1) -> list[dict]:
+        """
+        Accounts ordered by name. active=1 (default) returns only active accounts
+        — the behaviour every existing caller relies on. active=0 returns the
+        inactive/hidden ones; active=None returns all.
+        """
+        q = "SELECT * FROM accounts"
+        p: list = []
+        if active is not None:
+            q += " WHERE active=?"
+            p.append(active)
+        q += " ORDER BY name"
         with self._conn() as c:
-            return _to_dicts(c.execute(
-                "SELECT * FROM accounts WHERE active=1 ORDER BY name").fetchall())
+            return _to_dicts(c.execute(q, p).fetchall())
+
+    def set_account_active(self, account_id: str, active: bool):
+        with self._conn() as c:
+            c.execute("UPDATE accounts SET active=? WHERE id=?",
+                      (1 if active else 0, account_id))
 
     def get_account(self, account_id: str) -> dict | None:
         with self._conn() as c:
