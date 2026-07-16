@@ -79,6 +79,7 @@ class MainWindow(QMainWindow):
 
         # ── Sidebar ──────────────────────────────────────────────────────────
         sidebar = QWidget()
+        self._sidebar = sidebar
         sidebar.setObjectName("Sidebar")
         sidebar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         sb_layout = QVBoxLayout(sidebar)
@@ -211,9 +212,34 @@ class MainWindow(QMainWindow):
             return self._page_cache[index]
         cls  = _page_constructors()[index]
         page = cls(self.db)
+        # Let pages request cross-page navigation (e.g. click an account name to
+        # jump to its transactions).
+        page._main_window = self
         self._stack.addWidget(page)
         self._page_cache[index] = page
         return page
+
+    def _page_index(self, name: str):
+        """Nav index for a page by its sidebar name ('Settings' included)."""
+        if name == "Settings":
+            return SETTINGS_IDX
+        return next((i for i, (n, _) in enumerate(NAV_ITEMS) if n == name), None)
+
+    def start_tour(self):
+        """Launch the interactive guided tour (coach marks over real buttons)."""
+        from ui.guided_tour import GuidedTour
+        self._tour = GuidedTour(self)
+        self._tour.start()
+
+    def open_account_transactions(self, account_id: str):
+        """Jump to the Transactions page filtered to one account (recent first)."""
+        idx = self._page_index("Transactions")
+        if idx is None:
+            return
+        self._nav_to(idx)
+        page = self._page_cache.get(idx)
+        if page and hasattr(page, "show_account"):
+            page.show_account(account_id)
 
     def _nav_to(self, index: int):
         for i, btn in enumerate(self._nav_buttons):

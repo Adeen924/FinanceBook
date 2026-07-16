@@ -22,9 +22,9 @@ class AccountsPage(QWidget):
         hdr = QHBoxLayout()
         hdr.addWidget(PageTitle("Accounts"))
         hdr.addStretch()
-        add_btn = QPushButton("+ Add Account")
-        add_btn.clicked.connect(self._add)
-        hdr.addWidget(add_btn)
+        self._add_btn = QPushButton("+ Add Account")
+        self._add_btn.clicked.connect(self._add)
+        hdr.addWidget(self._add_btn)
         lay.addLayout(hdr)
 
         self._tabs = QTabWidget()
@@ -50,6 +50,9 @@ class AccountsPage(QWidget):
         hv.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         table.setColumnWidth(5, 190)
         table.verticalHeader().setDefaultSectionSize(ROW_H)
+        table._accounts = []  # row → account, set in _fill
+        table.cellClicked.connect(
+            lambda r, c, t=table: self._on_cell_clicked(r, c, t))
         pl.addWidget(table)
 
         total = QLabel("")
@@ -71,13 +74,18 @@ class AccountsPage(QWidget):
     def _fill(self, table, total_label, accounts, inactive: bool):
         table.clear_rows()
         table.setRowCount(len(accounts))
+        table._accounts = accounts
 
         total = 0.0
         for row, acct in enumerate(accounts):
             bal = self.db.account_balance(acct["id"])
             total += bal
 
-            table.set_item(row, 0, acct.get("name", ""), bold=True)
+            # Name is a clickable link → opens this account's transactions.
+            name_item = table.set_item(row, 0, acct.get("name", ""),
+                                       bold=True, color="#2563eb")
+            f = name_item.font(); f.setUnderline(True); name_item.setFont(f)
+            name_item.setToolTip("Click to view this account's transactions")
             table.set_item(row, 1, acct.get("type", "").title())
             table.set_item(row, 2, acct.get("institution", "") or "—")
             table.set_item(row, 3, acct.get("currency", "USD"),
@@ -95,6 +103,30 @@ class AccountsPage(QWidget):
             total_label.setText(
                 f"{count} account{'s' if count != 1 else ''}  —  "
                 f"Net balance: {sign}{abs(total):,.2f}")
+
+    def first_account_name_rect(self):
+        """Global QRect of the first account's Name cell (for the guided tour).
+        None if there are no active accounts yet."""
+        from PyQt6.QtCore import QRect
+        t = self._active_table
+        if t.rowCount() == 0 or t.item(0, 0) is None:
+            return None
+        r = t.visualItemRect(t.item(0, 0))
+        if r.isNull() or r.width() == 0:
+            return None
+        return QRect(t.viewport().mapToGlobal(r.topLeft()), r.size())
+
+    def _on_cell_clicked(self, row: int, col: int, table):
+        if col != 0:
+            return  # only the Name column is a link
+        accts = getattr(table, "_accounts", [])
+        if 0 <= row < len(accts):
+            self._open_account(accts[row])
+
+    def _open_account(self, acct):
+        mw = getattr(self, "_main_window", None)
+        if mw is not None:
+            mw.open_account_transactions(acct["id"])
 
     def _action_cell(self, acct, inactive: bool) -> QWidget:
         cell = QWidget()

@@ -61,3 +61,15 @@ def register_database(path: str, make_active: bool = False):
     if make_active:
         cfg["active_db_path"] = path
     _save(cfg)
+
+
+def get_flag(name: str, default: bool = False) -> bool:
+    """Read a per-user boolean flag (stored in app_settings.json, so it survives
+    app updates). Used e.g. to show the first-run guide only once, ever."""
+    return bool(_load().get(name, default))
+
+
+def set_flag(name: str, value: bool = True):
+    cfg = _load()
+    cfg[name] = bool(value)
+    _save(cfg)

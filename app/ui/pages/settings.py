@@ -62,10 +62,10 @@ class SettingsPage(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        open_btn = QPushButton("Open Import Wizard…")
-        open_btn.setObjectName("Success")
-        open_btn.clicked.connect(self._open_import_wizard)
-        btn_row.addWidget(open_btn)
+        self._wizard_btn = QPushButton("Open Import Wizard…")
+        self._wizard_btn.setObjectName("Success")
+        self._wizard_btn.clicked.connect(self._open_import_wizard)
+        btn_row.addWidget(self._wizard_btn)
         lay.addLayout(btn_row)
         return grp
 
@@ -182,7 +182,23 @@ class SettingsPage(QWidget):
         muted.setObjectName("Muted")
         muted.setWordWrap(True)
         lay.addWidget(muted)
+
+        guide_row = QHBoxLayout()
+        guide_btn = QPushButton("Show Welcome Guide")
+        guide_btn.setObjectName("Secondary")
+        guide_btn.clicked.connect(self._show_welcome_guide)
+        guide_row.addWidget(guide_btn)
+        guide_row.addStretch()
+        lay.addLayout(guide_row)
         return grp
+
+    def _show_welcome_guide(self):
+        mw = getattr(self, "_main_window", None)
+        if mw is not None and hasattr(mw, "start_tour"):
+            mw.start_tour()
+            return
+        from ui.dialogs.onboarding_dialog import OnboardingDialog
+        OnboardingDialog(parent=self).exec()
 
     # ── Refresh ───────────────────────────────────────────────────────────────
 

@@ -2,10 +2,11 @@
 Parse CSV and XLSX bank export files.
 Attempts to auto-detect columns; falls back to manual mapping.
 """
+import csv
 import hashlib
 import re
 import pandas as pd
-from io import BytesIO
+from io import BytesIO, StringIO
 
 
 COMMON_DATE_COLS = ["date", "transaction date", "posted date", "trans date", "trans. date", "posting date"]
@@ -27,6 +28,20 @@ def _find_col(df_cols: list[str], candidates: list[str]) -> str | None:
     return None
 
 
+def _detect_header_row(raw) -> int | None:
+    """
+    Index of the row that looks like the column-header row — i.e. the first row
+    (within the first 25) that contains a recognizable Date column. Lets us skip
+    the title/company/report-name rows many bank & QuickBooks exports put on top.
+    """
+    for i in range(min(25, len(raw))):
+        cells = [_normalize(c) for c in raw.iloc[i].tolist()]
+        cells = [c for c in cells if c and c != "nan"]
+        if cells and any(c in COMMON_DATE_COLS for c in cells):
+            return i
+    return None
+
+
 def _parse_amount(val) -> float | None:
     if pd.isna(val) or str(val).strip().lower() in ("", "-", "n/a", "nan", "none"):
         return None
@@ -45,13 +60,46 @@ def parse_spreadsheet(file_bytes: bytes, filename: str, account_id: str,
     Returns (transactions, warnings).
     col_mapping can override auto-detection: {"date": "Date", "payee": "Payee", ...}
     """
-    if filename.lower().endswith(".xlsx") or filename.lower().endswith(".xls"):
-        df = pd.read_excel(BytesIO(file_bytes), dtype=str)
-    else:
-        df = pd.read_csv(BytesIO(file_bytes), dtype=str, on_bad_lines="skip")
-
-    df.columns = [str(c).strip() for c in df.columns]
     warnings = []
+
+    # Read the file as a raw grid (no header) so we can locate the real header
+    # row even when title/preamble rows sit on top (common in bank & QB exports).
+    if filename.lower().endswith((".xlsx", ".xls")):
+        raw = pd.read_excel(BytesIO(file_bytes), dtype=str, header=None)
+    else:
+        # Use the csv module: pandas' header=None keys the column count off the
+        # first line, so a short title row on top would make it drop the wider
+        # header/data rows. Reading rows ourselves and padding avoids that.
+        text = file_bytes.decode("utf-8-sig", errors="replace")
+        rows = list(csv.reader(StringIO(text)))
+        width = max((len(r) for r in rows), default=0)
+        rows = [r + [""] * (width - len(r)) for r in rows]
+        raw = pd.DataFrame(rows, dtype=str)
+
+    if raw.empty:
+        return [], ["The file appears to be empty."]
+
+    header_idx = _detect_header_row(raw)
+    if header_idx is None:
+        header_idx = 0  # fall back to treating the first row as the header
+
+    header_cells = [_normalize(c) for c in raw.iloc[header_idx].tolist()]
+
+    # QuickBooks "Transaction Detail by Account" has a 'Split' column and groups
+    # rows under account section-headers rather than a per-row account column.
+    # This single-account importer can't represent that — send the user to the
+    # wizard that's built for it instead of silently importing nothing.
+    if "split" in header_cells:
+        raise ValueError(
+            "This looks like a QuickBooks 'Transaction Detail by Account' "
+            "export (it has a 'Split' column and groups rows by account).\n\n"
+            "Import it from Settings → Open Import Wizard → Step 2 "
+            "(Transactions), which is built for that multi-account format.")
+
+    # Re-frame the table using the detected header row.
+    df = raw.iloc[header_idx + 1:].copy()
+    df.columns = [str(c).strip() for c in raw.iloc[header_idx].tolist()]
+    df = df.reset_index(drop=True)
 
     if col_mapping:
         date_col = col_mapping.get("date")
@@ -83,7 +131,7 @@ def parse_spreadsheet(file_bytes: bytes, filename: str, account_id: str,
         try:
             date_str = pd.to_datetime(date_val, dayfirst=False).strftime("%Y-%m-%d")
         except Exception:
-            warnings.append(f"Row {idx+2}: unrecognized date '{date_val}', skipped.")
+            warnings.append(f"Row {header_idx+idx+2}: unrecognized date '{date_val}', skipped.")
             continue
 
         payee = str(row.get(desc_col, "") if desc_col else "").strip()
@@ -99,7 +147,7 @@ def parse_spreadsheet(file_bytes: bytes, filename: str, account_id: str,
             amount = credit - debit if (credit or debit) else None
 
         if amount is None:
-            warnings.append(f"Row {idx+2}: no amount found, skipped.")
+            warnings.append(f"Row {header_idx+idx+2}: no amount found, skipped.")
             continue
 
         raw = f"{account_id}|{date_str}|{amount}|{payee}"

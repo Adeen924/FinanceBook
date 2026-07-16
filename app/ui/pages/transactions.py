@@ -21,9 +21,9 @@ class TransactionsPage(QWidget):
         hdr = QHBoxLayout()
         hdr.addWidget(PageTitle("Transactions"))
         hdr.addStretch()
-        add_btn = QPushButton("+ Add Transaction")
-        add_btn.clicked.connect(self._add)
-        hdr.addWidget(add_btn)
+        self._add_btn = QPushButton("+ Add Transaction")
+        self._add_btn.clicked.connect(self._add)
+        hdr.addWidget(self._add_btn)
         lay.addLayout(hdr)
 
         # ── Filter bar ──
@@ -158,6 +158,22 @@ class TransactionsPage(QWidget):
         self._date_to.setDate(QDate.currentDate())
         self._search_edit.clear()
         self._show_transfers.setChecked(True)
+        self._apply_filter()
+
+    def show_account(self, account_id: str):
+        """Filter the page to one account, newest first — used when an account
+        name is clicked on the Accounts or Dashboard page."""
+        self._cat_filter.setCurrentIndex(0)
+        self._search_edit.clear()
+        self._show_transfers.setChecked(True)
+        # Widen the date range so recent transactions show regardless of year.
+        self._date_from.setDate(QDate(2000, 1, 1))
+        self._date_to.setDate(QDate.currentDate())
+        # Select the account in the filter dropdown.
+        for i in range(self._acct_filter.count()):
+            if self._acct_filter.itemData(i) == account_id:
+                self._acct_filter.setCurrentIndex(i)
+                break
         self._apply_filter()
 
     def _render_table(self):

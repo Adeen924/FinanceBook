@@ -7,10 +7,16 @@ from ui.styles import SUCCESS, DANGER, WARNING, ACCENT
 
 
 class AccountCard(QFrame):
-    def __init__(self, name, acct_type, institution, balance, parent=None):
+    def __init__(self, name, acct_type, institution, balance,
+                 account_id="", on_click=None, parent=None):
         super().__init__(parent)
         self.setObjectName("Card")
         self.setFixedWidth(200)
+        self._account_id = account_id
+        self._on_click = on_click
+        if on_click is not None:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.setToolTip("Click to view this account's transactions")
         lay = QVBoxLayout(self)
         lay.setSpacing(4)
 
@@ -32,6 +38,11 @@ class AccountCard(QFrame):
         bal_lbl = QLabel(f"${balance:,.2f}" if balance >= 0 else f"(${abs(balance):,.2f})")
         bal_lbl.setStyleSheet(f"font-size:18px; font-weight:bold; color:{color}; margin-top:6px;")
         lay.addWidget(bal_lbl)
+
+    def mousePressEvent(self, event):
+        if self._on_click is not None and self._account_id:
+            self._on_click(self._account_id)
+        super().mousePressEvent(event)
 
 
 class DashboardPage(QWidget):
@@ -89,6 +100,11 @@ class DashboardPage(QWidget):
         self._load_recent()
         self._load_alerts()
 
+    def _open_account(self, account_id: str):
+        mw = getattr(self, "_main_window", None)
+        if mw is not None:
+            mw.open_account_transactions(account_id)
+
     def _load_cards(self):
         # Clear existing cards (keep stretch at end)
         while self._cards_layout.count() > 1:
@@ -101,7 +117,9 @@ class DashboardPage(QWidget):
         for acct in accounts:
             bal = self.db.account_balance(acct["id"])
             total += bal
-            card = AccountCard(acct["name"], acct.get("type",""), acct.get("institution",""), bal)
+            card = AccountCard(acct["name"], acct.get("type",""),
+                               acct.get("institution",""), bal,
+                               account_id=acct["id"], on_click=self._open_account)
             self._cards_layout.insertWidget(self._cards_layout.count() - 1, card)
 
         if not accounts:

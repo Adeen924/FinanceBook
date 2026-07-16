@@ -44,13 +44,6 @@ class ImportDialog(QDialog):
         tabs.addTab(self._scroll(self._build_qb_txn_tab()), "Step 2 · Transactions (Excel)")
         lay.addWidget(tabs)
 
-        row = QHBoxLayout()
-        row.addStretch()
-        done_btn = QPushButton("Done")
-        done_btn.clicked.connect(self.accept)
-        row.addWidget(done_btn)
-        lay.addLayout(row)
-
     def _scroll(self, inner: QWidget) -> QScrollArea:
         sc = QScrollArea()
         sc.setWidgetResizable(True)
@@ -112,7 +105,7 @@ class ImportDialog(QDialog):
         self._acct_preview.hide()
         lay.addWidget(self._acct_preview)
 
-        self._import_btn = QPushButton("Import Accounts & Categories into FinanceBook")
+        self._import_btn = QPushButton("Import Accounts & Categories")
         self._import_btn.setObjectName("Success")
         self._import_btn.setEnabled(False)
         self._import_btn.clicked.connect(self._do_import)
@@ -345,7 +338,7 @@ class ImportDialog(QDialog):
         self._xl_preview.hide()
         lay.addWidget(self._xl_preview)
 
-        self._xl_import_btn = QPushButton("Import Selected Accounts into FinanceBook")
+        self._xl_import_btn = QPushButton("Import Transactions")
         self._xl_import_btn.setObjectName("Success")
         self._xl_import_btn.setEnabled(False)
         self._xl_import_btn.clicked.connect(self._do_import_qb_xl)

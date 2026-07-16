@@ -123,6 +123,21 @@ def main():
     window = MainWindow(db)
     window.show()
 
+    # First-run welcome guide — shown ONCE, only for brand-new users (never on
+    # app updates). `first_run` is true only when no database was registered yet;
+    # the persistent flag is a second guard so it can never repeat.
+    from db_config import get_flag, set_flag
+    if first_run and not get_flag("onboarding_completed"):
+        try:
+            window.start_tour()   # interactive coach-mark walkthrough
+        except Exception:
+            try:                  # fall back to the simple slide guide
+                from ui.dialogs.onboarding_dialog import OnboardingDialog
+                OnboardingDialog(parent=window).exec()
+            except Exception:
+                pass  # never let the guide block the app from opening
+        set_flag("onboarding_completed", True)
+
     # Non-blocking update check — runs on a background thread.
     # Reads the latest GitHub release and compares it to app/VERSION.
     from updater import run_update_check

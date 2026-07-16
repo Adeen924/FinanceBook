@@ -29,6 +29,9 @@ app_settings.json
 Thumbs.db
 *.swp
 
+# Third-party agent tool's local data — not part of this project
+.agentos/
+
 # ── Update staging / backups created at runtime ─────────
 app_backup/
 .update/
