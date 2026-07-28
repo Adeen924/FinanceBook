@@ -2,8 +2,9 @@
 from datetime import date
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
                               QDoubleSpinBox, QSpinBox, QDialogButtonBox,
-                              QVBoxLayout, QDateEdit, QLabel, QHBoxLayout)
+                              QVBoxLayout, QLabel, QHBoxLayout)
 from PyQt6.QtCore import QDate, Qt
+from ui.widgets import DateField
 from utils.loan import calc_monthly_payment
 
 
@@ -66,9 +67,7 @@ class LoanDialog(QDialog):
         form.addRow("Term *", term_row)
 
         # First payment date
-        self.start_edit = QDateEdit()
-        self.start_edit.setCalendarPopup(True)
-        self.start_edit.setDisplayFormat("yyyy-MM-dd")
+        self.start_edit = DateField()
         start_str = self.loan.get("start_date") or date.today().isoformat()
         self.start_edit.setDate(QDate.fromString(start_str, "yyyy-MM-dd"))
         form.addRow("First Payment Date *", self.start_edit)

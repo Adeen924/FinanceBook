@@ -1,10 +1,10 @@
 """Reconciliation — account selection + reconcile session."""
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLabel, QMessageBox, QComboBox, QDoubleSpinBox,
-                              QDateEdit, QCheckBox, QScrollArea, QFrame,
+                              QCheckBox, QScrollArea, QFrame,
                               QFormLayout, QHeaderView, QGroupBox, QStackedWidget)
 from PyQt6.QtCore import Qt, QDate
-from ui.widgets import PageTitle, DataTable, SecondaryButton, SuccessButton
+from ui.widgets import PageTitle, DataTable, SecondaryButton, SuccessButton, DateField
 from ui.styles  import SUCCESS, DANGER, WARNING
 
 
@@ -75,9 +75,7 @@ class ReconcilePage(QWidget):
         stmt_lay = QFormLayout(stmt_grp)
         stmt_lay.setSpacing(8)
 
-        self._stmt_date = QDateEdit()
-        self._stmt_date.setCalendarPopup(True)
-        self._stmt_date.setDisplayFormat("yyyy-MM-dd")
+        self._stmt_date = DateField()
         self._stmt_date.setDate(QDate.currentDate())
         stmt_lay.addRow("Statement Date:", self._stmt_date)
 

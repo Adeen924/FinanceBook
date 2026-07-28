@@ -2,10 +2,10 @@
 from datetime import date
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
                               QDoubleSpinBox, QDialogButtonBox, QVBoxLayout,
-                              QDateEdit, QTextEdit, QLabel, QCheckBox, QFrame,
+                              QTextEdit, QLabel, QCheckBox, QFrame,
                               QPushButton, QMessageBox, QWidget, QHBoxLayout)
 from PyQt6.QtCore import QDate
-from ui.widgets import FilterComboBox
+from ui.widgets import FilterComboBox, DateField
 
 
 class TransactionDialog(QDialog):
@@ -31,9 +31,7 @@ class TransactionDialog(QDialog):
         self._cats = self.db.get_categories()
 
         # Date
-        self.date_edit = QDateEdit()
-        self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit = DateField()
         txn_date = self.transaction.get("date") or date.today().isoformat()
         self.date_edit.setDate(QDate.fromString(txn_date, "yyyy-MM-dd"))
         self.date_edit.dateChanged.connect(self._update_loan_preview)

@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QPushButton, QLabel, QFrame, QTableWidget,
                               QTableWidgetItem, QHeaderView, QHBoxLayout,
                               QWidget, QSizePolicy, QDateEdit, QCalendarWidget,
                               QComboBox, QCompleter, QAbstractItemView, QScroller)
-from PyQt6.QtCore import Qt, QSize, QDate
+from PyQt6.QtCore import Qt, QSize, QDate, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 
 
@@ -165,8 +165,11 @@ class DateField(QWidget):
     button to open a day / month / year picker; the chosen day fills the field.
     You can also still type or arrow through the date directly in the box.
 
-    Exposes date() / setDate() so it drops in wherever a QDateEdit was used.
+    Exposes date() / setDate() and a dateChanged signal so it drops in wherever
+    a QDateEdit was used.
     """
+    dateChanged = pyqtSignal(QDate)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         lay = QHBoxLayout(self)
@@ -177,6 +180,10 @@ class DateField(QWidget):
         self._edit.setDisplayFormat("yyyy-MM-dd")
         self._edit.setButtonSymbols(QDateEdit.ButtonSymbols.NoButtons)
         self._edit.setMinimumWidth(108)
+        # Forward the inner edit's signal so callers can connect to DateField
+        # directly. This fires for typing, arrow keys, and calendar picks alike
+        # (the calendar sets the date via self._edit.setDate).
+        self._edit.dateChanged.connect(self.dateChanged)
         lay.addWidget(self._edit)
 
         self._btn = QPushButton("📅")

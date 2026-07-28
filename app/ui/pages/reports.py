@@ -1,12 +1,11 @@
 """P&L and Balance Sheet reports."""
 from datetime import date
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                              QLabel, QTabWidget, QComboBox, QDateEdit,
+                              QLabel, QTabWidget, QComboBox,
                               QTreeWidget, QTreeWidgetItem, QHeaderView,
                               QFrame, QFileDialog, QMessageBox)
 from PyQt6.QtCore import Qt, QDate
-from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
-from ui.widgets import PageTitle, SecondaryButton
+from ui.widgets import PageTitle, SecondaryButton, DateField
 from ui.styles  import SUCCESS, DANGER, TEXT, MUTED
 
 
@@ -26,16 +25,12 @@ class ReportsPage(QWidget):
         filt = QHBoxLayout()
         filt.setSpacing(8)
         filt.addWidget(QLabel("From:"))
-        self._date_from = QDateEdit()
-        self._date_from.setCalendarPopup(True)
-        self._date_from.setDisplayFormat("yyyy-MM-dd")
+        self._date_from = DateField()
         self._date_from.setDate(QDate(QDate.currentDate().year(), 1, 1))
         filt.addWidget(self._date_from)
 
         filt.addWidget(QLabel("To:"))
-        self._date_to = QDateEdit()
-        self._date_to.setCalendarPopup(True)
-        self._date_to.setDisplayFormat("yyyy-MM-dd")
+        self._date_to = DateField()
         self._date_to.setDate(QDate.currentDate())
         filt.addWidget(self._date_to)
 
