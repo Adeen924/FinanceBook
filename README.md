@@ -1,76 +1,72 @@
 # FinanceBook
 
-A native **desktop personal finance application** — PyQt6 + SQLite. Think
-QuickBooks Lite: multiple bank accounts, transaction import, categories,
-reconciliation, P&L / Balance Sheet reports, auto-categorization rules, loan
-tracking, and multiple separate databases (personal / company / property).
+**A simple, private bookkeeping app for your own money — right on your Windows PC.**
 
-Runs on Windows. Data lives in a local `.db` file. No web server, no cloud
-account, no internet required (except the optional update check).
+FinanceBook helps you keep the books for your household, rental properties, or a
+small business without a monthly subscription, without an online account, and
+without handing your finances to anyone else. Everything lives in a single file
+on your own computer.
 
-## For users
+Think of it as a lightweight alternative to QuickBooks: track several accounts,
+import your bank and credit-card activity, sort transactions into categories,
+reconcile against your statements, and print clean Profit & Loss and Balance
+Sheet reports.
 
-Download the latest **`FinanceBook-x.y.z.zip`** from the
-[Releases page](https://github.com/Adeen924/FinanceBook/releases/latest),
-extract it anywhere, and double-click **`FinanceBook.exe`**. Nothing to install —
-Python and every dependency are bundled inside the app.
+## What you can do with it
 
-When a new version is out, FinanceBook shows an **"Update available"** banner on
-startup. Click **Install Update** once and the app downloads it, restarts, and
-reopens on the new version. Your data is never touched — it lives separately at
-`%APPDATA%\FinanceBook\finances.db`.
+- **Track all your accounts in one place** — checking, savings, credit cards,
+  loans, and more, each with its own running balance.
+- **Import from your bank** — drop in the files your bank exports
+  (`.qfx` / `.qbo`, `.ofx`, `.csv`, `.xlsx`, or QuickBooks `.iif`) and
+  FinanceBook adds the transactions for you, skipping duplicates.
+- **Organize spending** — assign transactions to categories and subcategories so
+  you can see where the money actually goes.
+- **Automate the busywork** — set up rules that categorize recurring
+  transactions automatically as they come in.
+- **Reconcile against statements** — tick off transactions and confirm your
+  records match the bank, the same way an accountant would.
+- **See the whole picture** — Profit & Loss and Balance Sheet reports you can
+  print or save, plus a dashboard summarizing your accounts.
+- **Track loans** — record a loan and FinanceBook works out the payment
+  schedule, splitting each payment into principal and interest.
+- **Keep separate books** — run completely separate databases for, say,
+  personal, company, and property finances, and switch between them.
 
-## For developers
+## Your data stays yours
 
-### Run from source
-```
-double-click run.bat
-```
-Creates `.venv`, installs `requirements.txt`, and runs `app/main.py`. In source
-mode the database lives next to `app/main.py`.
+FinanceBook runs entirely on your computer. There is **no cloud account, no sign
+up, and no internet connection required** to use it. Your finances are saved in a
+local database file that only you can see — you even choose where each database
+is stored. The only thing that ever goes online is an optional check for app
+updates.
 
-### Project layout
-```
-launcher.py            Thin frozen entry point. Bundles Python + all deps;
-                       its only job is to load and run app/.
-FinanceBook.spec       PyInstaller config — freezes ONLY launcher.py.
-build.bat              Local build -> dist\ (two zips). CI normally does this.
-run.bat                Dev launcher (venv + run app\main.py)
-requirements.txt       Runtime deps
-.github/workflows/
-  release.yml          Tag-push -> Windows build -> GitHub Release (see below)
+## Getting started
 
-app/                   The REAL application code (plain, swappable files)
-  VERSION              Plain-text version marker, e.g. "1.0.3"
-  main.py              Entry point
-  updater.py           One-click in-app updater (GitHub Releases API)
-  sheets/client.py     SQLite backend (all DB logic)
-  parsers/             QFX/QBO, CSV/XLSX, IIF parsers
-  utils/loan.py        Amortization math
-  ui/                  PyQt6 windows, pages, dialogs
-```
+1. Download the latest **`FinanceBook-x.y.z.zip`** from the
+   [Releases page](https://github.com/Adeen924/FinanceBook/releases/latest).
+2. Extract it anywhere you like (for example, your Desktop or Documents folder).
+3. Double-click **`FinanceBook.exe`**. There's nothing to install — everything
+   the app needs is bundled inside.
 
-### How updates work
-The shipped product is a **thin launcher `.exe`** sitting next to a plain-files
-**`app/`** folder. A routine update just replaces `app/` — the locked `.exe` is
-never touched, so there's no self-overwrite problem and no reinstall. Version
-checks read **GitHub Releases** (no hand-maintained `version.json`). Full design
-in [`UPDATE_PLAN.md`](UPDATE_PLAN.md).
+The first time you open it, a short guided tour walks you through setting up your
+first account and importing transactions.
 
-### Cutting a release
-Two ways, both run the same Windows build and publish a GitHub Release with the
-app-payload zip (one-click updates) and the full zip (first installs):
+## Staying up to date
 
-```
-# 1. Tag push
-git tag v1.0.3
-git push origin v1.0.3
+When a new version is available, FinanceBook shows an **"Update available"**
+banner when you start it. Click **Install Update** once — the app downloads the
+update, restarts, and reopens on the new version. **Your data is never touched**
+during an update; it lives separately from the app itself.
 
-# 2. Or: GitHub -> Actions -> "Release" -> Run workflow -> type version + notes
-```
-The workflow auto-writes the version into `app/VERSION` from the tag — you set
-the version in exactly one place.
-```
+## Questions or problems
+
+Found a bug or have an idea? Open an issue on the
+[Issues page](https://github.com/Adeen924/FinanceBook/issues).
+
+---
+
+<sub>Building from source or contributing? Developer and build documentation lives
+in [`HANDOFF.md`](HANDOFF.md) and [`UPDATE_PLAN.md`](UPDATE_PLAN.md).</sub>
 
 ## License
 

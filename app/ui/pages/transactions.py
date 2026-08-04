@@ -78,15 +78,16 @@ class TransactionsPage(QWidget):
 
         # ── Table ──
         self._table = DataTable(
-            ["Date", "Account", "Payee / Memo", "Category", "Amount", "R", ""])
+            ["Date", "Account", "Payee / Memo", "Category", "Amount", "Balance", "R", ""])
         self._table.setColumnWidth(0, 100)
         self._table.setColumnWidth(1, 140)
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self._table.setColumnWidth(3, 280)
+        self._table.setColumnWidth(3, 240)
         self._table.setColumnWidth(4, 110)
-        self._table.setColumnWidth(5, 36)
-        self._table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(6, 84)
+        self._table.setColumnWidth(5, 120)
+        self._table.setColumnWidth(6, 36)
+        self._table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(7, 84)
         self._table.horizontalHeader().setStretchLastSection(False)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._context_menu)
@@ -184,6 +185,13 @@ class TransactionsPage(QWidget):
         self._table.setRowCount(len(self._txns))
         total = 0.0
 
+        # Running balance only makes sense for a single account, so it's shown
+        # when one account is selected in the filter (blank under "All
+        # Accounts"). Balances are the true account balance after each txn,
+        # computed over the account's full history — see running_balances().
+        acct_id = self._acct_filter.currentData() or None
+        balances = self.db.running_balances(acct_id) if acct_id else {}
+
         for row, t in enumerate(self._txns):
             cat = cats.get(t.get("category_id",""), {})
             parent = cats.get(cat.get("parent_id",""), {})
@@ -209,8 +217,18 @@ class TransactionsPage(QWidget):
                 self._table.set_item(row, 3, "⚠ Uncategorized",
                                       color=WARNING)
             self._table.money_item(row, 4, amt)
+
+            # Running balance (single-account view only).
+            bal = balances.get(t.get("id"))
+            if bal is not None:
+                bal_text = (f"${bal:,.2f}" if bal >= 0
+                            else f"(${abs(bal):,.2f})")
+                self._table.set_item(row, 5, bal_text,
+                    align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    color=(DANGER if bal < 0 else None), bold=True)
+
             if str(t.get("reconciled","0")) == "1":
-                self._table.set_item(row, 5, "✓",
+                self._table.set_item(row, 6, "✓",
                     align=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
                     color=SUCCESS)
 
@@ -224,7 +242,7 @@ class TransactionsPage(QWidget):
             _cl.addStretch()
             _cl.addWidget(_edit_btn)
             _cl.addStretch()
-            self._table.setCellWidget(row, 6, _cell)
+            self._table.setCellWidget(row, 7, _cell)
 
             self._table.setRowHeight(row, 38)
 

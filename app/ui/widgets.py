@@ -1,7 +1,7 @@
 """Shared reusable widgets."""
 from PyQt6.QtWidgets import (QPushButton, QLabel, QFrame, QTableWidget,
                               QTableWidgetItem, QHeaderView, QHBoxLayout,
-                              QWidget, QSizePolicy, QDateEdit, QCalendarWidget,
+                              QWidget, QSizePolicy, QLineEdit, QCalendarWidget,
                               QComboBox, QCompleter, QAbstractItemView, QScroller)
 from PyQt6.QtCore import Qt, QSize, QDate, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
@@ -161,14 +161,27 @@ class DataTable(QTableWidget):
 
 class DateField(QWidget):
     """
-    A date box paired with a clearly visible 📅 calendar button. Click the
-    button to open a day / month / year picker; the chosen day fills the field.
-    You can also still type or arrow through the date directly in the box.
+    A plain free-text date box paired with a clearly visible 📅 calendar button.
+
+    Unlike a segmented QDateEdit, this is an ordinary text box: you can select
+    everything, delete it, and retype the whole date — day, month and year —
+    with no invisible separators trapping the cursor between sections. Click the
+    calendar button to pick a day instead. Typing is forgiving: ``2026-08-04``,
+    ``2026/8/4``, ``8/4/2026`` and ``08-04-2026`` are all accepted, and the box
+    tidies itself up to ``YYYY-MM-DD`` when you leave it.
 
     Exposes date() / setDate() and a dateChanged signal so it drops in wherever
     a QDateEdit was used.
     """
     dateChanged = pyqtSignal(QDate)
+
+    # Formats we try when parsing whatever the user typed. ISO (yyyy-MM-dd) is
+    # the canonical display form; the rest are common ways people write dates.
+    # Month-first is preferred over day-first for the slash forms (US usage).
+    _PARSE_FORMATS = ("yyyy-MM-dd", "yyyy/MM/dd", "yyyy.MM.dd",
+                      "MM/dd/yyyy", "M/d/yyyy",
+                      "MM-dd-yyyy", "M-d-yyyy")
+    _DISPLAY_FORMAT = "yyyy-MM-dd"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -176,14 +189,20 @@ class DateField(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
 
-        self._edit = QDateEdit()
-        self._edit.setDisplayFormat("yyyy-MM-dd")
-        self._edit.setButtonSymbols(QDateEdit.ButtonSymbols.NoButtons)
+        # Last known-good date. date() falls back to this when the box holds a
+        # half-typed or unparseable value, so callers always get a valid date.
+        self._date = QDate.currentDate()
+
+        self._edit = QLineEdit()
+        self._edit.setPlaceholderText("YYYY-MM-DD")
         self._edit.setMinimumWidth(108)
-        # Forward the inner edit's signal so callers can connect to DateField
-        # directly. This fires for typing, arrow keys, and calendar picks alike
-        # (the calendar sets the date via self._edit.setDate).
-        self._edit.dateChanged.connect(self.dateChanged)
+        self._edit.setText(self._date.toString(self._DISPLAY_FORMAT))
+        # While typing, update (and announce) the date the moment the text
+        # forms a valid one; a partial/invalid entry simply keeps the last one.
+        self._edit.textEdited.connect(self._on_text_edited)
+        # On leaving the box, snap the text back to the canonical YYYY-MM-DD of
+        # the last valid date so it never shows garbage or a half-typed value.
+        self._edit.editingFinished.connect(self._normalize_text)
         lay.addWidget(self._edit)
 
         self._btn = QPushButton("📅")
@@ -202,21 +221,48 @@ class DateField(QWidget):
             QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
         self._cal.clicked.connect(self._on_pick)
 
+    def _parse(self, text: str) -> QDate:
+        """Best-effort parse of free-typed text into a QDate (invalid if none)."""
+        text = text.strip()
+        for fmt in self._PARSE_FORMATS:
+            d = QDate.fromString(text, fmt)
+            if d.isValid():
+                return d
+        return QDate()
+
+    def _on_text_edited(self, text: str):
+        d = self._parse(text)
+        if d.isValid():
+            self._date = d
+            self.dateChanged.emit(d)
+
+    def _normalize_text(self):
+        # Re-parse in case editing finished on a valid non-canonical form
+        # (e.g. "8/4/2026"), then rewrite in the canonical display format.
+        d = self._parse(self._edit.text())
+        if d.isValid():
+            self._date = d
+        self._edit.setText(self._date.toString(self._DISPLAY_FORMAT))
+
     def _open_calendar(self):
-        self._cal.setSelectedDate(self._edit.date())
+        self._cal.setSelectedDate(self.date())
         self._cal.move(self._btn.mapToGlobal(self._btn.rect().bottomLeft()))
         self._cal.show()
 
     def _on_pick(self, date: QDate):
-        self._edit.setDate(date)
+        self.setDate(date)
         self._cal.hide()
 
     # ── QDateEdit-compatible API ──
     def date(self) -> QDate:
-        return self._edit.date()
+        d = self._parse(self._edit.text())
+        return d if d.isValid() else self._date
 
     def setDate(self, d: QDate):
-        self._edit.setDate(d)
+        if isinstance(d, QDate) and d.isValid():
+            self._date = d
+            self._edit.setText(d.toString(self._DISPLAY_FORMAT))
+            self.dateChanged.emit(d)
 
 
 def hbox(*widgets, spacing=8) -> QWidget:

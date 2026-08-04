@@ -704,6 +704,28 @@ class Database:
                 (account_id,)).fetchone()
         return opening + (row[0] or 0.0)
 
+    def running_balances(self, account_id: str) -> dict:
+        """
+        Map each transaction id -> the account's balance *after* that
+        transaction. Computed over the account's entire history in
+        chronological order (oldest first) starting from the opening balance,
+        so every value is the true running balance at that point regardless of
+        how the register happens to be filtered on screen.
+        """
+        acct = self.get_account(account_id)
+        if not acct:
+            return {}
+        bal = float(acct.get("opening_balance") or 0)
+        out: dict = {}
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, amount FROM transactions WHERE account_id=? "
+                "ORDER BY date ASC, created_at ASC", (account_id,)).fetchall()
+        for r in rows:
+            bal += float(r[1] or 0)
+            out[r[0]] = bal
+        return out
+
     def cleared_balance(self, account_id: str) -> float:
         acct = self.get_account(account_id)
         if not acct:
