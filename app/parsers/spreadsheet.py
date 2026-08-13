@@ -44,29 +44,6 @@ def _detect_header_row(raw) -> int | None:
     return None
 
 
-def _has_section_headers(df, date_col) -> bool:
-    """
-    True if the frame contains account section-header rows — content rows that
-    have no date, exactly one non-empty cell, and aren't a total/subtotal. That
-    is the tell-tale shape of a QuickBooks 'Transaction Detail by Account'
-    report, where account names sit on their own rows above each group. A flat
-    single-account export (every row dated) has none of these.
-    """
-    if not date_col or date_col not in list(df.columns):
-        return False
-    for _, row in df.iterrows():
-        cells = [str(v).strip() for v in row.tolist()]
-        nonempty = [c for c in cells if c and c.lower() not in ("nan", "none")]
-        if not nonempty:
-            continue
-        dval = str(row.get(date_col, "")).strip()
-        has_date = bool(dval) and dval.lower() not in ("nan", "none")
-        if (not has_date and len(nonempty) == 1
-                and not nonempty[0].lower().startswith("total")):
-            return True
-    return False
-
-
 def _parse_amount(val) -> float | None:
     if pd.isna(val) or str(val).strip().lower() in ("", "-", "n/a", "nan", "none"):
         return None
@@ -130,17 +107,17 @@ def parse_spreadsheet(file_bytes: bytes, filename: str, account_id: str,
         memo_col   = _find_col(df.columns, COMMON_MEMO_COLS)
         split_col  = _find_col(df.columns, COMMON_SPLIT_COLS)
 
-    # QuickBooks "Transaction Detail by Account" groups rows under account
-    # section-header rows (no per-row account column), which this single-account
-    # importer can't represent — send those to the multi-account wizard. But a
-    # *flat* export that merely carries a QB-style "Split" column imports fine,
-    # so only redirect when real section-header rows are actually present.
-    if split_col and _has_section_headers(df, date_col):
+    # A "Split" column marks a QuickBooks export. Those are handled by the
+    # dedicated Import Wizard, which understands both shapes — grouped
+    # "Transaction Detail by Account" reports (account = section header, Split =
+    # offsetting category) and flat exports (account = the Split column). Send the
+    # user there rather than importing everything into one account here.
+    if split_col:
         raise ValueError(
-            "This looks like a QuickBooks 'Transaction Detail by Account' "
-            "export (it groups rows under account section headers).\n\n"
+            "This looks like a QuickBooks export (it has a 'Split' column).\n\n"
             "Import it from Settings → Open Import Wizard → Step 2 "
-            "(Transactions), which is built for that multi-account format.")
+            "(Transactions), which understands the Split column — including "
+            "using it as the account when the file isn't grouped by account.")
 
     if not date_col:
         warnings.append("Could not detect a Date column.")
@@ -162,18 +139,13 @@ def parse_spreadsheet(file_bytes: bytes, filename: str, account_id: str,
             warnings.append(f"Row {header_idx+idx+2}: unrecognized date '{date_val}', skipped.")
             continue
 
-        # Resolve payee / memo. QuickBooks-style flat exports name the
-        # counterparty in a "Split" column and the transaction type in "Memo";
-        # prefer a real payee/description, otherwise promote the Split (the
-        # counterparty) to payee and keep the memo alongside it.
+        # Resolve payee / memo. Prefer a real payee/description column; fall back
+        # to the memo when that's all the file has (files carrying a QB-style
+        # "Split" column are redirected to the wizard before we reach here).
         payee = str(row.get(payee_col, "") if payee_col else "").strip()
         memo  = str(row.get(memo_col,  "") if memo_col  else "").strip()
-        split = str(row.get(split_col, "") if split_col else "").strip()
         if payee.lower() in ("nan", "none"): payee = ""
         if memo.lower()  in ("nan", "none"): memo  = ""
-        if split.lower() in ("nan", "none"): split = ""
-        if not payee:
-            payee, split = split, ""
         if not payee:
             payee, memo = memo, ""
 
@@ -270,7 +242,19 @@ def parse_qb_multi_account_excel(file_bytes: bytes) -> tuple[list[dict], list[st
         return [], warnings
 
     # ── Walk data rows ────────────────────────────────────────────────────────
+    # Two export shapes are supported:
+    #   • Grouped "Transaction Detail by Account": account names sit on their own
+    #     section-header rows above each block, and the "Split" column holds the
+    #     *offsetting* account/category. current_account comes from the headers.
+    #   • Flat (e.g. a single-account or ungrouped export): there are no section
+    #     headers, so the account each line belongs to is named in the "Split"
+    #     column — QuickBooks labels the offsetting account "Split". We detect the
+    #     absence of headers below and use Split as the account instead.
+    # Account assignment is deferred to a second pass so we can tell which shape
+    # this is (whether a section header was ever seen) before committing.
     current_account = ""
+    section_header_seen = False
+    records: list[dict] = []
 
     for i, row in df_raw.iterrows():
         if i <= header_idx:
@@ -304,12 +288,7 @@ def parse_qb_multi_account_excel(file_bytes: bytes) -> tuple[list[dict], list[st
                 pass
 
         if date_str:
-            # ── Transaction row ───────────────────────────────────────────────
-            if not current_account:
-                warnings.append(
-                    f"Transaction on {date_str} has no account context — skipped.")
-                continue
-
+            # ── Transaction row (account resolved in the second pass) ─────────
             payee = ""
             if name_col is not None and name_col < len(cells):
                 v = cells[name_col]
@@ -338,31 +317,61 @@ def parse_qb_multi_account_excel(file_bytes: bytes) -> tuple[list[dict], list[st
                 warnings.append(f"Row {i + 2}: no amount found — skipped.")
                 continue
 
-            raw = f"{current_account}|{date_str}|{amount}|{payee}"
-            import_hash = hashlib.md5(raw.encode()).hexdigest()[:16]
-
-            transactions.append({
-                "_account_name":    current_account,
-                "_split":           split,   # QB offsetting account → used as category
-                "date":             date_str,
-                "payee":            payee,
-                "memo":             memo,
-                "amount":           str(round(amount, 2)),
-                "category_id":      "",
-                "class_id":         "",
-                "is_transfer":      "0",
-                "transfer_pair_id": "",
-                "reconciled":       "0",
-                "reconcile_id":     "",
-                "notes":            "",
-                "import_hash":      import_hash,
+            records.append({
+                "header_account": current_account,
+                "date":           date_str,
+                "payee":          payee,
+                "memo":           memo,
+                "split":          split,
+                "amount":         amount,
             })
         else:
-            # ── Possible account section header ───────────────────────────────
+            # ── Account section header ────────────────────────────────────────
             # Date column is empty; if there's any non-empty non-total cell it's
             # an account name.
             if first_val and first_val.lower() not in ("nan", "none"):
                 current_account = first_val
+                section_header_seen = True
+
+    # ── Second pass: resolve each transaction's account, then build dicts ─────
+    # No section headers anywhere + a Split column present ⇒ flat export, so the
+    # Split value is the account. Otherwise keep the grouped meaning (Split is the
+    # offsetting account/category).
+    use_split_as_account = not section_header_seen and split_col is not None
+
+    for rec in records:
+        if use_split_as_account:
+            account_name = rec["split"]
+            split_value  = ""            # Split was consumed as the account
+        else:
+            account_name = rec["header_account"]
+            split_value  = rec["split"]  # offsetting account/category
+
+        if not account_name:
+            warnings.append(
+                f"Transaction on {rec['date']} has no account — skipped.")
+            continue
+
+        amount = rec["amount"]
+        raw = f"{account_name}|{rec['date']}|{amount}|{rec['payee']}"
+        import_hash = hashlib.md5(raw.encode()).hexdigest()[:16]
+
+        transactions.append({
+            "_account_name":    account_name,
+            "_split":           split_value,   # QB offsetting account → category
+            "date":             rec["date"],
+            "payee":            rec["payee"],
+            "memo":             rec["memo"],
+            "amount":           str(round(amount, 2)),
+            "category_id":      "",
+            "class_id":         "",
+            "is_transfer":      "0",
+            "transfer_pair_id": "",
+            "reconciled":       "0",
+            "reconcile_id":     "",
+            "notes":            "",
+            "import_hash":      import_hash,
+        })
 
     return transactions, warnings
 

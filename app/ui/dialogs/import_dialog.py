@@ -286,7 +286,10 @@ class ImportDialog(QDialog):
             "then <b>Excel → Create New Worksheet</b> and save the .xlsx.<br><br>"
             "QuickBooks lists each transaction twice (double-entry). After parsing, "
             "<b>check only your real bank accounts</b>. The income/expense accounts "
-            "become <i>categories</i> automatically from the Split column."
+            "become <i>categories</i> automatically from the Split column.<br><br>"
+            "If your export isn’t grouped into account sections, the <b>Split</b> "
+            "column is treated as the <b>account</b> for each row — the names it "
+            "contains are listed below so you can check the real bank accounts."
         )
         note.setWordWrap(True)
         note.setTextFormat(Qt.TextFormat.RichText)
@@ -393,6 +396,12 @@ class ImportDialog(QDialog):
         dup_count = len(txns) - len(new_txns)
         self._qb_xl_txns = new_txns
 
+        # Flat export → the parser used the Split column as the account (no
+        # offsetting split left on any row). Grouped export → splits are present
+        # and become categories/transfers. Drives the wording below.
+        self._xl_split_as_account = bool(txns) and all(
+            not t.get("_split") for t in txns)
+
         acct_counts: dict[str, int] = {}
         for t in new_txns:
             name = t.get("_account_name", "")
@@ -435,9 +444,15 @@ class ImportDialog(QDialog):
         self._xl_preview_label.show()
         self._xl_preview.show()
 
-        self._xl_status.setText(
-            "Check the bank accounts above you want to import. "
-            "The Split column becomes the category for each transaction.")
+        if self._xl_split_as_account:
+            self._xl_status.setText(
+                "This file has no account sections, so the Split column is used "
+                "as the account. Check the ones that are your real bank accounts "
+                "— unchecked names are ignored.")
+        else:
+            self._xl_status.setText(
+                "Check the bank accounts above you want to import. "
+                "The Split column becomes the category for each transaction.")
         self._xl_status.setStyleSheet("color: #1a1a2e; font-style: italic;")
         self._xl_import_btn.setEnabled(bool(new_txns))
 
@@ -464,13 +479,17 @@ class ImportDialog(QDialog):
         to_import = [t for t in self._qb_xl_txns
                      if t.get("_account_name") in selected_accounts]
 
+        if getattr(self, "_xl_split_as_account", False):
+            details = ("• Split column → the account each transaction is filed under.\n"
+                       "• Duplicates are skipped.")
+        else:
+            details = ("• Split column → category (created automatically if needed).\n"
+                       "• Rules auto-created for any payee that always goes to the same category.\n"
+                       "• Duplicates are skipped.")
         reply = QMessageBox.question(
             self, "Confirm Import",
             f"Import {len(to_import)} transaction(s) from "
-            f"{len(selected_accounts)} account(s)?\n\n"
-            "• Split column → category (created automatically if needed).\n"
-            "• Rules auto-created for any payee that always goes to the same category.\n"
-            "• Duplicates are skipped.",
+            f"{len(selected_accounts)} account(s)?\n\n" + details,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes:
             return
