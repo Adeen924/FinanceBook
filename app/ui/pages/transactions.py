@@ -3,7 +3,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLabel, QHeaderView, QMenu)
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QAction
-from ui.widgets import PageTitle, DataTable, SecondaryButton, DangerButton, DateField
+from ui.widgets import (PageTitle, DataTable, SecondaryButton, DangerButton,
+                        DateField, fmt_date)
 from ui.styles  import SUCCESS, DANGER, WARNING
 
 
@@ -13,7 +14,17 @@ class TransactionsPage(QWidget):
         self.db = db
         self._build()
 
+    # Fields the register can be sorted by (key → menu label). Balance and the
+    # reconciled flag are intentionally not sortable.
+    _SORT_FIELDS = [("date", "Date"), ("account", "Account"),
+                    ("payee", "Payee / Memo"), ("category", "Category")]
+
     def _build(self):
+        # Sort state. Default to Date ascending so the newest transaction sits at
+        # the bottom of the register (QuickBooks-style — see _sort_and_render).
+        self._sort_key = "date"
+        self._sort_asc = True
+
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 24, 28, 24)
         lay.setSpacing(14)
@@ -21,6 +32,12 @@ class TransactionsPage(QWidget):
         hdr = QHBoxLayout()
         hdr.addWidget(PageTitle("Transactions"))
         hdr.addStretch()
+
+        self._sort_btn = QPushButton("Sort: Date ↑")
+        self._sort_btn.setObjectName("Secondary")
+        self._build_sort_menu()
+        hdr.addWidget(self._sort_btn)
+
         self._add_btn = QPushButton("+ Add Transaction")
         self._add_btn.clicked.connect(self._add)
         hdr.addWidget(self._add_btn)
@@ -150,7 +167,78 @@ class TransactionsPage(QWidget):
                     or search in (t.get("notes","") or "").lower()]
 
         self._txns = txns
+        self._sort_and_render()
+
+    # ── sorting ───────────────────────────────────────────────────────────────
+
+    def _build_sort_menu(self):
+        menu = QMenu(self)
+        self._sort_actions = {}
+        for key, label in self._SORT_FIELDS:
+            act = QAction(label, self)
+            act.triggered.connect(lambda _=False, k=key: self._set_sort(k))
+            menu.addAction(act)
+            self._sort_actions[key] = act
+        self._sort_btn.setMenu(menu)
+        self._update_sort_ui()
+
+    def _set_sort(self, key: str):
+        # Clicking the current field flips direction; a new field starts
+        # ascending (Date ascending = newest at bottom; text fields = A→Z).
+        if key == self._sort_key:
+            self._sort_asc = not self._sort_asc
+        else:
+            self._sort_key = key
+            self._sort_asc = True
+        self._update_sort_ui()
+        self._sort_and_render()
+
+    def _update_sort_ui(self):
+        arrow  = "↑" if self._sort_asc else "↓"
+        labels = dict(self._SORT_FIELDS)
+        self._sort_btn.setText(f"Sort: {labels[self._sort_key]} {arrow}")
+        for key, act in self._sort_actions.items():
+            act.setText(f"{labels[key]}  {arrow}" if key == self._sort_key
+                        else labels[key])
+
+    def _sort_txns(self):
+        cats  = {c["id"]: c for c in self.db.get_categories()}
+        accts = {a["id"]: a for a in self.db.get_accounts()}
+
+        def acct_name(t):
+            return accts.get(t.get("account_id", ""), {}).get("name", "").lower()
+
+        def payee_name(t):
+            return (t.get("payee") or t.get("memo") or "").lower()
+
+        def cat_name(t):
+            cat    = cats.get(t.get("category_id", ""), {})
+            parent = cats.get(cat.get("parent_id", ""), {})
+            base   = (f"{parent['name']} {cat.get('name','')}" if parent
+                      else cat.get("name", ""))
+            return base.strip().lower()
+
+        # Each key falls back to date/created_at so ties stay in stable
+        # chronological order.
+        keyfns = {
+            "date":     lambda t: (t.get("date", ""), t.get("created_at", "")),
+            "account":  lambda t: (acct_name(t), t.get("date", ""), t.get("created_at", "")),
+            "payee":    lambda t: (payee_name(t), t.get("date", ""), t.get("created_at", "")),
+            "category": lambda t: (cat_name(t), t.get("date", ""), t.get("created_at", "")),
+        }
+        fn = keyfns.get(self._sort_key, keyfns["date"])
+        self._txns.sort(key=fn, reverse=not self._sort_asc)
+
+    def _sort_and_render(self):
+        self._sort_txns()
         self._render_table()
+        # In the default register view (Date ascending) the newest row is at the
+        # bottom, so open scrolled there — matches how QuickBooks shows a
+        # register. Any other sort reads top-down, so start at the top.
+        if self._sort_key == "date" and self._sort_asc:
+            self._table.scrollToBottom()
+        else:
+            self._table.scrollToTop()
 
     def _clear_filter(self):
         self._acct_filter.setCurrentIndex(0)
@@ -208,7 +296,7 @@ class TransactionsPage(QWidget):
             else:
                 disp_payee = payee
 
-            self._table.set_item(row, 0, t.get("date",""))
+            self._table.set_item(row, 0, fmt_date(t.get("date", "")))
             self._table.set_item(row, 1, acct_name)
             self._table.set_item(row, 2, disp_payee)
             if cat_name:

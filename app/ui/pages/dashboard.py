@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                               QFrame, QScrollArea, QGridLayout, QPushButton)
 from PyQt6.QtCore import Qt
-from ui.widgets import PageTitle, MutedLabel, DataTable, Card
+from ui.widgets import PageTitle, MutedLabel, DataTable, Card, fmt_date
 from ui.styles import SUCCESS, DANGER, WARNING, ACCENT
 
 
@@ -154,7 +154,7 @@ class DashboardPage(QWidget):
             acct_name = accts.get(t.get("account_id",""), {}).get("name","—")
             payee = t.get("payee") or t.get("memo") or "—"
 
-            self._table.set_item(row, 0, t.get("date",""))
+            self._table.set_item(row, 0, fmt_date(t.get("date","")))
             self._table.set_item(row, 1, acct_name)
             self._table.set_item(row, 2, payee)
             self._table.set_item(row, 3, cat_name or "⚠ Uncategorized")

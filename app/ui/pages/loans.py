@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 
-from ui.widgets import PageTitle, DataTable
+from ui.widgets import PageTitle, DataTable, fmt_date
 from utils.loan import amortization_schedule, calc_monthly_payment, remaining_balance
 
 
@@ -181,7 +181,7 @@ class LoansPage(QWidget):
 
             tbl.setItem(r, 0, _cell(str(entry["payment_number"]),
                                     Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter))
-            tbl.setItem(r, 1, _cell(entry["due_date"],
+            tbl.setItem(r, 1, _cell(fmt_date(entry["due_date"]),
                                     Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter))
             tbl.setItem(r, 2, _cell(f"${entry['payment']:,.2f}"))
             tbl.setItem(r, 3, _cell(f"${entry['principal']:,.2f}"))

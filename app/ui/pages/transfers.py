@@ -2,7 +2,8 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLabel, QMessageBox, QTabWidget, QHeaderView)
 from PyQt6.QtCore import Qt
-from ui.widgets import PageTitle, DataTable, SecondaryButton, DangerButton, SuccessButton
+from ui.widgets import (PageTitle, DataTable, SecondaryButton, DangerButton,
+                        SuccessButton, fmt_date)
 from ui.styles  import WARNING, SUCCESS
 
 
@@ -126,10 +127,10 @@ class TransfersPage(QWidget):
         self._pot_table.setRowCount(len(self._potential))
         for row, p in enumerate(self._potential):
             ta, tb = p["txn_a"], p["txn_b"]
-            self._pot_table.set_item(row, 0, ta.get("date",""))
+            self._pot_table.set_item(row, 0, fmt_date(ta.get("date","")))
             self._pot_table.set_item(row, 1, accts.get(ta["account_id"],{}).get("name","—"))
             self._pot_table.set_item(row, 2, ta.get("payee") or ta.get("memo","—"))
-            self._pot_table.set_item(row, 3, tb.get("date",""))
+            self._pot_table.set_item(row, 3, fmt_date(tb.get("date","")))
             self._pot_table.set_item(row, 4, accts.get(tb["account_id"],{}).get("name","—"))
             self._pot_table.set_item(row, 5, tb.get("payee") or tb.get("memo","—"))
             self._pot_table.money_item(row, 6, p["amount"])
@@ -153,7 +154,7 @@ class TransfersPage(QWidget):
         self._lnk_table.clear_rows()
         self._lnk_table.setRowCount(len(self._linked))
         for row, t in enumerate(self._linked):
-            self._lnk_table.set_item(row, 0, t.get("date",""))
+            self._lnk_table.set_item(row, 0, fmt_date(t.get("date","")))
             self._lnk_table.set_item(row, 1, accts.get(t["account_id"],{}).get("name","—"))
             self._lnk_table.set_item(row, 2, t.get("payee") or t.get("memo","—"))
             self._lnk_table.money_item(row, 3, float(t.get("amount") or 0))

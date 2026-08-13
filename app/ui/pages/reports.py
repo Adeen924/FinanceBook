@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QTreeWidget, QTreeWidgetItem, QHeaderView,
                               QFrame, QFileDialog, QMessageBox)
 from PyQt6.QtCore import Qt, QDate
-from ui.widgets import PageTitle, SecondaryButton, DateField
+from ui.widgets import PageTitle, SecondaryButton, DateField, fmt_date
 from ui.styles  import SUCCESS, DANGER, TEXT, MUTED
 
 
@@ -206,7 +206,7 @@ class ReportsPage(QWidget):
                      f"<span style='color:{DANGER}'>${abs(total_debt):,.2f}</span>"
                      if debt_groups else "")
         self._pnl_summary.setText(
-            f"<b>Period:</b> {start} to {end} &nbsp;&nbsp; "
+            f"<b>Period:</b> {fmt_date(start)} to {fmt_date(end)} &nbsp;&nbsp; "
             f"<b>Income:</b> <span style='color:{SUCCESS}'>${total_income:,.2f}</span> &nbsp;&nbsp; "
             f"<b>Expenses:</b> <span style='color:{DANGER}'>${abs(total_expenses):,.2f}</span> &nbsp;&nbsp; "
             f"<b>Net:</b> <span style='color:{color}'>${net:,.2f}</span>"
@@ -216,7 +216,7 @@ class ReportsPage(QWidget):
 
     def _run_bs(self):
         as_of = self._date_to.date().toString("yyyy-MM-dd")
-        self._bs_as_of_lbl.setText(f"As of {as_of}")
+        self._bs_as_of_lbl.setText(f"As of {fmt_date(as_of)}")
         accounts = self.db.get_accounts()
         assets, liabilities = [], []
         for acct in accounts:

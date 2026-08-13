@@ -164,24 +164,25 @@ class DateField(QWidget):
     A plain free-text date box paired with a clearly visible 📅 calendar button.
 
     Unlike a segmented QDateEdit, this is an ordinary text box: you can select
-    everything, delete it, and retype the whole date — day, month and year —
+    everything, delete it, and retype the whole date — month, day and year —
     with no invisible separators trapping the cursor between sections. Click the
-    calendar button to pick a day instead. Typing is forgiving: ``2026-08-04``,
-    ``2026/8/4``, ``8/4/2026`` and ``08-04-2026`` are all accepted, and the box
-    tidies itself up to ``YYYY-MM-DD`` when you leave it.
+    calendar button to pick a day instead. Typing is forgiving: ``08/04/2026``,
+    ``8/4/2026``, ``08-04-2026`` and even ISO ``2026-08-04`` are all accepted,
+    and the box tidies itself up to ``MM/DD/YYYY`` when you leave it.
 
     Exposes date() / setDate() and a dateChanged signal so it drops in wherever
     a QDateEdit was used.
     """
     dateChanged = pyqtSignal(QDate)
 
-    # Formats we try when parsing whatever the user typed. ISO (yyyy-MM-dd) is
-    # the canonical display form; the rest are common ways people write dates.
-    # Month-first is preferred over day-first for the slash forms (US usage).
-    _PARSE_FORMATS = ("yyyy-MM-dd", "yyyy/MM/dd", "yyyy.MM.dd",
-                      "MM/dd/yyyy", "M/d/yyyy",
-                      "MM-dd-yyyy", "M-d-yyyy")
-    _DISPLAY_FORMAT = "yyyy-MM-dd"
+    # Formats we try when parsing whatever the user typed. Month-first
+    # (MM/DD/YYYY) is the canonical display form and the preferred parse order
+    # (US usage). ISO (yyyy-MM-dd) and other forms stay accepted so dates loaded
+    # from the database — stored as yyyy-MM-dd — still parse cleanly.
+    _PARSE_FORMATS = ("MM/dd/yyyy", "M/d/yyyy",
+                      "MM-dd-yyyy", "M-d-yyyy",
+                      "yyyy-MM-dd", "yyyy/MM/dd", "yyyy.MM.dd")
+    _DISPLAY_FORMAT = "MM/dd/yyyy"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -194,7 +195,7 @@ class DateField(QWidget):
         self._date = QDate.currentDate()
 
         self._edit = QLineEdit()
-        self._edit.setPlaceholderText("YYYY-MM-DD")
+        self._edit.setPlaceholderText("MM/DD/YYYY")
         self._edit.setMinimumWidth(108)
         self._edit.setText(self._date.toString(self._DISPLAY_FORMAT))
         # While typing, update (and announce) the date the moment the text
@@ -263,6 +264,17 @@ class DateField(QWidget):
             self._date = d
             self._edit.setText(d.toString(self._DISPLAY_FORMAT))
             self.dateChanged.emit(d)
+
+
+def fmt_date(iso: str) -> str:
+    """Format a stored ISO date (yyyy-MM-dd) for display as MM/DD/YYYY.
+
+    Dates are stored canonically as yyyy-MM-dd but shown to the user month-first
+    to match the data-entry fields (see DateField). Returns the input unchanged
+    if it isn't a valid ISO date (e.g. "Never", "" or an already-formatted date).
+    """
+    d = QDate.fromString(iso or "", "yyyy-MM-dd")
+    return d.toString("MM/dd/yyyy") if d.isValid() else (iso or "")
 
 
 def hbox(*widgets, spacing=8) -> QWidget:

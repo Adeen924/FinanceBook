@@ -10,7 +10,9 @@ from io import BytesIO, StringIO
 
 
 COMMON_DATE_COLS = ["date", "transaction date", "posted date", "trans date", "trans. date", "posting date"]
-COMMON_DESC_COLS = ["description", "payee", "memo", "name", "transaction description", "details"]
+COMMON_PAYEE_COLS = ["payee", "name", "description", "transaction description", "details", "merchant"]
+COMMON_MEMO_COLS = ["memo", "notes", "note"]
+COMMON_SPLIT_COLS = ["split"]
 COMMON_AMOUNT_COLS = ["amount", "transaction amount", "debit/credit"]
 COMMON_DEBIT_COLS = ["debit", "withdrawal", "withdrawals", "charges"]
 COMMON_CREDIT_COLS = ["credit", "deposit", "deposits", "payments"]
@@ -40,6 +42,29 @@ def _detect_header_row(raw) -> int | None:
         if cells and any(c in COMMON_DATE_COLS for c in cells):
             return i
     return None
+
+
+def _has_section_headers(df, date_col) -> bool:
+    """
+    True if the frame contains account section-header rows — content rows that
+    have no date, exactly one non-empty cell, and aren't a total/subtotal. That
+    is the tell-tale shape of a QuickBooks 'Transaction Detail by Account'
+    report, where account names sit on their own rows above each group. A flat
+    single-account export (every row dated) has none of these.
+    """
+    if not date_col or date_col not in list(df.columns):
+        return False
+    for _, row in df.iterrows():
+        cells = [str(v).strip() for v in row.tolist()]
+        nonempty = [c for c in cells if c and c.lower() not in ("nan", "none")]
+        if not nonempty:
+            continue
+        dval = str(row.get(date_col, "")).strip()
+        has_date = bool(dval) and dval.lower() not in ("nan", "none")
+        if (not has_date and len(nonempty) == 1
+                and not nonempty[0].lower().startswith("total")):
+            return True
+    return False
 
 
 def _parse_amount(val) -> float | None:
@@ -83,40 +108,43 @@ def parse_spreadsheet(file_bytes: bytes, filename: str, account_id: str,
     if header_idx is None:
         header_idx = 0  # fall back to treating the first row as the header
 
-    header_cells = [_normalize(c) for c in raw.iloc[header_idx].tolist()]
-
-    # QuickBooks "Transaction Detail by Account" has a 'Split' column and groups
-    # rows under account section-headers rather than a per-row account column.
-    # This single-account importer can't represent that — send the user to the
-    # wizard that's built for it instead of silently importing nothing.
-    if "split" in header_cells:
-        raise ValueError(
-            "This looks like a QuickBooks 'Transaction Detail by Account' "
-            "export (it has a 'Split' column and groups rows by account).\n\n"
-            "Import it from Settings → Open Import Wizard → Step 2 "
-            "(Transactions), which is built for that multi-account format.")
-
     # Re-frame the table using the detected header row.
     df = raw.iloc[header_idx + 1:].copy()
     df.columns = [str(c).strip() for c in raw.iloc[header_idx].tolist()]
     df = df.reset_index(drop=True)
 
     if col_mapping:
-        date_col = col_mapping.get("date")
-        desc_col = col_mapping.get("payee")
+        date_col   = col_mapping.get("date")
+        payee_col  = col_mapping.get("payee")
         amount_col = col_mapping.get("amount")
-        debit_col = col_mapping.get("debit")
+        debit_col  = col_mapping.get("debit")
         credit_col = col_mapping.get("credit")
+        memo_col   = col_mapping.get("memo")
+        split_col  = col_mapping.get("split")
     else:
-        date_col = _find_col(df.columns, COMMON_DATE_COLS)
-        desc_col = _find_col(df.columns, COMMON_DESC_COLS)
+        date_col   = _find_col(df.columns, COMMON_DATE_COLS)
+        payee_col  = _find_col(df.columns, COMMON_PAYEE_COLS)
         amount_col = _find_col(df.columns, COMMON_AMOUNT_COLS)
-        debit_col = _find_col(df.columns, COMMON_DEBIT_COLS)
+        debit_col  = _find_col(df.columns, COMMON_DEBIT_COLS)
         credit_col = _find_col(df.columns, COMMON_CREDIT_COLS)
+        memo_col   = _find_col(df.columns, COMMON_MEMO_COLS)
+        split_col  = _find_col(df.columns, COMMON_SPLIT_COLS)
+
+    # QuickBooks "Transaction Detail by Account" groups rows under account
+    # section-header rows (no per-row account column), which this single-account
+    # importer can't represent — send those to the multi-account wizard. But a
+    # *flat* export that merely carries a QB-style "Split" column imports fine,
+    # so only redirect when real section-header rows are actually present.
+    if split_col and _has_section_headers(df, date_col):
+        raise ValueError(
+            "This looks like a QuickBooks 'Transaction Detail by Account' "
+            "export (it groups rows under account section headers).\n\n"
+            "Import it from Settings → Open Import Wizard → Step 2 "
+            "(Transactions), which is built for that multi-account format.")
 
     if not date_col:
         warnings.append("Could not detect a Date column.")
-    if not desc_col:
+    if not (payee_col or memo_col or split_col):
         warnings.append("Could not detect a Description/Payee column.")
     if not amount_col and not (debit_col or credit_col):
         warnings.append("Could not detect an Amount column.")
@@ -134,7 +162,20 @@ def parse_spreadsheet(file_bytes: bytes, filename: str, account_id: str,
             warnings.append(f"Row {header_idx+idx+2}: unrecognized date '{date_val}', skipped.")
             continue
 
-        payee = str(row.get(desc_col, "") if desc_col else "").strip()
+        # Resolve payee / memo. QuickBooks-style flat exports name the
+        # counterparty in a "Split" column and the transaction type in "Memo";
+        # prefer a real payee/description, otherwise promote the Split (the
+        # counterparty) to payee and keep the memo alongside it.
+        payee = str(row.get(payee_col, "") if payee_col else "").strip()
+        memo  = str(row.get(memo_col,  "") if memo_col  else "").strip()
+        split = str(row.get(split_col, "") if split_col else "").strip()
+        if payee.lower() in ("nan", "none"): payee = ""
+        if memo.lower()  in ("nan", "none"): memo  = ""
+        if split.lower() in ("nan", "none"): split = ""
+        if not payee:
+            payee, split = split, ""
+        if not payee:
+            payee, memo = memo, ""
 
         # Resolve amount
         amount = None
@@ -157,7 +198,7 @@ def parse_spreadsheet(file_bytes: bytes, filename: str, account_id: str,
             "date": date_str,
             "account_id": account_id,
             "payee": payee,
-            "memo": "",
+            "memo": memo,
             "amount": str(round(amount, 2)),
             "category_id": "",
             "class_id": "",

@@ -4,7 +4,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QCheckBox, QScrollArea, QFrame,
                               QFormLayout, QHeaderView, QGroupBox, QStackedWidget)
 from PyQt6.QtCore import Qt, QDate
-from ui.widgets import PageTitle, DataTable, SecondaryButton, SuccessButton, DateField
+from ui.widgets import (PageTitle, DataTable, SecondaryButton, SuccessButton,
+                        DateField, fmt_date)
 from ui.styles  import SUCCESS, DANGER, WARNING
 
 
@@ -140,7 +141,7 @@ class ReconcilePage(QWidget):
             bal     = self.db.account_balance(acct["id"])
             cleared = self.db.cleared_balance(acct["id"])
             recs    = self.db.get_reconciliations(acct["id"])
-            last    = recs[0]["statement_date"] if recs else "Never"
+            last    = fmt_date(recs[0]["statement_date"]) if recs else "Never"
 
             self._acct_table.set_item(row, 0, acct["name"], bold=True)
             self._acct_table.set_item(row, 1, acct.get("type","").title())
@@ -188,7 +189,7 @@ class ReconcilePage(QWidget):
             self._sess_table.setCellWidget(row, 0, cell)
             self._checkboxes.append(cb)
 
-            self._sess_table.set_item(row, 1, t.get("date",""))
+            self._sess_table.set_item(row, 1, fmt_date(t.get("date","")))
             self._sess_table.set_item(row, 2, t.get("payee") or t.get("memo","—"))
             if amt < 0:
                 self._sess_table.money_item(row, 3, abs(amt))
