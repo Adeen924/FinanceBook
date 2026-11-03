@@ -12,6 +12,50 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New: one database on two computers (v1.9)
+
+Keep your database in a **OneDrive** (or Google Drive / network) folder and use it
+from more than one computer — for example a desktop and a laptop.
+
+- **Connect Existing Database…** — on the second computer, choose this on the
+  welcome screen (or later from the sidebar's database list, or **Settings →
+  Database**) and pick the `.db` file in your OneDrive folder. FinanceBook checks
+  the file first without changing it: it refuses a file that's still downloading
+  or "online-only", a file that isn't a FinanceBook database, or one already
+  upgraded by a newer FinanceBook (update that computer first). It warns you about
+  OneDrive conflict copies (like `finances-DESKTOP-AB12CD.db`).
+- **A lock stops accidental double use.** While a database is open, FinanceBook
+  keeps a small `finances.db.lock` file next to it. If you open the same database
+  on the other computer, it tells you where it's in use and lets you **Open
+  Read-Only**, **Take Over** (only if the other computer crashed or is off), or
+  cancel. Read-only really is read-only — nothing can be saved, and a yellow
+  banner says so.
+- **Safer syncing.** The database file is now complete on disk after every save
+  (no separate `-wal` / `-shm` files for OneDrive to sync out of step), and
+  FinanceBook won't quietly create an empty database if your OneDrive folder
+  isn't available yet — it lets you retry or choose another database.
+
+**Using two laptops with OneDrive**
+
+1. On laptop A, create (or keep) your database in a folder inside OneDrive.
+2. When you're done on laptop A, **close FinanceBook** and let OneDrive finish
+   syncing (the OneDrive icon shows "Up to date").
+3. On laptop B, make sure the folder is synced too. Right-click the folder →
+   **Always keep on this device** is recommended.
+4. Start FinanceBook on laptop B → **Connect Existing Database…** → pick the same
+   `.db` file. From then on, laptop B opens it automatically.
+5. Switch back and forth the same way: close on one, wait for sync, open on the other.
+
+**Honest limitation:** the lock file travels through OneDrive like any other file,
+so the other computer only sees it once OneDrive has synced it. It reliably
+catches a second copy of FinanceBook on the *same* computer, and the other
+computer once it's in sync — but it can't stop two computers that are offline
+or out of sync from both editing. Always let OneDrive finish syncing before
+opening the database on the other computer. If OneDrive ever shows a conflict
+copy, keep both files until you've checked which one has your latest changes.
+Each computer's own settings (which databases it knows about) stay on that
+computer and are never put in the synced folder.
+
 ## New: business books (v1.1)
 
 FinanceBook can now keep the books for a **small business** (sole proprietor or

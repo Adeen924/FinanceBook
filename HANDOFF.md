@@ -99,7 +99,8 @@ ui/
 
 ## Database (sheets/client.py)
 
-Single SQLite file. WAL journal mode. Tables:
+Single SQLite file. Rollback-journal (DELETE) mode since v1.9 — was WAL;
+see "Connect existing database + lock file" below. Tables:
 
 | Table | Purpose |
 |---|---|
@@ -145,6 +146,40 @@ In a packaged build (`sys.frozen = True`), the DB lives at
 `%APPDATA%\FinanceBook\finances.db` (writable, survives reinstalls).
 In development (running from source), it lives next to `main.py`
 (OneDrive-synced for the owner's own use).
+
+---
+
+## Connect existing database + lock file (v1.9)
+
+For one database used from two computers via OneDrive. Files:
+
+- `db_connect.py` — read-only checks before connecting a file
+  (`validate_existing_database`: exists, not 0-byte, not a cloud placeholder,
+  SQLite header, FinanceBook tables, `user_version` not newer; warns on OneDrive
+  conflict copies, leftover `-wal`, `-journal`). Never opens via `Database(...)`.
+- `db_lock.py` — `<db>.lock` JSON sidecar (machine, user, pid, app_version,
+  acquired_at, last_heartbeat, session_id). `O_EXCL` create; stale if heartbeat
+  older than `STALE_AFTER_SECONDS` (12 min) or same machine + dead pid; corrupt =
+  stale. `HEARTBEAT_SECONDS` = 90. Released on switch, window close, atexit,
+  and before the updater's `os._exit`.
+- `ui/connect_dialog.py` — file picker + confirmations, `LockConflictDialog`
+  (Read-Only / Take Over / Cancel), and `open_with_lock()`, which every path
+  that opens a database as the active one goes through (main.py startup,
+  `MainWindow.open_database`).
+- `Database(path, read_only=True)` — no schema init/migration/triggers;
+  `_conn()` sets `PRAGMA query_only=ON`; auto-backup, `set_session_user`'s write
+  and `process_recurring` are no-ops. `Database.__init__` raises
+  `NewerSchemaError` for `user_version > SCHEMA_VERSION` on every path.
+- Journal mode is DELETE so the `.db` alone is complete after each commit;
+  `_conn()` converts old WAL files on first use, `Database.close()` checkpoints.
+- MainWindow: heartbeat `QTimer`; losing the lock (taken over) or waking after a
+  gap longer than the stale threshold flips the shared `db.read_only` flag and
+  shows the yellow banner.
+- Test-only env overrides: `FINANCEBOOK_SETTINGS_DIR`, `FINANCEBOOK_MACHINE_NAME`.
+- Tests: `tests/test_db_lock.py`, `tests/test_connect_database.py`,
+  `tests/test_connect_ui.py` (offscreen Qt).
+
+The lock is best-effort across computers (sync delay); see the README.
 
 ---
 
