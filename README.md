@@ -12,6 +12,15 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New look (v1.0.22)
+
+FinanceBook has a fresh, light "glass" design: translucent cards over a soft
+blue backdrop, a floating sidebar, and a redesigned dashboard showing net
+worth, assets, liabilities and this month's cash flow at a glance, plus an
+income-vs-expenses chart, a spending-by-category donut, recent transactions and
+your accounts. Your data and how everything works are unchanged — just update
+from the in-app banner.
+
 ## What you can do with it
 
 - **Track all your accounts in one place** — checking, savings, credit cards,
