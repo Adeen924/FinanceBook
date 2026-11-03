@@ -32,7 +32,8 @@ class DropZone(QFrame):
         self.setStyleSheet(self._idle_css)
         lay = QVBoxLayout(self)
         lbl = QLabel("Drop receipt files here — photos, PDFs, emails (.eml), web pages or "
-                     "text. They're copied into a <b>receipts</b> folder next to your database.")
+                     "text. FinanceBook keeps its own copy in a <b>FinanceBook Receipts</b> "
+                     "folder next to your database; your originals aren't moved.")
         lbl.setWordWrap(True)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl.setObjectName("Muted")

@@ -2,9 +2,12 @@
 Receipts, receipt line items, attachments and vendor memory — mixed into
 sheets.client.Database (uses its _conn/_new_id/_now helpers).
 
-Receipt files are copied into a "receipts" folder next to the database file, so
-they sync (OneDrive / Google Drive) and back up alongside it. Paths are stored
-relative to the database folder.
+Receipt files are copied into "FinanceBook Receipts/<database name>/" next to
+the database file, so they sync (OneDrive / Google Drive) and back up alongside
+it, and never mix with the user's own files (or another database's copies).
+Paths are stored relative to the database folder, so receipts copied by older
+versions into a plain "receipts" folder keep working; move_legacy_receipts()
+moves them over on request.
 """
 import hashlib
 import os
@@ -12,6 +15,9 @@ import re
 import shutil
 from collections import Counter
 from datetime import datetime
+
+RECEIPTS_DIRNAME = "FinanceBook Receipts"
+LEGACY_RECEIPTS_DIRNAME = "receipts"     # used up to v1.10.0
 
 RECEIPTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS receipts (
@@ -108,7 +114,23 @@ class ReceiptsMixin:
         return os.path.dirname(os.path.abspath(self.db_path))
 
     def receipts_dir(self) -> str:
-        return os.path.join(self.db_dir(), "receipts")
+        """Where this database's receipt copies go (one subfolder per database)."""
+        stem = os.path.splitext(os.path.basename(self.db_path))[0] or "receipts"
+        return os.path.join(self.db_dir(), RECEIPTS_DIRNAME, stem)
+
+    def legacy_receipts_dir(self) -> str:
+        return os.path.join(self.db_dir(), LEGACY_RECEIPTS_DIRNAME)
+
+    def _is_managed_copy(self, path: str) -> bool:
+        """True for a file inside a folder FinanceBook copies receipts into."""
+        path = os.path.abspath(path)
+        for root in (self.receipts_dir(), self.legacy_receipts_dir()):
+            try:
+                if os.path.commonpath([path, root]) == root:
+                    return True
+            except ValueError:          # different drives
+                continue
+        return False
 
     def receipt_abs_path(self, receipt: dict) -> str:
         rel = (receipt or {}).get("file_path") or ""
@@ -135,7 +157,7 @@ class ReceiptsMixin:
         with self._conn() as c:
             c.execute("INSERT INTO receipts (id,file_path,original_name,sha256,uploaded_at,status) "
                       "VALUES (?,?,?,?,?,'new')",
-                      (rid, os.path.join("receipts", name), base, sha, self._now()))
+                      (rid, os.path.relpath(dest, self.db_dir()), base, sha, self._now()))
         return self.get_receipt(rid), False
 
     def add_manual_receipt(self) -> dict:
@@ -186,12 +208,64 @@ class ReceiptsMixin:
             c.execute("DELETE FROM receipts WHERE id=?", (rid,))
         if r and delete_file:
             path = self.receipt_abs_path(r)
-            if path and os.path.isfile(path) and os.path.commonpath(
-                    [os.path.abspath(path), self.receipts_dir()]) == self.receipts_dir():
+            # Only a copy FinanceBook made — never a file elsewhere on disk.
+            if path and os.path.isfile(path) and self._is_managed_copy(path):
                 try:
                     os.remove(path)
                 except OSError:
                     pass
+
+    def legacy_receipt_copies(self) -> list[dict]:
+        """Receipts whose copy is still in the old shared "receipts" folder."""
+        out = []
+        for r in self.get_receipts():
+            parts = re.split(r"[\\/]", r.get("file_path") or "")
+            if len(parts) == 2 and parts[0].lower() == LEGACY_RECEIPTS_DIRNAME:
+                out.append(r)
+        return out
+
+    def move_legacy_receipts(self) -> dict:
+        """
+        Move this database's receipt copies out of the old "receipts" folder
+        into receipts_dir(). Each file is copied, checked against its recorded
+        SHA-256, re-pointed in the database, and only then removed from the old
+        folder — files there that FinanceBook didn't record are never touched.
+        Returns {"moved", "missing", "failed"} counts.
+        """
+        out = {"moved": 0, "missing": 0, "failed": 0}
+        todo = self.legacy_receipt_copies()
+        if todo:
+            os.makedirs(self.receipts_dir(), exist_ok=True)
+        for r in todo:
+            src = self.receipt_abs_path(r)
+            if not os.path.isfile(src):
+                out["missing"] += 1
+                continue
+            name = os.path.basename(src)
+            dest = os.path.join(self.receipts_dir(), name)
+            n = 1
+            while os.path.exists(dest) and file_sha256(dest) != r.get("sha256"):
+                root, ext = os.path.splitext(name)
+                dest = os.path.join(self.receipts_dir(), f"{root} ({n}){ext}")
+                n += 1
+            try:
+                if not os.path.exists(dest):
+                    shutil.copy2(src, dest)
+                if r.get("sha256") and file_sha256(dest) != r["sha256"]:
+                    raise OSError("copy doesn't match the original")
+                with self._conn() as c:
+                    c.execute("UPDATE receipts SET file_path=? WHERE id=?",
+                              (os.path.relpath(dest, self.db_dir()), r["id"]))
+                os.remove(src)
+                out["moved"] += 1
+            except OSError:
+                out["failed"] += 1
+        try:
+            if todo and not os.listdir(self.legacy_receipts_dir()):
+                os.rmdir(self.legacy_receipts_dir())
+        except OSError:
+            pass
+        return out
 
     # ── line items ───────────────────────────────────────────────────────────
 
