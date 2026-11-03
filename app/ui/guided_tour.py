@@ -103,6 +103,13 @@ STEPS = [
               "wages, net pay and taxes owed. The <b>Contractors</b> tab flags who needs a "
               "1099-NEC. Not a substitute for a payroll provider."),
 
+    dict(nav="Taxes", target=lambda mw, p: getattr(p, "_export_btn", None),
+         when=lambda mw: mw.db.is_business(),
+         title="Taxes & year-end",
+         body="Estimate your quarterly taxes, track sales tax, log business miles at the IRS "
+              "rate, work out the home-office deduction — and click <b>Year-End Package</b> "
+              "to export every report your accountant needs as CSV files."),
+
     dict(nav="Reports", target=lambda mw, p: getattr(p, "_tabs", None),
          when=lambda mw: mw.db.is_business(),
          title="Business balance sheet",

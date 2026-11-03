@@ -14,6 +14,7 @@ from sheets.assets_store import AssetsMixin, ComputedMixin, ASSETS_SCHEMA
 from sheets.sales_store import SalesMixin, SALES_SCHEMA
 from sheets.inventory_store import InventoryMixin, INVENTORY_SCHEMA
 from sheets.payroll_store import PayrollMixin, PAYROLL_SCHEMA, PEOPLE_COLUMNS
+from sheets.tax_store import TaxMixin, TAX_SCHEMA
 
 # Bump whenever SCHEMA or _migrate() changes. An existing database with a lower
 # PRAGMA user_version is backed up before it is migrated.
@@ -24,7 +25,8 @@ from sheets.payroll_store import PayrollMixin, PAYROLL_SCHEMA, PEOPLE_COLUMNS
 #   5  — contacts, invoices, bills, document payments; transactions.contact_id
 #   6  — inventory items and stock movements
 #   7  — employees (people columns), time entries, payroll runs
-SCHEMA_VERSION = 7
+#   8  — mileage log, budgets
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -204,7 +206,7 @@ class _ClosingConnection(sqlite3.Connection):
 
 
 class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryMixin,
-               PayrollMixin):
+               PayrollMixin, TaxMixin):
     def __init__(self, db_path: str, book_type: str | None = None):
         """
         Open (creating/migrating as needed) the database at db_path.
@@ -236,6 +238,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             conn.executescript(SALES_SCHEMA)
             conn.executescript(INVENTORY_SCHEMA)
             conn.executescript(PAYROLL_SCHEMA)
+            conn.executescript(TAX_SCHEMA)
         self._migrate()
         if is_new and book_type in (BOOK_PERSONAL, BOOK_BUSINESS):
             self.set_setting("book_type", book_type)

@@ -69,6 +69,13 @@ single-member LLC), not just personal money. Create a new database and choose
   contractor and flags who crosses the 1099-NEC threshold ($2,000 for payments
   made in 2026), with a CSV summary. Payroll figures are estimates — not a
   substitute for a payroll provider or accountant.
+- **Taxes & reports (v1.7)** — a Schedule C summary grouped by tax line (meals
+  at 50%), quarterly estimated-tax estimate with 1040-ES due dates, sales tax
+  collected vs. paid, a mileage log at the IRS rate for each trip's date, a
+  home-office calculator (simplified vs. actual), and a one-click **Year-End
+  Package** of CSVs for your accountant. New report tabs: P&L by month, by
+  class / project / campaign (with ROI), by vendor, by person, cash flow
+  statement, and budget vs. actual.
 
 Tax-related labels are bookkeeping aids, not tax advice — confirm treatment with
 your accountant.
@@ -95,8 +102,9 @@ from the in-app banner.
   transactions automatically as they come in.
 - **Reconcile against statements** — tick off transactions and confirm your
   records match the bank, the same way an accountant would.
-- **See the whole picture** — Profit & Loss and Balance Sheet reports you can
-  print or save, plus a dashboard summarizing your accounts.
+- **See the whole picture** — Profit & Loss, Balance Sheet, cash flow, P&L by
+  month / class / vendor, and budget vs. actual — all exportable — plus a
+  dashboard summarizing your accounts.
 - **Track loans** — record a loan and FinanceBook works out the payment
   schedule, splitting each payment into principal and interest.
 - **Keep separate books** — run completely separate databases for, say,
