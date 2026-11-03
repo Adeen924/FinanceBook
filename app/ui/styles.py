@@ -196,6 +196,16 @@ QLabel#Chip {{
     font-size: 11px;
     font-weight: 600;
 }}
+QFrame#ReadOnlyBanner {{
+    background: rgba(245, 158, 11, 0.14);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    border-radius: 12px;
+}}
+QFrame#ReadOnlyBanner QLabel {{ color: #92400e; font-size: 12px; background: transparent; }}
+QPushButton#ConnectButton {{
+    padding: 10px 18px;
+    font-weight: 600;
+}}
 QLabel#WarnChip {{
     background: rgba(245, 158, 11, 0.14);
     color: #b45309;

@@ -1,7 +1,8 @@
 """Dialog for naming a database and choosing where to save it.
 
 Used both for first-run setup and for creating additional databases later
-from the sidebar.
+from the sidebar. On first run it also offers to connect an existing database
+(e.g. one another laptop keeps in OneDrive) instead of creating one.
 """
 import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
@@ -13,10 +14,13 @@ class DatabaseSetupDialog(QDialog):
     def __init__(self, parent=None, *, window_title="New Database",
                  heading="New Database", message="",
                  default_name="My Finances", default_location="",
-                 accept_label="Create", show_book_type=False):
+                 accept_label="Create", show_book_type=False, show_connect=False):
         super().__init__(parent)
         self._show_book_type = show_book_type
+        self._show_connect = show_connect
         self.book_type = "personal"
+        # Set when the user connects an existing database instead of creating one.
+        self.connected_path = ""
         self.setWindowTitle(window_title)
         self.setMinimumWidth(600)
         # Populated on accept; left as the defaults if the user cancels.
@@ -39,6 +43,25 @@ class DatabaseSetupDialog(QDialog):
             msg_lbl.setObjectName("Muted")
             msg_lbl.setWordWrap(True)
             lay.addWidget(msg_lbl)
+
+        if self._show_connect:
+            connect_hint = QLabel(
+                "<b>Already use FinanceBook on another computer?</b> Connect to the "
+                "database it keeps in OneDrive (or another shared folder) instead of "
+                "starting a new one.")
+            connect_hint.setWordWrap(True)
+            connect_hint.setObjectName("InfoBox")
+            lay.addWidget(connect_hint)
+            connect_row = QHBoxLayout()
+            self._connect_btn = QPushButton("Connect Existing Database…")
+            self._connect_btn.setObjectName("ConnectButton")
+            self._connect_btn.clicked.connect(self._connect_existing)
+            connect_row.addWidget(self._connect_btn)
+            connect_row.addStretch()
+            lay.addLayout(connect_row)
+            new_lbl = QLabel("Or create a new database:")
+            new_lbl.setStyleSheet("font-weight:bold;")
+            lay.addWidget(new_lbl)
 
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
@@ -111,6 +134,13 @@ class DatabaseSetupDialog(QDialog):
         path = QFileDialog.getExistingDirectory(self, "Choose Save Location", start)
         if path:
             self._loc_edit.setText(path)
+
+    def _connect_existing(self):
+        from ui.connect_dialog import choose_existing_database
+        path = choose_existing_database(self)
+        if path:
+            self.connected_path = path
+            self.accept()
 
     def _accept(self):
         name = self._name_edit.text().strip()

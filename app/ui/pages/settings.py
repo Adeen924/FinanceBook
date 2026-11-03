@@ -96,7 +96,28 @@ class SettingsPage(QWidget):
         path_label.setText(f"File: {self.db.db_path}")
         lay.addRow("Location:", path_label)
 
+        connect_btn = QPushButton("Connect Existing Database…")
+        connect_btn.setObjectName("Secondary")
+        connect_btn.clicked.connect(self._connect_existing)
+        lay.addRow("", connect_btn)
+
+        from ui.connect_dialog import LOCK_NOTE
+        sync_note = QLabel(
+            "Using the same database on two computers (for example in a OneDrive folder)? "
+            "Use <b>Connect Existing Database…</b> on the second computer. While a database "
+            "is open, FinanceBook keeps a small “.lock” file next to it so the other "
+            "computer can open it read-only instead of editing it at the same time. "
+            + LOCK_NOTE)
+        sync_note.setObjectName("Muted")
+        sync_note.setWordWrap(True)
+        lay.addRow("", sync_note)
+
         return grp
+
+    def _connect_existing(self):
+        mw = getattr(self, "_main_window", None)
+        if mw is not None and hasattr(mw, "connect_existing_database"):
+            mw.connect_existing_database()
 
     def _save_db_name(self):
         name = self._db_name_edit.text().strip()
@@ -263,6 +284,11 @@ class SettingsPage(QWidget):
     def _restore_backup(self):
         import os
         from sheets.backup import backup_dir, restore_database
+        if self.db.read_only:
+            QMessageBox.information(
+                self, "Restore", "This database is open read-only because it's in use "
+                "elsewhere, so a backup can't be restored into it from here.")
+            return
         start = backup_dir(self.db.db_path)
         path, _ = QFileDialog.getOpenFileName(
             self, "Choose a Backup to Restore",
@@ -292,9 +318,8 @@ class SettingsPage(QWidget):
             "Backup restored. Your previous data was saved as:\n"
             f"{os.path.basename(safety)}")
         mw = getattr(self, "_main_window", None)
-        if mw is not None and hasattr(mw, "_switch_to"):
-            from sheets.client import Database
-            mw._switch_to(Database(self.db.db_path))
+        if mw is not None and hasattr(mw, "reopen_current"):
+            mw.reopen_current()     # same file, same lock — just re-read it
 
     # ── AI receipt reading (opt-in) ──────────────────────────────────────────
 

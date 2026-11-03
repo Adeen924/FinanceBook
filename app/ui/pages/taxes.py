@@ -89,9 +89,10 @@ class TaxesPage(QWidget):
         return w
 
     def _estimate(self):
-        self.db.set_setting("tax_filing_status", self._filing.currentData())
-        self.db.set_setting("tax_other_income", str(self._other.value()))
-        self.db.set_setting("tax_w2_wages", str(self._wages.value()))
+        if not self.db.read_only:   # remember the inputs, unless only viewing
+            self.db.set_setting("tax_filing_status", self._filing.currentData())
+            self.db.set_setting("tax_other_income", str(self._other.value()))
+            self.db.set_setting("tax_w2_wages", str(self._wages.value()))
         today = date.today()
         from utils.reports import schedule_c
         cats = {c["id"]: c for c in self.db.get_categories()}

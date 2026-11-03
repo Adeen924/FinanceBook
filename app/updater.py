@@ -360,6 +360,17 @@ def _launch_helper_and_exit(parent, new_app_dir: str) -> None:
          "-WindowStyle", "Hidden", "-File", helper_path],
         creationflags=NO_WINDOW, close_fds=True)
 
+    # os._exit below skips closeEvent and atexit, so close the database and
+    # release its lock file now — otherwise the other computer would see it
+    # as in use until the lock went stale.
+    try:
+        if parent is not None and hasattr(parent, "release_database"):
+            parent.release_database()
+        import db_lock
+        db_lock._release_all()
+    except Exception:
+        pass
+
     # Quit cleanly so the .py files unlock for the helper.
     app = QApplication.instance()
     if app is not None:
