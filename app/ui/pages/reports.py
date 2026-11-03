@@ -90,6 +90,12 @@ class ReportsPage(QWidget):
         bs_lay.addWidget(self._bs_tree)
         self._tabs.addTab(bs, "Balance Sheet")
 
+        # More reports (each tab knows how to run and export itself).
+        from ui.report_tabs import extra_tabs
+        self._tabs.setUsesScrollButtons(True)
+        for label, cls in extra_tabs(self.db):
+            self._tabs.addTab(cls(self.db), label)
+
         lay.addWidget(self._tabs)
 
     def refresh(self):
@@ -108,10 +114,15 @@ class ReportsPage(QWidget):
         self._run()
 
     def _run(self):
-        if self._tabs.currentIndex() == 0:
+        idx = self._tabs.currentIndex()
+        if idx == 0:
             self._run_pnl()
-        else:
+        elif idx == 1:
             self._run_bs()
+        else:
+            self._tabs.currentWidget().run(self._date_from.date().toString("yyyy-MM-dd"),
+                                           self._date_to.date().toString("yyyy-MM-dd"),
+                                           self._class_combo.currentData() or "")
 
     def _run_pnl(self):
         start = self._date_from.date().toString("yyyy-MM-dd")
@@ -298,10 +309,13 @@ class ReportsPage(QWidget):
         if not path:
             return
         try:
-            if self._tabs.currentIndex() == 0:
+            idx = self._tabs.currentIndex()
+            if idx == 0:
                 self._export_pnl_csv(path)
-            else:
+            elif idx == 1:
                 self._export_bs_csv(path)
+            else:
+                self._tabs.currentWidget().export(path)
             QMessageBox.information(self, "Exported", f"Saved to {path}")
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", str(e))
