@@ -12,6 +12,29 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New: pack sizes on receipts (v1.11)
+
+> **This release upgrades the database format again.** Update FinanceBook on every
+> computer that shares a database (e.g. through OneDrive) before opening it there.
+
+- **Units per pack on every receipt line.** A "6 Pack" bought once is 6 units. Each
+  line in Review Receipt now has **Units per pack** (editable, whole number, 1 or
+  more), **Total units** (qty × units per pack) and **Cost per unit** — for Inventory
+  lines that's the landed cost (the line plus its share of tax, tip, shipping and
+  duties, less discount). They update as you type, are saved with drafts, and can
+  be corrected after a receipt is booked (**Save Changes** updates the stock it
+  received; the booked amount doesn't change).
+- **Suggested from the title.** "6 Pack", "Pack of 6", "6-Pack", "Set of 4",
+  "12-count" and "12 ct" fill in units per pack (highlighted — check it).
+  Ambiguous titles like "3 Pack of 10 ft cables" are pointed out but not applied.
+- **Stock in units.** Inventory lines add qty × units per pack to stock at the
+  per-unit landed cost (kept to 6 decimals so the units add back up to the exact
+  cents). Stock items have a default **Units per pack** that pre-fills receipt
+  lines; change it on a line and FinanceBook offers to make it the new default.
+- **Fix:** receipts split into several lines booked Inventory, Fixed asset and
+  uncategorized lines as money *in*. They're now booked as money out. Receipts
+  booked with v1.10.1 or earlier aren't changed — re-save affected ones.
+
 ## New: better receipt reading, shipping & inventory (v1.10)
 
 > **This release upgrades the database format.** If you share a database
