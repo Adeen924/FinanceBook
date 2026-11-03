@@ -286,6 +286,7 @@ class TransactionsPage(QWidget):
         # computed over the account's full history — see running_balances().
         acct_id = self._acct_filter.currentData() or None
         balances = self.db.running_balances(acct_id) if acct_id else {}
+        att_ids, att_groups = self.db.attachment_index()
 
         for row, t in enumerate(self._txns):
             cat = cats.get(t.get("category_id",""), {})
@@ -302,6 +303,8 @@ class TransactionsPage(QWidget):
                 disp_payee = f"⑂ {payee}"
             else:
                 disp_payee = payee
+            if t.get("id") in att_ids or (t.get("split_group_id") or "-") in att_groups:
+                disp_payee = "📎 " + disp_payee
 
             self._table.set_item(row, 0, fmt_date(t.get("date", "")))
             self._table.set_item(row, 1, acct_name)
@@ -423,11 +426,71 @@ class TransactionsPage(QWidget):
                     cat_menu.addAction(sub_act)
 
         menu.addSeparator()
+        att_act = QAction("Attach Receipt or File…", self)
+        att_act.triggered.connect(lambda: self._attach_file(txn))
+        menu.addAction(att_act)
+        receipts = self.db.get_transaction_receipts(txn)
+        if receipts:
+            open_menu = menu.addMenu("Open Attachment")
+            for rc in receipts:
+                a = QAction(rc.get("original_name") or rc.get("vendor") or "Receipt", self)
+                a.triggered.connect(lambda _, r=rc: self._open_receipt(r))
+                open_menu.addAction(a)
+            item_act = QAction("Itemize from Receipt…", self)
+            item_act.triggered.connect(lambda: self._itemize(txn, receipts[0]))
+            menu.addAction(item_act)
+
+        menu.addSeparator()
         del_act = QAction("Delete", self)
         del_act.triggered.connect(lambda: self._delete_txn(txn))
         menu.addAction(del_act)
 
         menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _attach_file(self, txn):
+        import os
+        from PyQt6.QtWidgets import QFileDialog
+        from ui.pages.receipts import FILE_FILTER
+        path, _ = QFileDialog.getOpenFileName(self, "Attach Receipt or File",
+                                              os.path.expanduser("~"), FILE_FILTER)
+        if not path:
+            return
+        try:
+            rc, _dup = self.db.add_receipt_file(path)
+        except OSError as e:
+            QMessageBox.warning(self, "Attach Failed", str(e))
+            return
+        if not rc.get("vendor"):
+            self.db.save_receipt({"id": rc["id"], "vendor": txn.get("payee", ""),
+                                  "receipt_date": txn.get("date", ""),
+                                  "total": abs(float(txn.get("amount") or 0))})
+        self.db.attach_receipt(rc["id"], txn)
+        self._apply_filter()
+
+    def _open_receipt(self, rc):
+        import os
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+        path = self.db.receipt_abs_path(rc)
+        if path and os.path.exists(path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        else:
+            QMessageBox.information(self, "Missing File",
+                                    "The attached file isn't in the receipts folder anymore.")
+
+    def _itemize(self, txn, rc):
+        """Split this (e.g. imported) transaction using the attached receipt's items."""
+        from ui.dialogs.receipt_dialog import ReceiptReviewDialog
+        from parsers import receipt as R
+        rc = self.db.get_receipt(rc["id"]) or rc
+        if rc.get("status") == "booked" and rc.get("transaction_id") != txn.get("id") and \
+                not txn.get("split_group_id"):
+            rc = dict(rc, status="attached", transaction_id=txn.get("id"))
+        parsed = None
+        if not self.db.get_receipt_items(rc["id"]) and rc.get("file_path"):
+            parsed = R.parse_file(self.db.receipt_abs_path(rc))
+        ReceiptReviewDialog(self.db, rc, parent=self, parsed=parsed).exec()
+        self._apply_filter()
 
     def _set_category(self, txn, cat_id):
         txn["category_id"] = cat_id

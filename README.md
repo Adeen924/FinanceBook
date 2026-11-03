@@ -32,6 +32,18 @@ single-member LLC), not just personal money. Create a new database and choose
 - **Automatic backups** — a daily backup next to your database (keeps the last
   10), a backup before every upgrade, and one-click backup/restore in Settings.
 
+- **Receipts (v1.2)** — drag in photos, PDFs, emailed receipts (.eml), saved web
+  pages or text. FinanceBook reads the vendor, date, tax, tip and line items,
+  checks they add up, and lets you pick a category, project and business/personal
+  for each item before saving it as one split transaction with the receipt
+  attached. It remembers each vendor's usual category, and you can search every
+  item you've ever bought ("what did I spend on printer paper?").
+- **Optional AI receipt reading** — for photos and scanned PDFs, paste your own
+  Anthropic API key in Settings and click **Read with AI**. Off by default; the
+  receipt file is only sent when you click.
+- **Attach receipts to any transaction** — including imported bank lines (look
+  for the 📎), then itemize that bank charge from its receipt.
+
 Tax-related labels are bookkeeping aids, not tax advice — confirm treatment with
 your accountant.
 
@@ -69,6 +81,8 @@ from the in-app banner.
   Equity section, and use categories mapped to Schedule C.
 - **Stay backed up** — automatic daily backups next to each database, plus
   one-click backup and restore.
+- **Keep receipts with your books** — attach receipt files to transactions and
+  turn itemized receipts into split transactions automatically.
 
 ## Your data stays yours
 

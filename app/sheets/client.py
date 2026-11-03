@@ -9,12 +9,14 @@ import uuid
 from datetime import datetime, timedelta
 
 from sheets import backup as _backup
+from sheets.receipts_store import ReceiptsMixin, RECEIPTS_SCHEMA
 
 # Bump whenever SCHEMA or _migrate() changes. An existing database with a lower
 # PRAGMA user_version is backed up before it is migrated.
 #   1  — implicit: everything up to v1.0.22 (user_version was never set → 0)
 #   2  — business books: people, owner roles, paid_by/charged_to, tax lines
-SCHEMA_VERSION = 2
+#   3  — receipts, receipt line items, attachments, vendor memory
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -191,7 +193,7 @@ class _ClosingConnection(sqlite3.Connection):
             self.close()
 
 
-class Database:
+class Database(ReceiptsMixin):
     def __init__(self, db_path: str, book_type: str | None = None):
         """
         Open (creating/migrating as needed) the database at db_path.
@@ -218,6 +220,7 @@ class Database:
             self._backup_before_migration()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            conn.executescript(RECEIPTS_SCHEMA)
         self._migrate()
         if is_new and book_type in (BOOK_PERSONAL, BOOK_BUSINESS):
             self.set_setting("book_type", book_type)
@@ -685,6 +688,12 @@ class Database:
             c.execute("DELETE FROM reconciliations")
             c.execute("DELETE FROM rules")
             c.execute("DELETE FROM loans")
+            # Receipt files and their line items are kept; only their links to
+            # the deleted transactions go.
+            c.execute("DELETE FROM attachments")
+            c.execute("UPDATE receipts SET transaction_id='', split_group_id='', "
+                      "status=CASE WHEN status IN ('booked','attached') THEN 'reviewed' "
+                      "ELSE status END")
         # Business books need their built-in owner accounts back.
         if self.is_business():
             self.ensure_business_setup()

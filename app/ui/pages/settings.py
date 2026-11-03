@@ -33,6 +33,7 @@ class SettingsPage(QWidget):
         lay.addWidget(self._build_database_section())
         lay.addWidget(self._build_book_type_section())
         lay.addWidget(self._build_backup_section())
+        lay.addWidget(self._build_ai_section())
         lay.addWidget(self._build_reset_section())
         lay.addWidget(self._build_about_section())
         lay.addStretch()
@@ -294,6 +295,94 @@ class SettingsPage(QWidget):
             from sheets.client import Database
             mw._switch_to(Database(self.db.db_path))
 
+    # ── AI receipt reading (opt-in) ──────────────────────────────────────────
+
+    def _build_ai_section(self) -> QGroupBox:
+        grp = QGroupBox("AI Receipt Reading  (optional)")
+        lay = QVBoxLayout(grp)
+        lay.setSpacing(10)
+        info = QLabel(
+            "Text receipts (emails, web pages, text PDFs) are read on your computer. For "
+            "photos and scanned PDFs you can let <b>Claude</b> read them: the receipt file "
+            "is sent to Anthropic's API using your own API key. Nothing else from your "
+            "books is sent. The key is stored only on this computer (encrypted for your "
+            "Windows account) — never in the database file.")
+        info.setWordWrap(True)
+        info.setTextFormat(Qt.TextFormat.RichText)
+        info.setObjectName("Muted")
+        lay.addWidget(info)
+        self._ai_chk = QCheckBox("Use AI to read photos and scanned PDFs")
+        self._ai_chk.toggled.connect(self._toggle_ai)
+        lay.addWidget(self._ai_chk)
+        form = QFormLayout()
+        self._ai_key = QLineEdit()
+        self._ai_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._ai_key.setPlaceholderText("Paste your Anthropic API key (sk-ant-…)")
+        form.addRow("API key:", self._ai_key)
+        self._ai_model = QLineEdit()
+        self._ai_model.setPlaceholderText("claude-opus-5-5")
+        form.addRow("Model:", self._ai_model)
+        lay.addLayout(form)
+        row = QHBoxLayout()
+        self._ai_status = QLabel("")
+        self._ai_status.setObjectName("Muted")
+        row.addWidget(self._ai_status, 1)
+        clear_btn = QPushButton("Remove Key")
+        clear_btn.setObjectName("Secondary")
+        clear_btn.clicked.connect(self._clear_ai_key)
+        row.addWidget(clear_btn)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self._save_ai)
+        row.addWidget(save_btn)
+        lay.addLayout(row)
+        return grp
+
+    def _refresh_ai(self):
+        from db_config import ai_settings
+        from utils.secret_store import mask
+        s = ai_settings()
+        self._ai_chk.blockSignals(True)
+        self._ai_chk.setChecked(s["enabled"])
+        self._ai_chk.blockSignals(False)
+        self._ai_key.clear()
+        self._ai_model.setText(s["model"])
+        self._ai_status.setText(f"Key saved: {mask(s['api_key'])}" if s["api_key"]
+                                else "No key saved.")
+
+    def _toggle_ai(self, on: bool):
+        from db_config import set_flag, get_flag
+        if on and not get_flag("ai_receipts_notice_ack"):
+            if QMessageBox.question(
+                    self, "Send Receipts to Anthropic?",
+                    "When you click “Read with AI” on a receipt, that receipt file is "
+                    "uploaded to Anthropic's API so Claude can read it. Usage is billed to "
+                    "your Anthropic account.\n\nTurn on AI receipt reading?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) != QMessageBox.StandardButton.Yes:
+                self._ai_chk.blockSignals(True)
+                self._ai_chk.setChecked(False)
+                self._ai_chk.blockSignals(False)
+                return
+            set_flag("ai_receipts_notice_ack", True)
+        set_flag("ai_receipts_enabled", on)
+
+    def _save_ai(self):
+        from db_config import set_ai_api_key, set_value
+        key = self._ai_key.text().strip()
+        if key:
+            if not key.startswith("sk-"):
+                QMessageBox.warning(self, "API Key", "That doesn't look like an Anthropic "
+                                    "API key (they start with “sk-”).")
+                return
+            set_ai_api_key(key)
+        set_value("ai_receipts_model", self._ai_model.text().strip() or "claude-opus-5-5")
+        self._refresh_ai()
+
+    def _clear_ai_key(self):
+        from db_config import set_ai_api_key
+        set_ai_api_key("")
+        self._refresh_ai()
+
     # ── Reset section ─────────────────────────────────────────────────────────
 
     def _build_reset_section(self) -> QGroupBox:
@@ -391,3 +480,4 @@ class SettingsPage(QWidget):
             self.db.get_setting("database_name", ""))
         self._refresh_book_type()
         self._refresh_backups()
+        self._refresh_ai()

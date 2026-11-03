@@ -1,0 +1,601 @@
+"""
+Receipt parsing — pluggable, stdlib-only (plus `requests` for the optional AI
+reader). No Qt imports, so it is unit-testable.
+
+Every parser returns the same dict shape (see empty_result()):
+
+    {vendor, date (YYYY-MM-DD or ''), currency, subtotal, tax, tip, total,
+     line_items: [{description, qty, unit_price, line_total}],
+     method, raw_text, warnings: [str]}
+
+Money values are Decimal (cents). Order of preference, as wired up in
+parse_file():
+  1. text-based receipts (.txt .eml .html .htm, PDFs whose text can be pulled
+     out with zlib) → heuristic text parser
+  2. images / scanned PDFs → optional AI reader (Anthropic Messages API, only
+     when the caller passes an API key — the UI makes this opt-in)
+  3. anything else → empty result for manual entry
+Register extra parsers with register_parser().
+"""
+import base64
+import html
+import json
+import re
+import zlib
+from datetime import date
+from decimal import Decimal
+from email import policy
+from email.parser import BytesParser
+from html.parser import HTMLParser
+
+from utils.money import D, cents, money_sum, ZERO
+
+TEXT_EXTS = {".txt", ".text", ".eml", ".html", ".htm", ".pdf"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+SUPPORTED_EXTS = TEXT_EXTS | IMAGE_EXTS
+_IMAGE_MEDIA = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def empty_result(method: str = "manual") -> dict:
+    return {"vendor": "", "date": "", "currency": "USD", "subtotal": ZERO,
+            "tax": ZERO, "tip": ZERO, "total": ZERO, "line_items": [],
+            "method": method, "raw_text": "", "warnings": []}
+
+
+# ── text extraction ──────────────────────────────────────────────────────────
+
+class _TextFromHTML(HTMLParser):
+    """HTML → text, keeping table rows and block elements on their own lines."""
+    _BLOCK = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+              "table", "section", "header", "footer"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "head"):
+            self._skip += 1
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+        elif tag in ("td", "th"):
+            self.parts.append("  ")
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "head"):
+            self._skip = max(0, self._skip - 1)
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self._skip:
+            self.parts.append(data)
+
+    def text(self) -> str:
+        out = "".join(self.parts).replace("\xa0", " ")
+        lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in out.splitlines()]
+        return "\n".join(ln for ln in lines if ln)
+
+
+def html_to_text(markup: str) -> str:
+    p = _TextFromHTML()
+    try:
+        p.feed(markup)
+        p.close()
+    except Exception:
+        return html.unescape(re.sub(r"<[^>]+>", " ", markup))
+    return p.text()
+
+
+def _decode(data: bytes) -> str:
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", "replace")
+
+
+def eml_to_text(data: bytes) -> str:
+    msg = BytesParser(policy=policy.default).parsebytes(data)
+    header = "\n".join(f"{k}: {msg[k]}" for k in ("From", "Subject", "Date") if msg[k])
+    body = msg.get_body(preferencelist=("plain", "html"))
+    text = ""
+    if body is not None:
+        try:
+            content = body.get_content()
+        except Exception:
+            content = _decode(body.get_payload(decode=True) or b"")
+        text = html_to_text(content) if body.get_content_type() == "text/html" else content
+    return (header + "\n\n" + text).strip()
+
+
+_PDF_STREAM = re.compile(rb"<<(.*?)>>\s*stream\r?\n(.*?)\r?\nendstream", re.S)
+_PDF_TEXT_OP = re.compile(rb"\[(.*?)\]\s*TJ|\((.*?)(?<!\\)\)\s*Tj|(T\*|Td|TD|Tm|ET|')", re.S)
+
+
+def _pdf_unescape(s: bytes) -> str:
+    out = bytearray()
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == 0x5C and i + 1 < len(s):          # backslash
+            n = s[i + 1]
+            esc = {ord("n"): 10, ord("r"): 13, ord("t"): 9, ord("b"): 8, ord("f"): 12}
+            if n in esc:
+                out.append(esc[n]); i += 2; continue
+            if 0x30 <= n <= 0x37:
+                m = re.match(rb"[0-7]{1,3}", s[i + 1:i + 4])
+                out.append(int(m.group(0), 8) & 0xFF); i += 1 + len(m.group(0)); continue
+            out.append(n); i += 2; continue
+        out.append(c)
+        i += 1
+    return out.decode("latin-1")
+
+
+def pdf_to_text(data: bytes) -> str:
+    """
+    Best-effort text from a text-based PDF using only zlib + regex: inflate
+    FlateDecode content streams and read Tj/TJ string operators. Works for most
+    receipts generated by POS / e-commerce systems; returns '' for scans (and
+    for PDFs using CID fonts), in which case the AI reader or manual entry is
+    used instead.
+    """
+    chunks: list[str] = []
+    for m in _PDF_STREAM.finditer(data):
+        head, body = m.group(1), m.group(2)
+        if b"/Subtype/Image" in head.replace(b" ", b"") or b"/Image" in head:
+            continue
+        if b"FlateDecode" in head:
+            try:
+                body = zlib.decompress(body)
+            except zlib.error:
+                try:
+                    body = zlib.decompressobj().decompress(body)
+                except zlib.error:
+                    continue
+        if b"Tj" not in body and b"TJ" not in body:
+            continue
+        line: list[str] = []
+        for op in _PDF_TEXT_OP.finditer(body):
+            arr, single, brk = op.group(1), op.group(2), op.group(3)
+            if brk:
+                if line:
+                    chunks.append("".join(line))
+                    line = []
+                continue
+            if single is not None:
+                line.append(_pdf_unescape(single))
+            elif arr is not None:
+                for part in re.finditer(rb"\((.*?)(?<!\\)\)|(-?\d+(?:\.\d+)?)", arr, re.S):
+                    if part.group(1) is not None:
+                        line.append(_pdf_unescape(part.group(1)))
+                    elif part.group(2) and float(part.group(2)) < -200:
+                        line.append(" ")           # large kerning gap = space
+        if line:
+            chunks.append("".join(line))
+    text = "\n".join(c.strip() for c in chunks if c.strip())
+    # Reject binary noise (encrypted/CID PDFs produce mostly non-printables).
+    printable = sum(ch.isprintable() or ch == "\n" for ch in text)
+    return text if text and printable / len(text) > 0.9 else ""
+
+
+def extract_text(path: str) -> str:
+    """Plain text of a receipt file, or '' when it has none we can read."""
+    ext = _ext(path)
+    with open(path, "rb") as f:
+        data = f.read()
+    if ext in (".txt", ".text"):
+        return _decode(data)
+    if ext in (".html", ".htm"):
+        return html_to_text(_decode(data))
+    if ext == ".eml":
+        return eml_to_text(data)
+    if ext == ".pdf":
+        return pdf_to_text(data)
+    return ""
+
+
+def _ext(path: str) -> str:
+    m = re.search(r"\.[A-Za-z0-9]+$", path)
+    return m.group(0).lower() if m else ""
+
+
+# ── heuristic text parser ────────────────────────────────────────────────────
+
+_AMOUNT = r"-?\(?\$?\s?-?\d{1,3}(?:,\d{3})*(?:\.\d{2})\)?|-?\(?\$?\s?-?\d+\.\d{2}\)?"
+_AMOUNT_RE = re.compile(_AMOUNT)
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+_KEYWORDS = [   # (field, regex) — checked in this order; first match wins
+    ("subtotal", re.compile(r"\bsub[\s-]?total\b|\bmerchandise total\b|\bitems? total\b", re.I)),
+    ("tip", re.compile(r"\btip\b|\bgratuity\b", re.I)),
+    ("tax", re.compile(r"\b(sales\s+)?tax\b|\bvat\b|\bgst\b|\bhst\b", re.I)),
+    ("total", re.compile(r"\b(grand\s+)?total\b|\bamount\s+(due|paid|charged)\b|"
+                         r"\bbalance\s+due\b|\border total\b|\btotal charged\b", re.I)),
+]
+_SKIP_LINE = re.compile(
+    r"\b(change|cash tendered|tendered|visa|mastercard|amex|discover|debit|credit|"
+    r"card\s*#|auth|approval|balance|savings|you saved|points|rewards|"
+    r"payment|paid with|refund due|shipping address|ship to|bill to)\b", re.I)
+_QTY_PATTERNS = [
+    re.compile(r"^(?P<desc>.*?)\s+(?P<qty>\d+(?:\.\d+)?)\s*(?:x|@|×)\s*\$?(?P<unit>\d+(?:\.\d{1,2})?)\b", re.I),
+    re.compile(r"^(?P<qty>\d+(?:\.\d+)?)\s*(?:x|@|×)\s*(?P<desc>.+?)\s+@?\s*\$?(?P<unit>\d+\.\d{2})\b", re.I),
+    re.compile(r"\bqty[:\s]*(?P<qty>\d+(?:\.\d+)?)\b", re.I),
+    re.compile(r"^(?P<qty>\d{1,3})\s+(?P<desc>[A-Za-z].+)$"),
+]
+
+
+def _money(token: str) -> Decimal:
+    neg = token.strip().startswith("-") or ("(" in token and ")" in token)
+    v = D(re.sub(r"[^\d.]", "", token))
+    return cents(-v if neg else v)
+
+
+def parse_date(text: str) -> str:
+    """First plausible date in the text as YYYY-MM-DD, or ''."""
+    pats = [
+        (r"\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b", "ymd"),
+        (r"\b(\d{1,2})[/-](\d{1,2})[/-](20\d{2}|\d{2})\b", "mdy"),
+        (r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),?\s+(20\d{2})\b", "bdy"),
+        (r"\b(\d{1,2})[\s-](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*[\s-](20\d{2})\b", "dby"),
+    ]
+    best = None
+    for pat, kind in pats:
+        for m in re.finditer(pat, text, re.I):
+            try:
+                if kind == "ymd":
+                    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                elif kind == "mdy":
+                    mo, d, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    y += 2000 if y < 100 else 0
+                elif kind == "bdy":
+                    mo, d, y = _MONTHS[m.group(1)[:3].lower()], int(m.group(2)), int(m.group(3))
+                else:
+                    d, mo, y = int(m.group(1)), _MONTHS[m.group(2)[:3].lower()], int(m.group(3))
+                found = date(y, mo, d)
+            except (ValueError, KeyError):
+                continue
+            if best is None or m.start() < best[0]:
+                best = (m.start(), found)
+    return best[1].isoformat() if best else ""
+
+
+def _guess_vendor(lines: list[str]) -> str:
+    for ln in lines[:8]:
+        s = ln.strip(" *-=#")
+        if len(s) < 2 or _AMOUNT_RE.search(s) or parse_date(s):
+            continue
+        if re.match(r"^(from|subject|date|to|receipt|invoice|order|thank)", s, re.I):
+            m = re.match(r"^from:\s*\"?([^\"<]+)", s, re.I)
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+            continue
+        if re.search(r"\b(st|street|ave|road|rd|suite|blvd)\b|\d{5}", s, re.I):
+            continue
+        if sum(ch.isalpha() for ch in s) >= 2:
+            return s[:80]
+    return ""
+
+
+def parse_text(text: str) -> dict:
+    """Heuristically read vendor/date/totals/line items from receipt text."""
+    res = empty_result("text")
+    res["raw_text"] = text
+    lines = [ln.rstrip() for ln in text.replace("\r", "").split("\n")]
+    lines = [ln for ln in lines if ln.strip()]
+    res["vendor"] = _guess_vendor(lines)
+    res["date"] = parse_date(text)
+    if re.search(r"\bCAD\b|C\$", text):
+        res["currency"] = "CAD"
+    elif re.search(r"€|\bEUR\b", text):
+        res["currency"] = "EUR"
+    elif re.search(r"£|\bGBP\b", text):
+        res["currency"] = "GBP"
+
+    found: dict[str, Decimal] = {}
+    items = []
+    for ln in lines:
+        amounts = _AMOUNT_RE.findall(ln)
+        if not amounts:
+            continue
+        amt = _money(amounts[-1])
+        label = ln[:ln.rfind(amounts[-1].strip())].strip() if amounts[-1].strip() in ln else ln
+        field = next((f for f, rx in _KEYWORDS if rx.search(label)), None)
+        if field:
+            if field == "tax" and re.search(r"\b(rate|%)\b", label) and "%" in label and amt < 1:
+                continue
+            if field == "total" and "total" in found and re.search(r"\bsub", label, re.I):
+                field = "subtotal"
+            # "Total" can repeat (e.g. "Total savings"); keep the largest.
+            if field == "total" and field in found:
+                found[field] = max(found[field], amt)
+            else:
+                found.setdefault(field, amt)
+            continue
+        if _SKIP_LINE.search(label) or not re.search(r"[A-Za-z]{2,}", label):
+            continue
+        items.append(_item_from_line(label, amt))
+
+    for k in ("subtotal", "tax", "tip", "total"):
+        res[k] = found.get(k, ZERO)
+    res["line_items"] = items
+    item_sum = money_sum(i["line_total"] for i in items)
+    if not res["subtotal"] and items:
+        res["subtotal"] = item_sum
+    if not res["total"]:
+        res["total"] = cents(res["subtotal"] + res["tax"] + res["tip"])
+    res["warnings"] = check_totals(res)
+    return res
+
+
+def _item_from_line(label: str, amt: Decimal) -> dict:
+    desc, qty, unit = label, Decimal(1), amt
+    for pat in _QTY_PATTERNS:
+        m = pat.search(label)
+        if not m:
+            continue
+        gd = m.groupdict()
+        try:
+            qty = D(gd["qty"])
+        except Exception:
+            continue
+        if qty <= 0:
+            qty = Decimal(1)
+        if gd.get("desc"):
+            desc = gd["desc"]
+        else:
+            desc = pat.sub("", label)
+        unit = D(gd["unit"]) if gd.get("unit") else cents(amt / qty)
+        break
+    desc = re.sub(r"\s{2,}", " ", desc).strip(" .:-$")
+    return {"description": desc or label, "qty": qty, "unit_price": cents(unit),
+            "line_total": amt}
+
+
+def check_totals(res: dict) -> list[str]:
+    """Human-readable mismatches between items, subtotal and total."""
+    warn = []
+    items = res.get("line_items") or []
+    item_sum = money_sum(i.get("line_total") for i in items)
+    sub, tax, tip, total = (cents(res.get(k)) for k in ("subtotal", "tax", "tip", "total"))
+    if items and sub and item_sum != sub:
+        warn.append(f"Line items add up to ${item_sum:,.2f} but the subtotal is ${sub:,.2f} "
+                    f"(off by ${abs(item_sum - sub):,.2f}).")
+    base = sub or item_sum
+    if total and base and cents(base + tax + tip) != total:
+        warn.append(f"Subtotal + tax + tip = ${cents(base + tax + tip):,.2f} but the total is "
+                    f"${total:,.2f}.")
+    for i in items:
+        expect = cents(D(i.get("qty")) * D(i.get("unit_price")))
+        if D(i.get("qty")) != 1 and expect != cents(i.get("line_total")):
+            warn.append(f"“{i.get('description', '')}”: {i.get('qty')} × "
+                        f"${cents(i.get('unit_price')):,.2f} ≠ ${cents(i.get('line_total')):,.2f}.")
+    return warn
+
+
+# ── AI reader (Anthropic Messages API, opt-in) ───────────────────────────────
+
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2026-10-21"
+DEFAULT_AI_MODEL = "claude-opus-5-5"
+
+RECEIPT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "vendor": {"type": "string"},
+        "date": {"type": "string", "description": "YYYY-MM-DD, or empty if not shown"},
+        "currency": {"type": "string", "description": "ISO 4217 code, e.g. USD"},
+        "subtotal": {"type": "number"},
+        "tax": {"type": "number"},
+        "tip": {"type": "number"},
+        "total": {"type": "number"},
+        "line_items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string"},
+                    "qty": {"type": "number"},
+                    "unit_price": {"type": "number"},
+                    "line_total": {"type": "number"},
+                },
+                "required": ["description", "qty", "unit_price", "line_total"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["vendor", "date", "currency", "subtotal", "tax", "tip", "total", "line_items"],
+    "additionalProperties": False,
+}
+
+_AI_PROMPT = (
+    "Extract this receipt for bookkeeping. Return the merchant name as vendor, the "
+    "purchase date as YYYY-MM-DD (empty string if absent), the currency code, and "
+    "subtotal, tax, tip and total as plain numbers (0 when the receipt has none). "
+    "List every purchased item as a line item with its quantity, unit price and line "
+    "total; put discounts as negative line items. Do not include payment, change or "
+    "card lines. Copy numbers exactly as printed — do not invent values.")
+
+
+class AIReceiptError(Exception):
+    """A user-presentable failure from the AI reader (never contains the key)."""
+
+
+def ai_request_body(path: str, model: str = DEFAULT_AI_MODEL) -> dict:
+    ext = _ext(path)
+    with open(path, "rb") as f:
+        data = f.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise AIReceiptError("That file is larger than 20 MB — too big to send.")
+    b64 = base64.standard_b64encode(data).decode("ascii")
+    if ext == ".pdf":
+        block = {"type": "document",
+                 "source": {"type": "base64", "media_type": "application/pdf", "data": b64}}
+    elif ext in _IMAGE_MEDIA:
+        block = {"type": "image",
+                 "source": {"type": "base64", "media_type": _IMAGE_MEDIA[ext], "data": b64}}
+    else:
+        raise AIReceiptError("AI reading works with JPG, PNG, GIF, WEBP and PDF files.")
+    return {
+        "model": model or DEFAULT_AI_MODEL,
+        "max_tokens": 16000,
+        "fallbacks": "default",
+        "output_config": {"format": {"type": "json_schema", "schema": RECEIPT_SCHEMA}},
+        "messages": [{"role": "user", "content": [block, {"type": "text", "text": _AI_PROMPT}]}],
+    }
+
+
+def parse_with_ai(path: str, api_key: str, model: str = DEFAULT_AI_MODEL,
+                  timeout: float = 120.0, session=None) -> dict:
+    """
+    Read an image or scanned PDF with Claude. Raises AIReceiptError with a
+    friendly message on any failure (offline, bad key, rate limit, bad JSON).
+    """
+    if not api_key:
+        raise AIReceiptError("Add your Anthropic API key in Settings → AI Receipt Reading.")
+    body = ai_request_body(path, model)
+    try:
+        import requests
+    except Exception:
+        raise AIReceiptError("The network library isn't available in this build.")
+    http = session or requests
+    headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION,
+               "anthropic-beta": "server-side-fallback-2026-07-01",
+               "content-type": "application/json"}
+    try:
+        resp = http.post(ANTHROPIC_URL, headers=headers, json=body, timeout=timeout)
+    except requests.exceptions.ConnectionError:
+        raise AIReceiptError("Couldn't reach Anthropic — check your internet connection.")
+    except requests.exceptions.Timeout:
+        raise AIReceiptError("Anthropic took too long to answer. Try again in a moment.")
+    except requests.exceptions.RequestException as e:
+        raise AIReceiptError(f"Network error: {type(e).__name__}")
+    return parse_ai_response(resp.status_code, _safe_json(resp), resp.headers)
+
+
+def _safe_json(resp):
+    try:
+        return resp.json()
+    except Exception:
+        return None
+
+
+def parse_ai_response(status: int, payload, headers=None) -> dict:
+    """Turn a Messages API HTTP response into a receipt result (pure, testable)."""
+    if status != 200:
+        msg = ((payload or {}).get("error") or {}).get("message", "") if isinstance(payload, dict) else ""
+        if status == 401:
+            raise AIReceiptError("Anthropic rejected the API key. Check it in Settings.")
+        if status == 403:
+            raise AIReceiptError("This API key isn't allowed to use that model.")
+        if status == 404:
+            raise AIReceiptError("Model not found — check the model name in Settings.")
+        if status == 413:
+            raise AIReceiptError("That file is too large for the API.")
+        if status == 429:
+            wait = (headers or {}).get("retry-after", "")
+            raise AIReceiptError("Rate limited by Anthropic." + (f" Try again in {wait}s." if wait else ""))
+        if status >= 500 or status == 529:
+            raise AIReceiptError("Anthropic is having trouble right now. Try again shortly.")
+        raise AIReceiptError(f"Anthropic returned an error ({status}). {msg[:200]}".strip())
+    if not isinstance(payload, dict):
+        raise AIReceiptError("Anthropic's reply wasn't valid JSON.")
+    if payload.get("stop_reason") == "refusal":
+        raise AIReceiptError("The model declined to read this file. Enter it manually.")
+    if payload.get("stop_reason") == "max_tokens":
+        raise AIReceiptError("The receipt was too long to read in one go. Enter it manually.")
+    text = "".join(b.get("text", "") for b in payload.get("content", [])
+                   if isinstance(b, dict) and b.get("type") == "text")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise AIReceiptError("The AI reply couldn't be understood. Enter it manually.")
+    return normalize_ai_result(data)
+
+
+def normalize_ai_result(data: dict) -> dict:
+    """Validate/convert the model's JSON into the standard result dict."""
+    if not isinstance(data, dict):
+        raise AIReceiptError("The AI reply had an unexpected shape.")
+    res = empty_result("ai")
+    res["vendor"] = str(data.get("vendor") or "")[:120]
+    d = str(data.get("date") or "")
+    try:
+        res["date"] = date.fromisoformat(d).isoformat() if d else ""
+    except ValueError:
+        res["date"] = parse_date(d)
+    cur = str(data.get("currency") or "USD").upper()
+    res["currency"] = cur if re.fullmatch(r"[A-Z]{3}", cur) else "USD"
+    for k in ("subtotal", "tax", "tip", "total"):
+        res[k] = cents(data.get(k) or 0)
+    items = []
+    for it in data.get("line_items") or []:
+        if not isinstance(it, dict):
+            continue
+        qty = D(it.get("qty") or 1) or Decimal(1)
+        items.append({"description": str(it.get("description") or "").strip()[:200] or "Item",
+                      "qty": qty, "unit_price": cents(it.get("unit_price") or 0),
+                      "line_total": cents(it.get("line_total") or 0)})
+    res["line_items"] = items
+    res["warnings"] = check_totals(res)
+    return res
+
+
+# ── registry ─────────────────────────────────────────────────────────────────
+
+def _text_parser(path: str, **_):
+    text = extract_text(path)
+    if not text.strip():
+        return None
+    res = parse_text(text)
+    return res if (res["total"] or res["line_items"]) else dict(res, method="text-unreadable")
+
+
+def _ai_parser(path: str, api_key: str = "", model: str = DEFAULT_AI_MODEL, **_):
+    if not api_key:
+        return None
+    return parse_with_ai(path, api_key, model)
+
+
+# (name, can_handle(ext), fn(path, **opts) -> result | None). First non-None wins.
+PARSERS = [
+    ("text", lambda ext: ext in TEXT_EXTS, _text_parser),
+    ("ai", lambda ext: ext in IMAGE_EXTS or ext == ".pdf", _ai_parser),
+]
+
+
+def register_parser(name: str, can_handle, fn, first: bool = False):
+    entry = (name, can_handle, fn)
+    PARSERS.insert(0, entry) if first else PARSERS.append(entry)
+
+
+def parse_file(path: str, use_ai: bool = False, api_key: str = "",
+               model: str = DEFAULT_AI_MODEL) -> dict:
+    """
+    Run the parsers in order. AI is used only when use_ai and api_key are set.
+    AI errors propagate (AIReceiptError) so the UI can explain them; every other
+    failure falls back to an empty result for manual entry.
+    """
+    ext = _ext(path)
+    for name, can, fn in PARSERS:
+        if not can(ext):
+            continue
+        if name == "ai" and not use_ai:
+            continue
+        try:
+            res = fn(path, api_key=api_key, model=model)
+        except AIReceiptError:
+            raise
+        except Exception:
+            continue
+        if res is not None and res.get("method") != "text-unreadable":
+            return res
+    res = empty_result("manual")
+    if ext in IMAGE_EXTS or ext == ".pdf":
+        res["warnings"] = ["This file has no readable text. Turn on AI receipt reading "
+                           "in Settings, or type the details in."]
+    return res
