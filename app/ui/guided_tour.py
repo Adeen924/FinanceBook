@@ -66,6 +66,13 @@ STEPS = [
               "contribution</b> or as money the <b>company owes you</b>. "
               "<b>Reimburse Owner</b> pays you back later."),
 
+    dict(nav="Receipts", target=lambda mw, p: getattr(p, "_add_btn", None),
+         when=lambda mw: mw.db.is_business(),
+         title="Receipts → books",
+         body="Drop receipt files here or click <b>“+ Add Receipts”</b>. FinanceBook "
+              "reads the vendor, date, tax and line items, lets you pick a category for "
+              "each item, and saves it as one split transaction with the receipt attached."),
+
     dict(nav="Reports", target=lambda mw, p: getattr(p, "_tabs", None),
          when=lambda mw: mw.db.is_business(),
          title="Business balance sheet",
@@ -110,6 +117,7 @@ class GuidedTour:
     def finish(self):
         if self.overlay is not None:
             self.overlay.cleanup()
+            self.overlay.hide()
             self.overlay.deleteLater()
             self.overlay = None
 

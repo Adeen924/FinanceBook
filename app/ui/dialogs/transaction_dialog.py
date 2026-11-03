@@ -202,6 +202,25 @@ class TransactionDialog(QDialog):
         self.notes_edit.setPlaceholderText("Optional notes…")
         form.addRow("Notes", self.notes_edit)
 
+        # Attachments (existing transactions only — a new one has no id yet).
+        if self.transaction.get("id"):
+            att_row = QWidget()
+            al = QHBoxLayout(att_row)
+            al.setContentsMargins(0, 0, 0, 0)
+            self._att_label = QLabel("")
+            self._att_label.setObjectName("Muted")
+            al.addWidget(self._att_label, 1)
+            att_btn = QPushButton("Attach…")
+            att_btn.setObjectName("Secondary")
+            att_btn.clicked.connect(self._attach)
+            al.addWidget(att_btn)
+            self._att_open = QPushButton("Open")
+            self._att_open.setObjectName("Secondary")
+            self._att_open.clicked.connect(self._open_attachment)
+            al.addWidget(self._att_open)
+            form.addRow("📎 Receipts", att_row)
+            self._refresh_attachments()
+
         lay.addLayout(form)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
@@ -242,6 +261,41 @@ class TransactionDialog(QDialog):
                 self.amount_spin.setValue(abs(this_amt))
 
         self._update_loan_lock()
+
+    # ── attachments ────────────────────────────────────────────────────────────
+
+    def _refresh_attachments(self):
+        self._attached = self.db.get_transaction_receipts(self.transaction)
+        n = len(self._attached)
+        self._att_label.setText(", ".join(r.get("original_name") or r.get("vendor") or "receipt"
+                                          for r in self._attached) if n else "No files attached")
+        self._att_open.setEnabled(bool(n))
+
+    def _attach(self):
+        import os
+        from PyQt6.QtWidgets import QFileDialog
+        from ui.pages.receipts import FILE_FILTER
+        path, _ = QFileDialog.getOpenFileName(self, "Attach Receipt or File",
+                                              os.path.expanduser("~"), FILE_FILTER)
+        if not path:
+            return
+        try:
+            rc, _dup = self.db.add_receipt_file(path)
+        except OSError as e:
+            QMessageBox.warning(self, "Attach Failed", str(e))
+            return
+        self.db.attach_receipt(rc["id"], self.transaction)
+        self._refresh_attachments()
+
+    def _open_attachment(self):
+        import os
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+        for rc in self._attached:
+            path = self.db.receipt_abs_path(rc)
+            if path and os.path.exists(path):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+                return
 
     # ── business: who paid ─────────────────────────────────────────────────────
 

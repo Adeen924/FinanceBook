@@ -73,3 +73,30 @@ def set_flag(name: str, value: bool = True):
     cfg = _load()
     cfg[name] = bool(value)
     _save(cfg)
+
+
+def get_value(name: str, default: str = "") -> str:
+    """Per-user (per-machine) string setting — not synced with any database."""
+    v = _load().get(name, default)
+    return v if isinstance(v, str) else default
+
+
+def set_value(name: str, value: str):
+    cfg = _load()
+    cfg[name] = value
+    _save(cfg)
+
+
+# ── AI receipt reading (opt-in) ──────────────────────────────────────────────
+
+def ai_settings() -> dict:
+    from utils.secret_store import unprotect
+    return {"enabled": get_flag("ai_receipts_enabled"),
+            "api_key": unprotect(get_value("ai_receipts_key")),
+            "model": get_value("ai_receipts_model") or "claude-opus-5-5",
+            "notice_ack": get_flag("ai_receipts_notice_ack")}
+
+
+def set_ai_api_key(key: str):
+    from utils.secret_store import protect
+    set_value("ai_receipts_key", protect(key.strip()))
