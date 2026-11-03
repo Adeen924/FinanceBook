@@ -36,6 +36,7 @@ NAV_SECTIONS = [
         ("Invoices & Bills", "invoice",      True),
         ("Inventory",        "inventory",    True),
         ("Contacts",         "contacts",     True),
+        ("People & Payroll", "people",       True),
     ]),
     ("REPORTS", [
         ("Reports",          "reports",      False),
@@ -65,6 +66,7 @@ def _page_constructors() -> dict:
     from ui.pages.invoices     import InvoicesPage
     from ui.pages.contacts     import ContactsPage
     from ui.pages.inventory    import InventoryPage
+    from ui.pages.payroll      import PayrollPage
     return {
         "Dashboard": DashboardPage, "Accounts": AccountsPage, "Loans": LoansPage,
         "Transactions": TransactionsPage, "Transfers": TransfersPage,
@@ -73,7 +75,7 @@ def _page_constructors() -> dict:
         "Settings": SettingsPage, "Owner Investment": OwnerInvestmentPage,
         "Receipts": ReceiptsPage, "Assets": AssetsPage,
         "Invoices & Bills": InvoicesPage, "Contacts": ContactsPage,
-        "Inventory": InventoryPage,
+        "Inventory": InventoryPage, "People & Payroll": PayrollPage,
     }
 
 
