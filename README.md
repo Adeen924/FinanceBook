@@ -56,6 +56,11 @@ single-member LLC), not just personal money. Create a new database and choose
   invoices goes to a Sales Tax Payable liability). A/R and A/P aging show
   what's overdue, the dashboard shows what you're owed and what you owe, and
   imported bank lines are matched to vendors automatically.
+- **Inventory (v1.5)** — items with SKUs and reorder points, stock received
+  and sold, stock counts, and FIFO or weighted-average costing. Stock you buy
+  sits on the Balance Sheet as Inventory and moves to Cost of Goods Sold on the
+  P&L when it sells. Low-stock items are flagged; a valuation report exports to
+  CSV. Add stock straight from a receipt line.
 
 Tax-related labels are bookkeeping aids, not tax advice — confirm treatment with
 your accountant.
@@ -94,6 +99,7 @@ from the in-app banner.
   Equity section, and use categories mapped to Schedule C.
 - **Stay backed up** — automatic daily backups next to each database, plus
   one-click backup and restore.
+- **Track inventory** — stock on hand, FIFO / average cost, and cost of goods sold.
 - **Invoice customers and track bills** — numbered PDF invoices, bills,
   payments, and A/R / A/P aging.
 - **Track equipment and depreciation** — an asset register with automatic

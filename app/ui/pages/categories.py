@@ -14,6 +14,7 @@ CATEGORY_TYPES = [
     ("Income", "income"),
     ("Debt Repayment", "debt_repayment"),
     ("Asset Purchase (Balance Sheet)", "asset"),
+    ("Inventory Purchase (Balance Sheet)", "inventory"),
 ]
 _TYPE_LABELS = {val: label for label, val in CATEGORY_TYPES}
 

@@ -12,6 +12,7 @@ from sheets import backup as _backup
 from sheets.receipts_store import ReceiptsMixin, RECEIPTS_SCHEMA
 from sheets.assets_store import AssetsMixin, ComputedMixin, ASSETS_SCHEMA
 from sheets.sales_store import SalesMixin, SALES_SCHEMA
+from sheets.inventory_store import InventoryMixin, INVENTORY_SCHEMA
 
 # Bump whenever SCHEMA or _migrate() changes. An existing database with a lower
 # PRAGMA user_version is backed up before it is migrated.
@@ -20,7 +21,8 @@ from sheets.sales_store import SalesMixin, SALES_SCHEMA
 #   3  — receipts, receipt line items, attachments, vendor memory
 #   4  — fixed assets / prepaids, asset usage
 #   5  — contacts, invoices, bills, document payments; transactions.contact_id
-SCHEMA_VERSION = 5
+#   6  — inventory items and stock movements
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -199,7 +201,7 @@ class _ClosingConnection(sqlite3.Connection):
             self.close()
 
 
-class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin):
+class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryMixin):
     def __init__(self, db_path: str, book_type: str | None = None):
         """
         Open (creating/migrating as needed) the database at db_path.
@@ -229,6 +231,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin):
             conn.executescript(RECEIPTS_SCHEMA)
             conn.executescript(ASSETS_SCHEMA)
             conn.executescript(SALES_SCHEMA)
+            conn.executescript(INVENTORY_SCHEMA)
         self._migrate()
         if is_new and book_type in (BOOK_PERSONAL, BOOK_BUSINESS):
             self.set_setting("book_type", book_type)

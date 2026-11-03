@@ -40,6 +40,7 @@ def kinds_for(db) -> list[tuple[str, str]]:
     kinds = list(KINDS)
     if db.is_business():
         kinds.append(("asset", "Fixed asset"))
+        kinds.append(("inventory", "Inventory"))
     return kinds
 
 
@@ -518,7 +519,31 @@ class ReceiptReviewDialog(QDialog):
             return
         self.booked = True
         self._register_assets(items, h, acct_id)
+        self._receive_inventory(items, h)
         self.accept()
+
+    def _receive_inventory(self, items, h):
+        """Add each "Inventory" line to stock (the money is already booked)."""
+        from utils.money import allocate
+        lines = [i for i in items if i.get("kind") == "inventory" and i["business"]]
+        if not lines:
+            return
+        shares = allocate(D(h["tax"]) + D(h["tip"]), [i["line_total"] for i in items])
+        from ui.pages.inventory import StockDialog, ItemDialog
+        for it in lines:
+            if not self.db.get_items():
+                dlg = ItemDialog(self.db, {"name": it["description"]}, parent=self)
+                if dlg.exec() != QDialog.DialogCode.Accepted:
+                    continue
+                self.db.save_item(dlg.get_data())
+            share = shares[items.index(it)] if self.tax_mode.currentData() == "proportional" else 0
+            qty = D(it["qty"]) or D(1)
+            match = next((x for x in self.db.get_items()
+                          if x["name"].lower() == it["description"].lower()), None)
+            StockDialog(self.db, "purchase", match, parent=self, preset={
+                "date": h["receipt_date"], "qty": float(qty),
+                "unit_cost": float((D(it["line_total"]) + D(share)) / qty),
+                "notes": f"Receipt: {h['vendor']} — {it['description']}"}).exec()
 
     def _register_assets(self, items, h, acct_id):
         """Offer to add each "Fixed asset" line to the asset register."""

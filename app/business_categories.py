@@ -47,6 +47,7 @@ TAX_LINES = {
 BUSINESS_CATEGORY_ADDITIONS = {
     2: [("asset", "Fixed Assets (purchases & sales)", "", 100),
         ("asset", "Prepaid Expenses", "", 100)],
+    3: [("inventory", "Inventory Purchases", "", 100)],
 }
 
 BUSINESS_CATEGORIES = {

@@ -103,7 +103,7 @@ def account_balances(accounts, txns, as_of: str = "") -> dict:
 def balance_sheet(accounts, txns, cats: dict, as_of: str, fy_start: str = "",
                   extra_assets=(), extra_liabilities=(),
                   noncash_pnl_before_fy: Decimal = ZERO,
-                  noncash_pnl_in_fy: Decimal = ZERO) -> dict:
+                  noncash_pnl_in_fy: Decimal = ZERO, extra_equity=()) -> dict:
     """
     Build a balancing Balance Sheet as of `as_of`.
 
@@ -118,6 +118,8 @@ def balance_sheet(accounts, txns, cats: dict, as_of: str, fy_start: str = "",
     extra_liabilities   [(label, Decimal positive = owed)] computed liabilities
     noncash_pnl_*       non-cash P&L amounts (e.g. −depreciation) that pair with
                         the extra assets so the sheet still balances
+    extra_equity        [(label, Decimal)] equity that came with a computed asset
+                        but no transaction (e.g. inventory you already had)
 
     Returns a dict with assets / liabilities / equity line lists (label, amount,
     meta) and totals. Liabilities and equity are presented as positive amounts
@@ -188,6 +190,8 @@ def balance_sheet(accounts, txns, cats: dict, as_of: str, fy_start: str = "",
     equity.append(("Owner contributions", cents(contributions), {}))
     equity.append(("Owner draws", cents(-draws), {}))
     equity.extend(other_equity)
+    for label, amt in extra_equity:
+        equity.append((label, cents(amt), {"computed": True}))
     equity.append(("Retained earnings (prior years)", retained, {}))
     equity.append(("Net income (this year)", current, {}))
     explained = cents(sum((x[1] for x in equity), ZERO))
