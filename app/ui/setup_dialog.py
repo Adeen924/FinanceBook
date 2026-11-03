@@ -89,7 +89,7 @@ class SetupDialog(QDialog):
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setObjectName("Secondary")
         cancel_btn.clicked.connect(self.reject)
-        connect_btn = QPushButton("Connect & Save")
+        connect_btn = QPushButton("Connect && Save")
         connect_btn.clicked.connect(self._connect)
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(connect_btn)

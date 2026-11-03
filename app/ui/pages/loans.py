@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 
 from ui.widgets import PageTitle, DataTable, fmt_date
+from ui.styles  import SUCCESS
 from utils.loan import amortization_schedule, calc_monthly_payment, remaining_balance
 
 
@@ -86,7 +87,7 @@ class LoansPage(QWidget):
 
             rem_item = self._table.money_item(row, 6, rem)
             if rem_item and rem < original * 0.1:
-                rem_item.setForeground(QColor("#16a34a"))
+                rem_item.setForeground(QColor(SUCCESS))
 
             self._table.setCellWidget(row, 7, self._action_cell(loan))
             self._table.setRowHeight(row, ROW_H)
@@ -99,28 +100,21 @@ class LoansPage(QWidget):
         lay.setContentsMargins(6, 5, 6, 5)
         lay.setSpacing(6)
 
-        _BTN = ("QPushButton { padding: 4px 10px; font-size: 12px; font-weight: 600; "
-                "border-radius: 5px; }")
+        _BTN = "padding: 4px 10px; font-size: 12px;"
 
         sched_btn = QPushButton("Schedule")
-        sched_btn.setObjectName("Secondary")
-        sched_btn.setStyleSheet(_BTN + "QPushButton { background: white; color: #1a1a2e; "
-                                       "border: 1px solid #e5e7eb; } "
-                                       "QPushButton:hover { background: #f1f5f9; }")
+        sched_btn.setObjectName("CellButton")
+        sched_btn.setStyleSheet(_BTN)
         sched_btn.clicked.connect(lambda _, ln=loan: self._show_schedule(ln))
 
         edit_btn = QPushButton("Edit")
-        edit_btn.setObjectName("Secondary")
-        edit_btn.setStyleSheet(_BTN + "QPushButton { background: white; color: #1a1a2e; "
-                                      "border: 1px solid #e5e7eb; } "
-                                      "QPushButton:hover { background: #f1f5f9; }")
+        edit_btn.setObjectName("CellButton")
+        edit_btn.setStyleSheet(_BTN)
         edit_btn.clicked.connect(lambda _, ln=loan: self._edit(ln))
 
         del_btn = QPushButton("Delete")
-        del_btn.setObjectName("Danger")
-        del_btn.setStyleSheet(_BTN + "QPushButton { background: #ef4444; color: white; "
-                                     "border: none; } "
-                                     "QPushButton:hover { background: #dc2626; }")
+        del_btn.setObjectName("CellDanger")
+        del_btn.setStyleSheet(_BTN)
         del_btn.clicked.connect(lambda _, ln=loan: self._delete(ln))
 
         lay.addWidget(sched_btn)

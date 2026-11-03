@@ -26,7 +26,7 @@ class ImportPage(QWidget):
         lay.addWidget(PageTitle("Import Transactions"))
 
         # ── Step 1: Choose file + account ──
-        grp1 = QGroupBox("Step 1 — Select File & Account")
+        grp1 = QGroupBox("Step 1 — Select File && Account")
         grp1_lay = QFormLayout(grp1)
         grp1_lay.setSpacing(10)
 
@@ -199,15 +199,15 @@ class ImportPage(QWidget):
         if matched:
             sections.append((
                 f"AUTO-CATEGORIZED BY RULES  —  {len(matched)} transaction(s)",
-                matched, False, "#e8f5e9", "#2e7d32"))
+                matched, False, "#e7f6ec", "#15803d"))
         if unmatched:
             sections.append((
                 f"NEEDS A CATEGORY  —  {len(unmatched)} transaction(s)",
-                unmatched, False, "#fff8e1", "#b45309"))
+                unmatched, False, "#fff4e0", "#b45309"))
         if dups:
             sections.append((
                 f"DUPLICATES (already imported, will be skipped)  —  {len(dups)} transaction(s)",
-                dups, True, "#f3f4f6", "#6b7280"))
+                dups, True, "#eef2f8", "#6b7a99"))
 
         total_rows = sum(1 + len(txns) for _, txns, _, _, _ in sections)
         self._table.clear_rows()

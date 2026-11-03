@@ -159,8 +159,8 @@ def _show_update_dialog(parent, info: dict) -> None:
     notes_label = QLabel(notes)
     notes_label.setWordWrap(True)
     notes_label.setStyleSheet(
-        "background: #f5f7fa; border: 1px solid #e5e7eb; border-radius: 5px;"
-        "padding: 10px; font-size: 12px;")
+        "background: rgba(255, 255, 255, 0.75); border: 1px solid rgba(47, 107, 255, 0.16);"
+        "border-radius: 10px; padding: 10px; font-size: 12px;")
     lay.addWidget(notes_label)
 
     if not can_one_click:

@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QMessageBox, QHeaderView, QLabel, QTabWidget)
 from PyQt6.QtCore import Qt
 from ui.widgets import PageTitle, DataTable
-from ui.styles  import SUCCESS, DANGER, MUTED
+from ui.styles  import SUCCESS, DANGER, MUTED, ACCENT
 
 
 ROW_H = 44  # px — tall enough for buttons + padding
@@ -83,7 +83,7 @@ class AccountsPage(QWidget):
 
             # Name is a clickable link → opens this account's transactions.
             name_item = table.set_item(row, 0, acct.get("name", ""),
-                                       bold=True, color="#2563eb")
+                                       bold=True, color=ACCENT)
             f = name_item.font(); f.setUnderline(True); name_item.setFont(f)
             name_item.setToolTip("Click to view this account's transactions")
             table.set_item(row, 1, acct.get("type", "").title())
@@ -134,25 +134,19 @@ class AccountsPage(QWidget):
         lay.setContentsMargins(6, 5, 6, 5)
         lay.setSpacing(6)
 
-        _CELL_BTN = "QPushButton { padding: 4px 12px; font-size: 13px; font-weight: 600; border-radius: 5px; }"
-        _WHITE = _CELL_BTN + "QPushButton { background: white; color: #1a1a2e; border: 1px solid #e5e7eb; } QPushButton:hover { background: #f1f5f9; }"
-
         edit_btn = QPushButton("Edit")
-        edit_btn.setObjectName("Secondary")
-        edit_btn.setStyleSheet(_WHITE)
+        edit_btn.setObjectName("CellButton")
         edit_btn.clicked.connect(lambda _, a=acct: self._edit(a))
         lay.addWidget(edit_btn)
 
         if inactive:
             react_btn = QPushButton("Reactivate")
-            react_btn.setObjectName("Success")
-            react_btn.setStyleSheet(_CELL_BTN + "QPushButton { background: #16a34a; color: white; border: none; } QPushButton:hover { background: #15803d; }")
+            react_btn.setObjectName("CellSuccess")
             react_btn.clicked.connect(lambda _, a=acct: self._reactivate(a))
             lay.addWidget(react_btn)
         else:
             del_btn = QPushButton("Delete")
-            del_btn.setObjectName("Danger")
-            del_btn.setStyleSheet(_CELL_BTN + "QPushButton { background: #ef4444; color: white; border: none; } QPushButton:hover { background: #dc2626; }")
+            del_btn.setObjectName("CellDanger")
             del_btn.clicked.connect(lambda _, a=acct: self._delete(a))
             lay.addWidget(del_btn)
 

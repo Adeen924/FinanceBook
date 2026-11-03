@@ -153,10 +153,10 @@ class OnboardingDialog(QDialog):
         pl.addWidget(title_lbl)
 
         card = QFrame()
-        card.setObjectName("Card")
+        card.setObjectName("OnboardCard")
         card.setStyleSheet(
-            "QFrame#Card { background:#f8fafc; border:1px solid #e5e7eb; "
-            "border-radius:8px; }")
+            "QFrame#OnboardCard { background:rgba(255,255,255,0.75); "
+            "border:1px solid rgba(47,107,255,0.16); border-radius:16px; }")
         cl = QVBoxLayout(card)
         cl.setContentsMargins(20, 18, 20, 18)
         body_lbl = QLabel(body)

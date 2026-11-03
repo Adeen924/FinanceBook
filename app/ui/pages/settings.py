@@ -55,9 +55,7 @@ class SettingsPage(QWidget):
         )
         info.setWordWrap(True)
         info.setTextFormat(Qt.TextFormat.RichText)
-        info.setStyleSheet(
-            "background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px;"
-            "padding:12px; font-size:12px;")
+        info.setObjectName("InfoBox")
         lay.addWidget(info)
 
         btn_row = QHBoxLayout()
@@ -109,9 +107,7 @@ class SettingsPage(QWidget):
 
     def _build_reset_section(self) -> QGroupBox:
         grp = QGroupBox("Reset Database")
-        grp.setStyleSheet("QGroupBox { border: 1px solid #ef4444; border-radius:6px; "
-                          "margin-top:8px; font-weight:bold; color:#ef4444; } "
-                          "QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }")
+        grp.setObjectName("DangerZone")
         lay = QVBoxLayout(grp)
         lay.setSpacing(10)
 
@@ -124,16 +120,13 @@ class SettingsPage(QWidget):
         )
         warn.setWordWrap(True)
         warn.setTextFormat(Qt.TextFormat.RichText)
-        warn.setStyleSheet("color: #7f1d1d; font-size:12px;")
+        warn.setStyleSheet("color: #8f1d22; font-size:12px; font-weight:400;")
         lay.addWidget(warn)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         reset_btn = QPushButton("Clear All Data…")
-        reset_btn.setStyleSheet(
-            "QPushButton { background:#ef4444; color:white; font-weight:bold; "
-            "padding:6px 18px; border-radius:5px; border:none; } "
-            "QPushButton:hover { background:#dc2626; }")
+        reset_btn.setObjectName("Danger")
         reset_btn.clicked.connect(self._do_reset)
         btn_row.addWidget(reset_btn)
         lay.addLayout(btn_row)

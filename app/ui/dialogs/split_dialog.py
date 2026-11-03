@@ -218,7 +218,8 @@ class SplitDialog(QDialog):
 
         rest_btn = QPushButton("→ rest")
         rest_btn.setObjectName("Secondary")
-        rest_btn.setFixedWidth(58)
+        rest_btn.setFixedWidth(64)
+        rest_btn.setStyleSheet("padding: 6px 4px;")
         rest_btn.setToolTip("Put the remaining unallocated amount on this line")
         row.addWidget(rest_btn)
 

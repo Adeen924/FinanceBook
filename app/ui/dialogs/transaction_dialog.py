@@ -118,7 +118,7 @@ class TransactionDialog(QDialog):
         _sb = QHBoxLayout(self._split_box)
         _sb.setContentsMargins(0, 0, 0, 0)
         _sb.setSpacing(8)
-        self._split_btn = QPushButton("Choose categories & amounts…")
+        self._split_btn = QPushButton("Choose categories && amounts…")
         self._split_btn.setObjectName("Secondary")
         self._split_btn.clicked.connect(self._define_split)
         _sb.addWidget(self._split_btn)

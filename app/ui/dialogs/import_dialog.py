@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from ui.widgets import DataTable
-from ui.styles  import SUCCESS, DANGER
+from ui.styles  import SUCCESS, DANGER, MUTED, TEXT
 
 
 class ImportDialog(QDialog):
@@ -68,9 +68,7 @@ class ImportDialog(QDialog):
         )
         info.setWordWrap(True)
         info.setTextFormat(Qt.TextFormat.RichText)
-        info.setStyleSheet(
-            "background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px;"
-            "padding:12px; font-size:12px;")
+        info.setObjectName("InfoBox")
         lay.addWidget(info)
 
         file_row = QHBoxLayout()
@@ -105,7 +103,7 @@ class ImportDialog(QDialog):
         self._acct_preview.hide()
         lay.addWidget(self._acct_preview)
 
-        self._import_btn = QPushButton("Import Accounts & Categories")
+        self._import_btn = QPushButton("Import Accounts && Categories")
         self._import_btn.setObjectName("Success")
         self._import_btn.setEnabled(False)
         self._import_btn.clicked.connect(self._do_import)
@@ -165,7 +163,7 @@ class ImportDialog(QDialog):
             self._acct_preview.set_item(
                 row, 2,
                 "Already exists — will skip" if exists else "Will be created",
-                color="#6b7280" if exists else SUCCESS)
+                color=MUTED if exists else SUCCESS)
             self._acct_preview.setRowHeight(row, 30)
 
         acct_label = f"Accounts (bank/credit card only):  {len(accounts)}"
@@ -293,9 +291,7 @@ class ImportDialog(QDialog):
         )
         note.setWordWrap(True)
         note.setTextFormat(Qt.TextFormat.RichText)
-        note.setStyleSheet(
-            "background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px;"
-            "padding:12px; font-size:12px;")
+        note.setObjectName("InfoBox")
         lay.addWidget(note)
 
         file_row = QHBoxLayout()
@@ -431,7 +427,7 @@ class ImportDialog(QDialog):
             self._xl_preview.set_item(row, 1, t.get("_account_name", ""))
             self._xl_preview.set_item(row, 2, t.get("payee") or t.get("memo", "—"))
             self._xl_preview.set_item(row, 3, split,
-                color=SUCCESS if split != "—" else "#6b7280")
+                color=SUCCESS if split != "—" else MUTED)
             self._xl_preview.money_item(row, 4, float(t.get("amount") or 0))
             self._xl_preview.setRowHeight(row, 28)
 
@@ -453,7 +449,7 @@ class ImportDialog(QDialog):
             self._xl_status.setText(
                 "Check the bank accounts above you want to import. "
                 "The Split column becomes the category for each transaction.")
-        self._xl_status.setStyleSheet("color: #1a1a2e; font-style: italic;")
+        self._xl_status.setStyleSheet(f"color: {TEXT}; font-style: italic;")
         self._xl_import_btn.setEnabled(bool(new_txns))
 
         if warnings:

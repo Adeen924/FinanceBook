@@ -153,26 +153,26 @@ class _Overlay(QWidget):
         self._callout = QFrame(self)
         self._callout.setObjectName("TourCallout")
         self._callout.setStyleSheet(
-            "QFrame#TourCallout { background:#ffffff; border:1px solid #cbd5e1; "
-            "border-radius:10px; }")
+            "QFrame#TourCallout { background:#ffffff; "
+            "border:1px solid rgba(47,107,255,0.28); border-radius:16px; }")
         self._callout.setFixedWidth(370)
         cl = QVBoxLayout(self._callout)
         cl.setContentsMargins(18, 16, 18, 14)
         cl.setSpacing(8)
 
         self._step_lbl = QLabel("")
-        self._step_lbl.setStyleSheet("color:#2563eb; font-size:11px; font-weight:bold;")
+        self._step_lbl.setStyleSheet("color:#2f6bff; font-size:11px; font-weight:bold;")
         cl.addWidget(self._step_lbl)
 
         self._title_lbl = QLabel("")
-        self._title_lbl.setStyleSheet("font-size:16px; font-weight:bold; color:#0f172a;")
+        self._title_lbl.setStyleSheet("font-size:16px; font-weight:bold; color:#0f1b3d;")
         self._title_lbl.setWordWrap(True)
         cl.addWidget(self._title_lbl)
 
         self._body_lbl = QLabel("")
         self._body_lbl.setTextFormat(Qt.TextFormat.RichText)
         self._body_lbl.setWordWrap(True)
-        self._body_lbl.setStyleSheet("font-size:13px; color:#334155;")
+        self._body_lbl.setStyleSheet("font-size:13px; color:#3a4766;")
         cl.addWidget(self._body_lbl)
 
         btns = QHBoxLayout()
@@ -197,12 +197,14 @@ class _Overlay(QWidget):
     @staticmethod
     def _btn_css(secondary: bool) -> str:
         if secondary:
-            return ("QPushButton { padding:6px 14px; border-radius:6px; "
-                    "background:#f1f5f9; color:#0f172a; border:1px solid #e2e8f0; }"
-                    "QPushButton:hover { background:#e2e8f0; }")
-        return ("QPushButton { padding:6px 16px; border-radius:6px; "
-                "background:#2563eb; color:white; border:none; font-weight:bold; }"
-                "QPushButton:hover { background:#1d4ed8; }")
+            return ("QPushButton { padding:6px 14px; border-radius:10px; "
+                    "background:#f3f7ff; color:#0f1b3d; border:1px solid rgba(47,107,255,0.18); }"
+                    "QPushButton:hover { background:#e8f0ff; color:#2f6bff; }")
+        return ("QPushButton { padding:6px 16px; border-radius:10px; color:white; border:none; "
+                "font-weight:bold; background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+                "stop:0 #2f6bff, stop:1 #5b9bff); }"
+                "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+                "stop:0 #3d77ff, stop:1 #6aa7ff); }")
 
     # ── step content ────────────────────────────────────────────────────────────
 
@@ -280,14 +282,14 @@ class _Overlay(QWidget):
         if self._target_rect is not None:
             hole = QPainterPath()
             hole.addRoundedRect(QRectF(self._target_rect), 8, 8)
-            p.fillPath(full.subtracted(hole), QColor(15, 23, 42, 160))
-            pen = QPen(QColor("#3b82f6"))
+            p.fillPath(full.subtracted(hole), QColor(15, 27, 61, 150))
+            pen = QPen(QColor("#5b9bff"))
             pen.setWidth(3)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(self._target_rect, 8, 8)
         else:
-            p.fillPath(full, QColor(15, 23, 42, 160))
+            p.fillPath(full, QColor(15, 27, 61, 150))
 
     def mousePressEvent(self, event):
         # Swallow clicks on the dimmed area so the app can't be used mid-tour;

@@ -4,23 +4,26 @@ import re
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                               QLabel, QStackedWidget, QMessageBox, QPushButton,
-                              QSizePolicy, QComboBox, QDialog)
-from PyQt6.QtCore import Qt, QTimer
+                              QSizePolicy, QComboBox, QDialog, QFrame)
+from PyQt6.QtCore import Qt, QTimer, QSize, QPointF, QRectF
+from PyQt6.QtGui import QPainter, QPixmap, QColor, QLinearGradient, QRadialGradient
 
-from ui.widgets import NavButton
+from ui.widgets import NavButton, GlassCard, brand_pixmap, line_icon
+from ui import styles as S
+from ui.styles import MUTED
 
 
 NAV_ITEMS = [
-    ("Dashboard",    "🏠"),
-    ("Accounts",     "🏦"),
-    ("Loans",        "🏛"),
-    ("Transactions", "📋"),
-    ("Transfers",    "↔"),
-    ("Import",       "📥"),
-    ("Rules",        "⚙"),
-    ("Categories",   "🏷"),
-    ("Reconcile",    "✓"),
-    ("Reports",      "📊"),
+    ("Dashboard",    "dashboard"),
+    ("Accounts",     "accounts"),
+    ("Loans",        "loans"),
+    ("Transactions", "transactions"),
+    ("Transfers",    "transfers"),
+    ("Import",       "import"),
+    ("Rules",        "rules"),
+    ("Categories",   "categories"),
+    ("Reconcile",    "reconcile"),
+    ("Reports",      "reports"),
 ]
 
 SETTINGS_IDX = 10
@@ -44,6 +47,64 @@ def _page_constructors():
         ImportPage, RulesPage, CategoriesPage, ReconcilePage, ReportsPage,
         SettingsPage,
     ]
+
+
+class GlassBackground(QWidget):
+    """
+    Window backdrop: a soft light-blue gradient with a few large, blurred
+    sky / blue / lavender blobs, so the translucent cards above it have depth.
+    Rendered once per window size into a cached pixmap.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._cache: QPixmap | None = None
+
+    def resizeEvent(self, event):
+        self._cache = None
+        super().resizeEvent(event)
+
+    def _render(self) -> QPixmap:
+        w, h = max(self.width(), 1), max(self.height(), 1)
+        ratio = self.devicePixelRatioF()
+        pm = QPixmap(int(w * ratio), int(h * ratio))
+        pm.setDevicePixelRatio(ratio)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        g = QLinearGradient(0, 0, w, h)
+        g.setColorAt(0.0, QColor(S.BG_TOP))
+        g.setColorAt(0.5, QColor(S.BG_MID))
+        g.setColorAt(1.0, QColor(S.BG_BOTTOM))
+        p.fillRect(QRectF(0, 0, w, h), g)
+
+        def blob(cx, cy, radius, rgb, alpha):
+            rg = QRadialGradient(QPointF(cx, cy), radius)
+            rg.setColorAt(0.0, QColor(*rgb, alpha))
+            rg.setColorAt(0.55, QColor(*rgb, int(alpha * 0.45)))
+            rg.setColorAt(1.0, QColor(*rgb, 0))
+            p.fillRect(QRectF(0, 0, w, h), rg)
+
+        span = max(w, h)
+        blob(w * 0.88, h * 0.06, span * 0.42, S.BLOB_SKY, 120)
+        blob(w * 0.12, h * 0.95, span * 0.40, S.BLOB_LAVENDER, 105)
+        blob(w * 0.45, h * 0.50, span * 0.30, S.BLOB_BLUE, 60)
+        p.end()
+        return pm
+
+    def paintEvent(self, event):
+        if self._cache is None or self._cache.deviceIndependentSize().toSize() != self.size():
+            self._cache = self._render()
+        p = QPainter(self)
+        p.drawPixmap(0, 0, self._cache)
+        p.end()
+
+
+def _clear_scroll_backgrounds(widget: QWidget):
+    """Let the glass backdrop show through page-level scroll areas."""
+    from PyQt6.QtWidgets import QScrollArea
+    for sa in widget.findChildren(QScrollArea):
+        sa.viewport().setAutoFillBackground(False)
+        if sa.widget() is not None:
+            sa.widget().setAutoFillBackground(False)
 
 
 def _read_db_name(path: str) -> str:
@@ -71,24 +132,38 @@ class MainWindow(QMainWindow):
         self._nav_to(0)
 
     def _build(self):
-        root = QWidget()
+        root = GlassBackground()
         self.setCentralWidget(root)
         root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setContentsMargins(8, 8, 6, 4)
         root_layout.setSpacing(0)
 
-        # ── Sidebar ──────────────────────────────────────────────────────────
-        sidebar = QWidget()
+        # ── Sidebar: a floating glass panel ─────────────────────────────────
+        sidebar = GlassCard(radius=22)
         self._sidebar = sidebar
         sidebar.setObjectName("Sidebar")
+        sidebar.setFixedWidth(228)
         sidebar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         sb_layout = QVBoxLayout(sidebar)
-        sb_layout.setContentsMargins(0, 0, 0, 0)
-        sb_layout.setSpacing(0)
+        sb_layout.setContentsMargins(12, 16, 12, 10)
+        sb_layout.setSpacing(2)
 
+        brand = QHBoxLayout()
+        brand.setContentsMargins(6, 0, 0, 10)
+        brand.setSpacing(10)
+        logo = QLabel()
+        logo.setPixmap(brand_pixmap(32))
+        logo.setFixedSize(32, 32)
+        brand.addWidget(logo)
         app_name = QLabel("FinanceBook")
         app_name.setObjectName("SidebarTitle")
-        sb_layout.addWidget(app_name)
+        brand.addWidget(app_name)
+        brand.addStretch()
+        sb_layout.addLayout(brand)
+
+        db_lbl = QLabel("DATABASE")
+        db_lbl.setObjectName("SidebarSection")
+        sb_layout.addWidget(db_lbl)
 
         # Database selector dropdown
         self._db_combo = QComboBox()
@@ -97,6 +172,10 @@ class MainWindow(QMainWindow):
         self._populate_db_combo()
         self._db_combo.activated.connect(self._on_db_selected)
         sb_layout.addWidget(self._db_combo)
+
+        menu_lbl = QLabel("MENU")
+        menu_lbl.setObjectName("SidebarSection")
+        sb_layout.addWidget(menu_lbl)
 
         self._nav_buttons: list[NavButton] = []
         for i, (label, icon) in enumerate(NAV_ITEMS):
@@ -107,16 +186,20 @@ class MainWindow(QMainWindow):
 
         sb_layout.addStretch()
 
-        settings_btn = NavButton("Settings", "🔧", sidebar)
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        sb_layout.addWidget(divider)
+        sb_layout.addSpacing(6)
+
+        settings_btn = NavButton("Settings", "settings", sidebar)
         settings_btn.clicked.connect(lambda checked: self._nav_to(SETTINGS_IDX))
         sb_layout.addWidget(settings_btn)
         self._nav_buttons.append(settings_btn)
 
-        reload_btn = QPushButton("⟳  Refresh")
-        reload_btn.setObjectName("Secondary")
-        reload_btn.setStyleSheet(
-            "background:transparent; color:#90aac9; border:none; "
-            "text-align:left; padding:8px 18px; font-size:12px;")
+        reload_btn = QPushButton("  Refresh")
+        reload_btn.setObjectName("SidebarLink")
+        reload_btn.setIcon(line_icon("refresh", MUTED, 16))
+        reload_btn.setIconSize(QSize(16, 16))
         reload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         reload_btn.clicked.connect(self._reload)
         sb_layout.addWidget(reload_btn)
@@ -129,7 +212,7 @@ class MainWindow(QMainWindow):
 
         # ── Content area ─────────────────────────────────────────────────────
         self._stack = QStackedWidget()
-        root_layout.addWidget(self._stack)
+        root_layout.addWidget(self._stack, 1)
 
     # ── database selector ─────────────────────────────────────────────────────
 
@@ -215,6 +298,7 @@ class MainWindow(QMainWindow):
         # Let pages request cross-page navigation (e.g. click an account name to
         # jump to its transactions).
         page._main_window = self
+        _clear_scroll_backgrounds(page)
         self._stack.addWidget(page)
         self._page_cache[index] = page
         return page

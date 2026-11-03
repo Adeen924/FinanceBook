@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QMessageBox, QHeaderView, QLabel)
 from PyQt6.QtCore import Qt
 from ui.widgets import PageTitle, DataTable
+from ui.styles  import SUCCESS, DANGER
 
 ROW_H = 44
 
@@ -22,8 +23,6 @@ _OP_LABEL = {
     "between":     "between",
     "day_of_month": "day of month",
 }
-_CELL_BTN = ("QPushButton { padding: 4px 12px; font-size: 13px; "
-             "font-weight: 600; border-radius: 5px; }")
 
 
 class RulesPage(QWidget):
@@ -97,7 +96,7 @@ class RulesPage(QWidget):
                                  align=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
             self._table.set_item(row, 6, "Yes" if active else "No",
                                  align=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
-                                 color="#22c55e" if active else "#ef4444")
+                                 color=SUCCESS if active else DANGER)
             self._table.setCellWidget(row, 7, self._action_cell(rule))
             self._table.setRowHeight(row, ROW_H)
 
@@ -109,17 +108,11 @@ class RulesPage(QWidget):
         lay.setSpacing(6)
 
         edit_btn = QPushButton("Edit")
-        edit_btn.setStyleSheet(
-            _CELL_BTN +
-            "QPushButton { background: white; color: #1a1a2e; border: 1px solid #e5e7eb; }"
-            "QPushButton:hover { background: #f1f5f9; }")
+        edit_btn.setObjectName("CellButton")
         edit_btn.clicked.connect(lambda _, r=rule: self._edit(r))
 
         del_btn = QPushButton("Delete")
-        del_btn.setStyleSheet(
-            _CELL_BTN +
-            "QPushButton { background: #ef4444; color: white; border: none; }"
-            "QPushButton:hover { background: #dc2626; }")
+        del_btn.setObjectName("CellDanger")
         del_btn.clicked.connect(lambda _, r=rule: self._delete(r))
 
         lay.addWidget(edit_btn)

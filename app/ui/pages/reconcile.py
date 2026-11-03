@@ -152,7 +152,7 @@ class ReconcilePage(QWidget):
             from PyQt6.QtWidgets import QWidget as W, QHBoxLayout as HL
             cell = W(); cl = HL(cell); cl.setContentsMargins(6,5,6,5)
             btn = QPushButton("Reconcile")
-            btn.setStyleSheet("QPushButton { padding: 4px 12px; font-size: 13px; font-weight: 600; border-radius: 5px; background: #2979ff; color: white; border: none; } QPushButton:hover { background: #1565c0; }")
+            btn.setObjectName("CellPrimary")
             btn.clicked.connect(lambda _, a=acct: self._start_session(a))
             cl.addWidget(btn)
             self._acct_table.setCellWidget(row, 5, cell)

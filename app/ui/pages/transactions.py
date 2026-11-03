@@ -35,6 +35,7 @@ class TransactionsPage(QWidget):
 
         self._sort_btn = QPushButton("Sort: Date ↑")
         self._sort_btn.setObjectName("Secondary")
+        self._sort_btn.setProperty("hasMenu", True)
         self._build_sort_menu()
         hdr.addWidget(self._sort_btn)
 
@@ -66,11 +67,17 @@ class TransactionsPage(QWidget):
         self._date_to = DateField()
         self._date_to.setDate(QDate.currentDate())
         filt.addWidget(self._date_to)
+        filt.addStretch()
+        lay.addLayout(filt)
+
+        # Second row: search + actions (one row is too wide below ~1500px).
+        filt = QHBoxLayout()
+        filt.setSpacing(8)
 
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("Search payee / memo…")
         self._search_edit.setMinimumWidth(180)
-        filt.addWidget(self._search_edit)
+        filt.addWidget(self._search_edit, 1)
 
         self._show_transfers = QCheckBox("Show transfers")
         # Transfers are still real entries on the account, so show them in the

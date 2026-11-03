@@ -386,7 +386,7 @@ class CategoriesPage(QWidget):
         cols = self._tree.columnCount()
         anim = QVariantAnimation(self)
         anim.setStartValue(QColor("#fde68a"))   # warm amber
-        anim.setEndValue(QColor("#ffffff"))      # fades into the table background
+        anim.setEndValue(QColor(253, 230, 138, 0))  # fades out over the glass table
         anim.setDuration(2600)
 
         def on_val(color):
