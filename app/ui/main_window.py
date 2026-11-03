@@ -13,24 +13,36 @@ from ui import styles as S
 from ui.styles import MUTED
 
 
-NAV_ITEMS = [
-    ("Dashboard",    "dashboard"),
-    ("Accounts",     "accounts"),
-    ("Loans",        "loans"),
-    ("Transactions", "transactions"),
-    ("Transfers",    "transfers"),
-    ("Import",       "import"),
-    ("Rules",        "rules"),
-    ("Categories",   "categories"),
-    ("Reconcile",    "reconcile"),
-    ("Reports",      "reports"),
+# Sidebar groups: (header, [(page name, icon, business_only)]). Business-only
+# pages appear only when the active database is a Business book.
+NAV_SECTIONS = [
+    ("OVERVIEW", [
+        ("Dashboard",        "dashboard",    False),
+    ]),
+    ("MONEY", [
+        ("Accounts",         "accounts",     False),
+        ("Transactions",     "transactions", False),
+        ("Transfers",        "transfers",    False),
+        ("Import",           "import",       False),
+        ("Reconcile",        "reconcile",    False),
+        ("Loans",            "loans",        False),
+        ("Rules",            "rules",        False),
+        ("Categories",       "categories",   False),
+    ]),
+    ("BUSINESS", [
+        ("Owner Investment", "owner",        True),
+    ]),
+    ("REPORTS", [
+        ("Reports",          "reports",      False),
+    ]),
 ]
 
-SETTINGS_IDX = 10
+# Flat list of (page name, icon), for anything that wants every page.
+NAV_ITEMS = [(name, icon) for _, items in NAV_SECTIONS for name, icon, _b in items]
 
 
-def _page_constructors():
-    # Explicit imports so PyInstaller can detect every module statically
+def _page_constructors() -> dict:
+    # Explicit imports so static analysis sees every page module.
     from ui.pages.dashboard    import DashboardPage
     from ui.pages.accounts     import AccountsPage
     from ui.pages.loans        import LoansPage
@@ -42,11 +54,14 @@ def _page_constructors():
     from ui.pages.reconcile    import ReconcilePage
     from ui.pages.reports      import ReportsPage
     from ui.pages.settings     import SettingsPage
-    return [
-        DashboardPage, AccountsPage, LoansPage, TransactionsPage, TransfersPage,
-        ImportPage, RulesPage, CategoriesPage, ReconcilePage, ReportsPage,
-        SettingsPage,
-    ]
+    from ui.pages.owner        import OwnerInvestmentPage
+    return {
+        "Dashboard": DashboardPage, "Accounts": AccountsPage, "Loans": LoansPage,
+        "Transactions": TransactionsPage, "Transfers": TransfersPage,
+        "Import": ImportPage, "Rules": RulesPage, "Categories": CategoriesPage,
+        "Reconcile": ReconcilePage, "Reports": ReportsPage,
+        "Settings": SettingsPage, "Owner Investment": OwnerInvestmentPage,
+    }
 
 
 class GlassBackground(QWidget):
@@ -108,12 +123,10 @@ def _clear_scroll_backgrounds(widget: QWidget):
 
 
 def _read_db_name(path: str) -> str:
-    """Open a database file briefly to read its stored name."""
-    try:
-        from sheets.client import Database
-        return Database(path).get_setting("database_name") or os.path.basename(path)
-    except Exception:
-        return os.path.basename(path)
+    """Read a database's stored name read-only — listing a database in the
+    dropdown must never migrate (or back up) it."""
+    from sheets.backup import read_setting_readonly
+    return read_setting_readonly(path, "database_name") or os.path.basename(path)
 
 
 class MainWindow(QMainWindow):
@@ -127,9 +140,11 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1100, 700)
         self.resize(1280, 800)
 
-        self._page_cache: dict[int, QWidget] = {}
+        self._page_cache: dict[str, QWidget] = {}
+        self._nav_buttons: dict[str, NavButton] = {}
+        self._current_page = ""
         self._build()
-        self._nav_to(0)
+        self._nav_to("Dashboard")
 
     def _build(self):
         root = GlassBackground()
@@ -173,18 +188,22 @@ class MainWindow(QMainWindow):
         self._db_combo.activated.connect(self._on_db_selected)
         sb_layout.addWidget(self._db_combo)
 
-        menu_lbl = QLabel("MENU")
-        menu_lbl.setObjectName("SidebarSection")
-        sb_layout.addWidget(menu_lbl)
+        self._book_badge = QLabel("")
+        self._book_badge.setObjectName("BookBadge")
+        badge_row = QHBoxLayout()
+        badge_row.setContentsMargins(6, 6, 0, 0)
+        badge_row.addWidget(self._book_badge)
+        badge_row.addStretch()
+        sb_layout.addLayout(badge_row)
 
-        self._nav_buttons: list[NavButton] = []
-        for i, (label, icon) in enumerate(NAV_ITEMS):
-            btn = NavButton(label, icon, sidebar)
-            btn.clicked.connect(lambda checked, idx=i: self._nav_to(idx))
-            sb_layout.addWidget(btn)
-            self._nav_buttons.append(btn)
-
-        sb_layout.addStretch()
+        # The grouped page list scrolls on short windows instead of squashing.
+        from PyQt6.QtWidgets import QScrollArea
+        self._nav_scroll = QScrollArea()
+        self._nav_scroll.setWidgetResizable(True)
+        self._nav_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._nav_scroll.viewport().setAutoFillBackground(False)
+        sb_layout.addWidget(self._nav_scroll, 1)
 
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
@@ -192,9 +211,10 @@ class MainWindow(QMainWindow):
         sb_layout.addSpacing(6)
 
         settings_btn = NavButton("Settings", "settings", sidebar)
-        settings_btn.clicked.connect(lambda checked: self._nav_to(SETTINGS_IDX))
+        settings_btn.clicked.connect(lambda checked: self._nav_to("Settings"))
         sb_layout.addWidget(settings_btn)
-        self._nav_buttons.append(settings_btn)
+        self._settings_btn = settings_btn
+        self._build_nav()
 
         reload_btn = QPushButton("  Refresh")
         reload_btn.setObjectName("SidebarLink")
@@ -213,6 +233,54 @@ class MainWindow(QMainWindow):
         # ── Content area ─────────────────────────────────────────────────────
         self._stack = QStackedWidget()
         root_layout.addWidget(self._stack, 1)
+
+    def _visible_sections(self):
+        business = self.db.is_business()
+        for header, items in NAV_SECTIONS:
+            shown = [(n, i) for n, i, biz in items if business or not biz]
+            if shown:
+                yield header, shown
+
+    def _build_nav(self):
+        """(Re)build the grouped page list for the current database's book type."""
+        holder = QWidget()
+        holder.setAutoFillBackground(False)
+        lay = QVBoxLayout(holder)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(1)
+        self._nav_buttons = {}
+        for header, items in self._visible_sections():
+            lbl = QLabel(header)
+            lbl.setObjectName("SidebarGroup")
+            lay.addWidget(lbl)
+            for name, icon in items:
+                btn = NavButton(name, icon, holder)
+                btn.setMinimumHeight(36)
+                btn.clicked.connect(lambda checked, n=name: self._nav_to(n))
+                lay.addWidget(btn)
+                self._nav_buttons[name] = btn
+        lay.addStretch()
+        old = self._nav_scroll.takeWidget()
+        if old is not None:
+            old.deleteLater()
+        self._nav_scroll.setWidget(holder)
+        self._nav_buttons["Settings"] = self._settings_btn
+        self._book_badge.setText("BUSINESS BOOK" if self.db.is_business() else "PERSONAL BOOK")
+        for n, b in self._nav_buttons.items():
+            b.set_active(n == self._current_page)
+
+    def refresh_navigation(self):
+        """Call after the book type changes: rebuild the sidebar and drop cached
+        pages so they pick up business/personal differences."""
+        current = self._current_page
+        self._build_nav()
+        for name in list(self._page_cache):
+            if name != current:
+                w = self._page_cache.pop(name)
+                self._stack.removeWidget(w)
+                w.deleteLater()
+        if current not in self._nav_buttons:
+            self._nav_to("Dashboard")
 
     # ── database selector ─────────────────────────────────────────────────────
 
@@ -255,7 +323,8 @@ class MainWindow(QMainWindow):
             message="Give your new database a name and choose where to save it.",
             default_name="My Finances",
             default_location=self._base_dir,
-            accept_label="Create")
+            accept_label="Create",
+            show_book_type=True)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             self._populate_db_combo()  # revert combo to current selection
             return
@@ -272,7 +341,7 @@ class MainWindow(QMainWindow):
                 i += 1
             path = os.path.join(location, f"{slug}_{i}.db")
         from sheets.client import Database
-        new_db = Database(path)
+        new_db = Database(path, book_type=dialog.book_type)
         new_db.set_setting("database_name", name)
         self._switch_to(new_db)
 
@@ -284,30 +353,42 @@ class MainWindow(QMainWindow):
             w = self._page_cache.pop(i)
             self._stack.removeWidget(w)
             w.deleteLater()
+        new_db.auto_backup_if_due()
         self._populate_db_combo()
+        self._current_page = ""
+        self._build_nav()
         self._status_label.setText(f"● {os.path.basename(new_db.db_path)}")
-        self._nav_to(0)
+        self._nav_to("Dashboard")
 
     # ── navigation ────────────────────────────────────────────────────────────
 
-    def _load_page(self, index: int) -> QWidget:
-        if index in self._page_cache:
-            return self._page_cache[index]
-        cls  = _page_constructors()[index]
+    def _load_page(self, name: str) -> QWidget:
+        if name in self._page_cache:
+            return self._page_cache[name]
+        cls  = _page_constructors()[name]
         page = cls(self.db)
         # Let pages request cross-page navigation (e.g. click an account name to
         # jump to its transactions).
         page._main_window = self
         _clear_scroll_backgrounds(page)
         self._stack.addWidget(page)
-        self._page_cache[index] = page
+        self._page_cache[name] = page
         return page
 
     def _page_index(self, name: str):
-        """Nav index for a page by its sidebar name ('Settings' included)."""
-        if name == "Settings":
-            return SETTINGS_IDX
-        return next((i for i, (n, _) in enumerate(NAV_ITEMS) if n == name), None)
+        """Key for a page by its sidebar name ('Settings' included), or None if
+        that page isn't available in this book type. Pass it to _nav_to()."""
+        if name == "Settings" or name in self._nav_buttons:
+            return name
+        return None
+
+    def page(self, name: str):
+        """Navigate to a page by name and return it (None if unavailable)."""
+        key = self._page_index(name)
+        if key is None:
+            return None
+        self._nav_to(key)
+        return self._page_cache.get(key)
 
     def start_tour(self):
         """Launch the interactive guided tour (coach marks over real buttons)."""
@@ -325,10 +406,13 @@ class MainWindow(QMainWindow):
         if page and hasattr(page, "show_account"):
             page.show_account(account_id)
 
-    def _nav_to(self, index: int):
-        for i, btn in enumerate(self._nav_buttons):
-            btn.set_active(i == index)
-        page = self._load_page(index)
+    def _nav_to(self, name: str):
+        if name not in _page_constructors():
+            name = "Dashboard"
+        self._current_page = name
+        for n, btn in self._nav_buttons.items():
+            btn.set_active(n == name)
+        page = self._load_page(name)
         self._stack.setCurrentWidget(page)
         if hasattr(page, "refresh"):
             page.refresh()

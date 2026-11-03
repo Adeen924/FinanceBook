@@ -3,10 +3,18 @@ SQLite database backend.
 All data lives in finances.db — a single file synced by OneDrive / Google Drive.
 No external services or credentials required.
 """
+import os
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
+from sheets import backup as _backup
+
+# Bump whenever SCHEMA or _migrate() changes. An existing database with a lower
+# PRAGMA user_version is backed up before it is migrated.
+#   1  — implicit: everything up to v1.0.22 (user_version was never set → 0)
+#   2  — business books: people, owner roles, paid_by/charged_to, tax lines
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -101,15 +109,59 @@ CREATE TABLE IF NOT EXISTS loans (
     interest_category_id TEXT DEFAULT '',
     created_at           TEXT DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS people (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    role       TEXT DEFAULT 'owner',
+    email      TEXT DEFAULT '',
+    phone      TEXT DEFAULT '',
+    notes      TEXT DEFAULT '',
+    active     INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT ''
+);
 """
 
+# Columns added to existing tables after the initial schema. Columns are only
+# ever ADDED — existing rows are never rewritten by a migration.
+_NEW_COLUMNS = [
+    ("transactions", "loan_id",          "TEXT DEFAULT ''"),
+    ("transactions", "principal_amount", "REAL DEFAULT 0"),
+    ("transactions", "interest_amount",  "REAL DEFAULT 0"),
+    ("transactions", "split_group_id",   "TEXT DEFAULT ''"),
+    # v2 — business books
+    ("transactions", "paid_by",          "TEXT DEFAULT ''"),
+    ("transactions", "charged_to",       "TEXT DEFAULT ''"),
+    ("transactions", "reimbursable",     "INTEGER DEFAULT 0"),
+    ("transactions", "updated_at",       "TEXT DEFAULT ''"),
+    ("accounts",     "role",             "TEXT DEFAULT ''"),
+    ("categories",   "tax_line",         "TEXT DEFAULT ''"),
+    ("categories",   "deduct_pct",       "REAL DEFAULT 100"),
+]
+
+# Optional transaction columns: written only when the caller's dict has the key,
+# so older code paths that build a txn dict from scratch can't blank them.
+_TXN_EXTRA_COLS = ("paid_by", "charged_to", "reimbursable")
+
 # Fields the UI expects as strings "0"/"1"
-_BOOL_FIELDS  = {"is_transfer", "reconciled", "active"}
+_BOOL_FIELDS  = {"is_transfer", "reconciled", "active", "reimbursable"}
 # Fields the UI expects as strings (amounts)
 _FLOAT_FIELDS = {"amount", "opening_balance", "statement_balance",
                  "cleared_balance", "difference",
                  "principal_amount", "interest_amount",
-                 "original_principal", "annual_rate", "payment_amount"}
+                 "original_principal", "annual_rate", "payment_amount",
+                 "deduct_pct"}
+
+BOOK_PERSONAL = "personal"
+BOOK_BUSINESS = "business"
+
+# Built-in owner accounts for business books: role → (name, type).
+BUSINESS_ACCOUNTS = {
+    "owner_capital": ("Owner's Equity / Capital Contributions", "equity"),
+    "owner_draws":   ("Owner's Draws", "equity"),
+    "due_to_owner":  ("Due to Owner", "liability"),
+    "petty_cash":    ("Petty Cash", "cash"),
+}
 
 
 def _to_dict(row) -> dict | None:
@@ -129,25 +181,66 @@ def _to_dicts(rows) -> list[dict]:
     return [_to_dict(r) for r in rows]
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """`with self._conn() as c:` commits (or rolls back) AND closes, so no
+    connection lingers holding a Windows file lock (matters for restore)."""
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 class Database:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, book_type: str | None = None):
+        """
+        Open (creating/migrating as needed) the database at db_path.
+        book_type is only used when the file is brand new: 'business' seeds the
+        Schedule C categories and owner accounts instead of the personal tree.
+        """
         self.db_path = db_path
-        self._init_schema()
+        self.last_migration_backup = ""
+        self._init_schema(book_type)
 
     # ── internal ──────────────────────────────────────────────────────────────
 
     def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, factory=_ClosingConnection)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
-    def _init_schema(self):
+    def _init_schema(self, book_type: str | None = None):
+        is_new = (not os.path.exists(self.db_path)
+                  or os.path.getsize(self.db_path) == 0)
+        if not is_new:
+            self._backup_before_migration()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
         self._migrate()
-        self.seed_default_categories()
+        if is_new and book_type in (BOOK_PERSONAL, BOOK_BUSINESS):
+            self.set_setting("book_type", book_type)
+        if self.is_business():
+            self.ensure_business_setup()
+        else:
+            self.seed_default_categories()
+
+    def _backup_before_migration(self):
+        """Copy an existing database aside before its schema is upgraded."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            has_data = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='transactions'"
+            ).fetchone() is not None
+        finally:
+            conn.close()
+        if has_data and version < SCHEMA_VERSION:
+            # If this fails we must not migrate: let the error reach the caller
+            # (main.py shows it) rather than touching an un-backed-up file.
+            self.last_migration_backup = _backup.backup_database(
+                self.db_path, f"pre-migration-v{SCHEMA_VERSION}")
 
     def seed_default_categories(self):
         """
@@ -178,18 +271,15 @@ class Database:
 
     def _migrate(self):
         """Add columns that were introduced after the initial schema."""
-        new_cols = [
-            ("transactions", "loan_id",          "TEXT DEFAULT ''"),
-            ("transactions", "principal_amount",  "REAL DEFAULT 0"),
-            ("transactions", "interest_amount",   "REAL DEFAULT 0"),
-            ("transactions", "split_group_id",    "TEXT DEFAULT ''"),
-        ]
         with self._conn() as c:
-            for table, col, typedef in new_cols:
-                try:
+            for table, col, typedef in _NEW_COLUMNS:
+                existing = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+                if col not in existing:
                     c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
-                except Exception:
-                    pass  # column already exists — ignore
+            c.execute("CREATE INDEX IF NOT EXISTS idx_txn_split ON transactions(split_group_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_txn_pair ON transactions(transfer_pair_id)")
+            if c.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+                c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @staticmethod
     def _new_id() -> str:
@@ -237,17 +327,28 @@ class Database:
                     (data.get("name",""), data.get("type","checking"),
                      data.get("institution",""), ob,
                      data.get("currency","USD"), active, data["id"]))
+                if "role" in data:
+                    c.execute("UPDATE accounts SET role=? WHERE id=?",
+                              (data.get("role") or "", data["id"]))
             else:
                 data["id"] = self._new_id()
                 data["created_at"] = self._now()
                 c.execute(
                     "INSERT INTO accounts "
-                    "(id,name,type,institution,opening_balance,currency,active,created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    "(id,name,type,institution,opening_balance,currency,active,created_at,role) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
                     (data["id"], data.get("name",""), data.get("type","checking"),
                      data.get("institution",""), ob,
-                     data.get("currency","USD"), 1, data["created_at"]))
+                     data.get("currency","USD"), 1, data["created_at"],
+                     data.get("role") or ""))
         return data
+
+    def get_account_by_role(self, role: str) -> dict | None:
+        """First active account with a built-in role (e.g. 'due_to_owner')."""
+        with self._conn() as c:
+            return _to_dict(c.execute(
+                "SELECT * FROM accounts WHERE role=? ORDER BY active DESC, created_at LIMIT 1",
+                (role,)).fetchone())
 
     def delete_account(self, account_id: str):
         with self._conn() as c:
@@ -284,6 +385,9 @@ class Database:
         prin_amt = float(data.get("principal_amount") or 0)
         int_amt  = float(data.get("interest_amount") or 0)
         split_gid = data.get("split_group_id") or ""
+        extras = [k for k in _TXN_EXTRA_COLS if k in data]
+        if "reimbursable" in data:
+            data["reimbursable"] = "1" if str(data.get("reimbursable") or "0") == "1" else "0"
         with self._conn() as c:
             if data.get("id") and self.get_transaction(data["id"]):
                 c.execute(
@@ -314,6 +418,12 @@ class Database:
                      recon, data.get("reconcile_id",""),
                      data.get("notes",""), data.get("import_hash",""),
                      loan_id, prin_amt, int_amt, split_gid, data["created_at"]))
+            if extras:
+                c.execute(
+                    f"UPDATE transactions SET {','.join(k + '=?' for k in extras)},"
+                    "updated_at=? WHERE id=?",
+                    [int(data[k]) if k == "reimbursable" else (data.get(k) or "")
+                     for k in extras] + [self._now(), data["id"]])
         return data
 
     def bulk_save_transactions(self, rows: list[dict]) -> list[dict]:
@@ -531,6 +641,13 @@ class Database:
                 "import_hash":   preserved_hash if i == 0 else "",
                 "split_group_id": gid,
             }
+            # Owner/person attribution is shared by every line; a line may
+            # override who it's charged to (e.g. a receipt item for a project).
+            for k in _TXN_EXTRA_COLS:
+                if k in s:
+                    child[k] = s[k]
+                elif k in base_txn:
+                    child[k] = base_txn[k]
             saved.append(self.save_transaction(child))
 
         # One mirror in the destination for the portion that actually moved.
@@ -568,6 +685,9 @@ class Database:
             c.execute("DELETE FROM reconciliations")
             c.execute("DELETE FROM rules")
             c.execute("DELETE FROM loans")
+        # Business books need their built-in owner accounts back.
+        if self.is_business():
+            self.ensure_business_setup()
 
     def get_existing_hashes(self) -> set:
         with self._conn() as c:
@@ -608,6 +728,12 @@ class Database:
                     "INSERT INTO categories (id,name,parent_id,type,active) VALUES (?,?,?,?,1)",
                     (data["id"], data["name"], data.get("parent_id",""),
                      data.get("type","expense")))
+            if "tax_line" in data:
+                c.execute("UPDATE categories SET tax_line=? WHERE id=?",
+                          (data.get("tax_line") or "", data["id"]))
+            if "deduct_pct" in data:
+                c.execute("UPDATE categories SET deduct_pct=? WHERE id=?",
+                          (float(data.get("deduct_pct") or 100), data["id"]))
         return data
 
     def delete_category(self, cat_id: str):
@@ -922,5 +1048,151 @@ class Database:
                 "SELECT * FROM transactions WHERE loan_id=? ORDER BY date",
                 (loan_id,)).fetchall())
 
+    # ── book type (personal / business) ──────────────────────────────────────
+
+    def book_type(self) -> str:
+        return self.get_setting("book_type", BOOK_PERSONAL) or BOOK_PERSONAL
+
+    def is_business(self) -> bool:
+        return self.book_type() == BOOK_BUSINESS
+
+    def set_book_type(self, book_type: str):
+        """
+        Switch this database's book type. Turning a database into a Business
+        book is additive: it adds the Schedule C categories, owner accounts and
+        the Owner person, and never removes or rewrites existing data.
+        """
+        if book_type not in (BOOK_PERSONAL, BOOK_BUSINESS):
+            raise ValueError(book_type)
+        self.set_setting("book_type", book_type)
+        if book_type == BOOK_BUSINESS:
+            self.ensure_business_setup()
+
+    def ensure_business_setup(self):
+        """Idempotently create everything a business book relies on."""
+        self.seed_business_categories()
+        for role, (name, atype) in BUSINESS_ACCOUNTS.items():
+            if not self.get_account_by_role(role):
+                self.save_account({"name": name, "type": atype, "role": role,
+                                   "institution": "Built-in (no bank)"})
+        self.owner_person_id()
+        self.get_transfer_category_id()
+
+    def seed_business_categories(self):
+        """Add the Schedule C category tree once (skips names that already exist)."""
+        if self.get_setting("business_categories_seeded") == "1":
+            return
+        from business_categories import BUSINESS_CATEGORIES
+        existing = {(c["name"].lower(), c.get("parent_id") or "", c.get("type")): c
+                    for c in self.get_categories()}
+
+        def _ensure(name, ctype, parent_id, tax_line, pct):
+            key = (name.lower(), parent_id, ctype)
+            cat = existing.get(key)
+            if cat:
+                if not cat.get("tax_line"):
+                    cat = self.save_category(dict(cat, tax_line=tax_line, deduct_pct=pct))
+                return cat
+            cat = self.save_category({"name": name, "type": ctype, "parent_id": parent_id,
+                                      "tax_line": tax_line, "deduct_pct": pct})
+            existing[key] = cat
+            return cat
+
+        for ctype, parents in BUSINESS_CATEGORIES.items():
+            for name, line, pct, children in parents:
+                parent = _ensure(name, ctype, "", line, pct)
+                for child in children:
+                    if isinstance(child, tuple):
+                        cname, cline, cpct = child
+                    else:
+                        cname, cline, cpct = child, line, pct
+                    _ensure(cname, ctype, parent["id"], cline, cpct)
+        self.set_setting("business_categories_seeded", "1")
+        self.set_setting("default_categories_seeded", "1")
+
+    # ── people ───────────────────────────────────────────────────────────────
+
+    def get_people(self, active_only: bool = True) -> list[dict]:
+        q = "SELECT * FROM people"
+        if active_only:
+            q += " WHERE active=1"
+        q += " ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, name COLLATE NOCASE"
+        with self._conn() as c:
+            return _to_dicts(c.execute(q).fetchall())
+
+    def get_person(self, person_id: str) -> dict | None:
+        with self._conn() as c:
+            return _to_dict(c.execute(
+                "SELECT * FROM people WHERE id=?", (person_id,)).fetchone())
+
+    def save_person(self, data: dict) -> dict:
+        cols = ("name", "role", "email", "phone", "notes")
+        active = 1 if str(data.get("active", "1")) == "1" else 0
+        with self._conn() as c:
+            if data.get("id") and self.get_person(data["id"]):
+                c.execute(
+                    f"UPDATE people SET {','.join(k + '=?' for k in cols)},active=? WHERE id=?",
+                    [data.get(k) or "" for k in cols] + [active, data["id"]])
+            else:
+                data["id"] = self._new_id()
+                data["created_at"] = self._now()
+                c.execute(
+                    "INSERT INTO people (id,name,role,email,phone,notes,active,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    [data["id"]] + [data.get(k) or "" for k in cols]
+                    + [active, data["created_at"]])
+        return data
+
+    def owner_person_id(self) -> str:
+        """The business owner's person id, creating "Owner" the first time."""
+        pid = self.get_setting("owner_person_id")
+        if pid and self.get_person(pid):
+            return pid
+        owners = [p for p in self.get_people(active_only=False) if p.get("role") == "owner"]
+        person = owners[0] if owners else self.save_person({"name": "Owner", "role": "owner"})
+        self.set_setting("owner_person_id", person["id"])
+        return person["id"]
+
+    def get_or_create_role_account(self, role: str, name: str, atype: str) -> dict:
+        acct = self.get_account_by_role(role)
+        if acct:
+            if str(acct.get("active", "1")) != "1":
+                self.set_account_active(acct["id"], True)
+            return acct
+        return self.save_account({"name": name, "type": atype, "role": role,
+                                  "institution": "Built-in (no bank)"})
+
+    # ── backups ──────────────────────────────────────────────────────────────
+
+    def backup_now(self, kind: str = "manual") -> str:
+        return _backup.backup_database(self.db_path, kind)
+
+    def auto_backup_if_due(self) -> str:
+        """
+        Daily automatic backup, keeping the newest N (setting auto_backup_keep,
+        default 10). Returns the new backup's path, or '' if none was due.
+        Never raises — a failed backup must not stop the app from opening.
+        """
+        try:
+            if self.get_setting("auto_backup_enabled", "1") != "1":
+                return ""
+            last = self.get_setting("last_auto_backup")
+            hours = float(self.get_setting("auto_backup_hours", "24") or 24)
+            if last:
+                try:
+                    age = datetime.now() - datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
+                    if age < timedelta(hours=hours):
+                        return ""
+                except ValueError:
+                    pass
+            path = _backup.backup_database(self.db_path, "auto")
+            self.set_setting("last_auto_backup", self._now())
+            keep = int(self.get_setting("auto_backup_keep", "10") or 10)
+            _backup.prune_backups(self.db_path, "auto", keep)
+            return path
+        except Exception:
+            return ""
+
     def reload(self):
         pass  # no-op — SQLite reads are always live
+

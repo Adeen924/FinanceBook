@@ -58,6 +58,28 @@ STEPS = [
               "<b>Split</b> a purchase across categories or mark it a "
               "<b>Transfer</b> between accounts."),
 
+    dict(nav="Owner Investment", target=lambda mw, p: getattr(p, "_expense_btn", None),
+         when=lambda mw: mw.db.is_business(),
+         title="Business: money you put in",
+         body="No business bank account yet? Click <b>“+ Expense I Paid”</b> to "
+              "record a company expense you paid yourself — as a <b>capital "
+              "contribution</b> or as money the <b>company owes you</b>. "
+              "<b>Reimburse Owner</b> pays you back later."),
+
+    dict(nav="Reports", target=lambda mw, p: getattr(p, "_tabs", None),
+         when=lambda mw: mw.db.is_business(),
+         title="Business balance sheet",
+         body="The <b>Balance Sheet</b> now shows an <b>Equity</b> section — your "
+              "contributions, draws and profit — and what the company owes you "
+              "under Liabilities."),
+
+    dict(nav="Settings", target=lambda mw, p: getattr(p, "_book_btn", None),
+         when=lambda mw: not mw.db.is_business(),
+         title="Running a business?",
+         body="Switch this database to a <b>Business</b> book here (or create a "
+              "separate business database from the sidebar) to get Schedule C "
+              "categories and owner-investment tracking."),
+
     dict(nav="Dashboard", target=None,
          title="You're all set!",
          body="You can reopen this tour anytime from "
@@ -69,12 +91,15 @@ class GuidedTour:
     def __init__(self, main_window):
         self.mw = main_window
         self.i = 0
+        # Steps with a "when" predicate only show when it holds (e.g. the
+        # Business pages only in a Business book).
+        self.steps = [s for s in STEPS if s.get("when", lambda mw: True)(main_window)]
         self.overlay: _Overlay | None = None
 
     # ── lifecycle ───────────────────────────────────────────────────────────────
 
     def start(self):
-        if not STEPS:
+        if not self.steps:
             return
         self.overlay = _Overlay(self.mw, self)
         self.overlay.show()
@@ -91,7 +116,7 @@ class GuidedTour:
     # ── navigation ──────────────────────────────────────────────────────────────
 
     def next(self):
-        if self.i >= len(STEPS) - 1:
+        if self.i >= len(self.steps) - 1:
             self.finish()
             return
         self.i += 1
@@ -103,7 +128,7 @@ class GuidedTour:
             self._show()
 
     def _show(self):
-        step = STEPS[self.i]
+        step = self.steps[self.i]
         # Navigate to the page for this step.
         nav = step.get("nav")
         if nav:
@@ -118,7 +143,7 @@ class GuidedTour:
         QTimer.singleShot(30, self._apply_step)
 
     def _apply_step(self):
-        step = STEPS[self.i]
+        step = self.steps[self.i]
         page = self.mw._stack.currentWidget()
         target = None
         getter = step.get("target")
@@ -135,7 +160,7 @@ class GuidedTour:
             title=step["title"],
             body=step["body"],
             index=self.i,
-            total=len(STEPS),
+            total=len(self.steps),
         )
 
 

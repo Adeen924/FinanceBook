@@ -111,6 +111,52 @@ def _draw_icon(p: QPainter, name: str, color: QColor):
     elif name == "plus":
         p.drawLine(QPointF(12, 5), QPointF(12, 19))
         p.drawLine(QPointF(5, 12), QPointF(19, 12))
+    elif name == "owner":
+        p.drawEllipse(QPointF(12, 8), 3.8, 3.8)
+        p.drawArc(QRectF(4.5, 13.5, 15, 13), 0, 180 * 16)
+        p.drawLine(QPointF(15.5, 17.5), QPointF(19.5, 17.5))
+        p.drawLine(QPointF(17.5, 15.5), QPointF(17.5, 19.5))
+    elif name == "people":
+        p.drawEllipse(QPointF(9, 8.5), 3.3, 3.3)
+        p.drawArc(QRectF(3, 13.5, 12, 11), 0, 180 * 16)
+        p.drawEllipse(QPointF(16.5, 9.5), 2.6, 2.6)
+        p.drawArc(QRectF(13, 14.5, 8.5, 9), 0, 180 * 16)
+    elif name == "receipt":
+        p.drawPolyline(pts(5.5, 20.5, 5.5, 3.5, 18.5, 3.5, 18.5, 20.5,
+                           16.3, 19, 14.1, 20.5, 12, 19, 9.9, 20.5, 7.7, 19, 5.5, 20.5))
+        for y in (8, 11.5, 15):
+            p.drawLine(QPointF(8.5, y), QPointF(15.5, y))
+    elif name == "asset":
+        p.drawRoundedRect(QRectF(3.5, 9, 17, 9.5), 2, 2)
+        p.drawLine(QPointF(8, 9), QPointF(8, 5.5))
+        p.drawLine(QPointF(8, 5.5), QPointF(16, 5.5))
+        p.drawLine(QPointF(16, 5.5), QPointF(16, 9))
+        p.drawEllipse(QPointF(12, 13.7), 2.2, 2.2)
+    elif name == "inventory":
+        p.drawPolygon(pts(12, 3.5, 20, 7.5, 12, 11.5, 4, 7.5))
+        p.drawPolyline(pts(4, 7.5, 4, 16.5, 12, 20.5, 20, 16.5, 20, 7.5))
+        p.drawLine(QPointF(12, 11.5), QPointF(12, 20.5))
+    elif name == "invoice":
+        p.drawPolyline(pts(14.5, 3.5, 5.5, 3.5, 5.5, 20.5, 18.5, 20.5, 18.5, 7.5, 14.5, 3.5, 14.5, 7.5, 18.5, 7.5))
+        for y in (11.5, 14.5, 17.5):
+            p.drawLine(QPointF(8.5, y), QPointF(15.5, y))
+    elif name == "contacts":
+        p.drawRoundedRect(QRectF(3.5, 5, 17, 14), 2.5, 2.5)
+        p.drawEllipse(QPointF(9, 10.5), 2.2, 2.2)
+        p.drawArc(QRectF(5.5, 13.5, 7, 6), 0, 180 * 16)
+        p.drawLine(QPointF(14, 10), QPointF(18, 10))
+        p.drawLine(QPointF(14, 13.5), QPointF(18, 13.5))
+    elif name == "taxes":
+        p.drawLine(QPointF(6, 18), QPointF(18, 6))
+        p.drawEllipse(QPointF(7.5, 7.5), 2.4, 2.4)
+        p.drawEllipse(QPointF(16.5, 16.5), 2.4, 2.4)
+    elif name == "budget":
+        p.drawEllipse(QPointF(12, 12), 8.5, 8.5)
+        p.drawLine(QPointF(12, 12), QPointF(12, 3.5))
+        p.drawLine(QPointF(12, 12), QPointF(19.5, 16))
+    elif name == "paperclip":
+        p.drawPolyline(pts(16.5, 8, 9.5, 15, 9.5, 16.8, 11.3, 18.5, 18.5, 11.3,
+                           18.5, 6.5, 15.5, 3.5, 11, 3.5, 4.5, 10, 4.5, 15))
 
 
 def icon_pixmap(name: str, color: str, size: int = 18, stroke: float = 1.8) -> QPixmap:

@@ -9,7 +9,7 @@ from ui.widgets import (PageTitle, MutedLabel, DataTable, GlassCard, IconBubble,
 from ui import styles as S
 from ui.styles import SUCCESS, DANGER, WARNING, ACCENT, money
 
-LIABILITY_TYPES = ("credit", "credit card", "loan", "liability")
+from utils.ledger import LIABILITY_TYPES, EQUITY_TYPES, NON_PNL_CATEGORY_TYPES
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 SLICE_COLORS = ["#2f6bff", "#5b9bff", "#8b7bff", "#22b8f0", "#9fbcff"]
@@ -32,7 +32,7 @@ def _pnl_bucket(t: dict, cats: dict) -> str:
     ctype = cat.get("type", "expense")
     if ctype == "income" or (not cat.get("id") and amt > 0):
         return "income"
-    if ctype == "debt_repayment":
+    if ctype in NON_PNL_CATEGORY_TYPES:   # debt principal, asset/inventory buys
         return "debt"
     return "expense"
 
@@ -323,7 +323,10 @@ class DashboardPage(QWidget):
         self._subtitle.setText("Here's where your money stands · "
                                f"{today.strftime('%A')}, {MONTHS[today.month - 1]} {today.day}")
         self._cats = {c["id"]: c for c in self.db.get_categories()}
-        self._accounts = self.db.get_accounts()
+        # Owner equity accounts (business books) are not money you have or
+        # owe, so they stay out of net worth and the accounts list.
+        self._accounts = [a for a in self.db.get_accounts()
+                          if a.get("type") not in EQUITY_TYPES]
         self._load_kpis()
         self._load_chart()
         self._load_donut()

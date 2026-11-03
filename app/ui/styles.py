@@ -637,6 +637,20 @@ QLabel#SidebarSection {{
     font-weight: 700;
     padding: 10px 14px 4px 14px;
 }}
+QLabel#SidebarGroup {{
+    color: {SUBTLE};
+    font-size: 10px;
+    font-weight: 700;
+    padding: 8px 14px 2px 14px;
+}}
+QLabel#BookBadge {{
+    color: {PRIMARY};
+    background: {SELECTED};
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+}}
 QComboBox#DbSelector {{
     background: {SELECTED};
     color: {TEXT};

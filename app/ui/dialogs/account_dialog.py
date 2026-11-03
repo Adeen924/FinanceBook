@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
 from PyQt6.QtCore import Qt
 
 
-ACCOUNT_TYPES = ["checking", "savings", "credit card", "gift card", "loan", "investment", "cash", "other"]
+ACCOUNT_TYPES = ["checking", "savings", "credit card", "gift card", "loan", "investment",
+                 "cash", "liability", "equity", "other"]
 CURRENCIES    = ["USD", "EUR", "GBP", "CAD", "AUD", "JPY", "CHF", "CNY", "MXN"]
 
 

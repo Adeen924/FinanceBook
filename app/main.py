@@ -68,6 +68,7 @@ def main():
         first_run = False
 
     new_db_name = None
+    new_book_type = None
     if first_run:
         from ui.database_dialog import DatabaseSetupDialog
         dialog = DatabaseSetupDialog(
@@ -85,9 +86,11 @@ def main():
                 "from the sidebar."),
             default_name="Personal Finances",
             default_location=BASE_DIR,
-            accept_label="Get Started")
+            accept_label="Get Started",
+            show_book_type=True)
         dialog.exec()
         new_db_name = dialog.database_name
+        new_book_type = dialog.book_type
         location = dialog.database_location
         os.makedirs(location, exist_ok=True)
         db_path = os.path.join(location, "finances.db")
@@ -105,7 +108,7 @@ def main():
 
     try:
         from sheets.client import Database
-        db = Database(db_path)
+        db = Database(db_path, book_type=new_book_type if first_run else None)
     except Exception as e:
         QMessageBox.critical(None, "Database Error",
             f"Could not open database:\n\n{e}")
@@ -117,6 +120,7 @@ def main():
     elif not db.get_setting("database_name"):
         db.set_setting("database_name", "Personal Finances")
         register_database(db_path, make_active=True)
+    db.auto_backup_if_due()
 
     from ui.main_window import MainWindow
     window = MainWindow(db)
