@@ -342,6 +342,10 @@ class ReceiptsMixin:
         if any(i.get("kind") == "asset" for i in items):
             fa = self.fixed_asset_category_id()
             items = [dict(i, category_id=fa) if i.get("kind") == "asset" else i for i in items]
+        if any(i.get("kind") == "inventory" for i in items):
+            inv = self.inventory_category_id()
+            items = [dict(i, category_id=inv) if i.get("kind") == "inventory" else i
+                     for i in items]
 
         business, personal = plan_receipt_lines(
             items, header.get("tax"), header.get("tip"), tax_mode,

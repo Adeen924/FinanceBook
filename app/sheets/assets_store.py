@@ -188,6 +188,11 @@ class ComputedMixin:
             if p["gain_in_range"]:
                 lines.append({"section": "income", "group": "Gain / (Loss) on Asset Sales",
                               "name": "", "amount": p["gain_in_range"], "computed": "gain"})
+        inv = self.inventory_totals(end, start) if hasattr(self, "inventory_totals") else None
+        if inv and inv["cogs"]:
+            lines.append({"section": "expense", "group": "Cost of Goods Sold",
+                          "name": "Inventory sold (computed)", "amount": -inv["cogs"],
+                          "computed": "cogs"})
         return lines
 
     def balance_sheet_extras(self, as_of: str, fy_start: str) -> dict:
@@ -201,5 +206,14 @@ class ComputedMixin:
                 extra_assets.append(("Less accumulated depreciation", -p["accumulated"]))
             before += p["gain_before"] - p["dep_before"]
             in_fy += p["gain_in_range"] - p["dep_in_range"]
+        extra_equity = []
+        inv = self.inventory_totals(as_of, fy_start) if hasattr(self, "inventory_totals") else None
+        if inv and (inv["value"] or inv["cogs"] or inv["cogs_before"]):
+            extra_assets.append(("Inventory", inv["value"]))
+            before -= inv["cogs_before"]
+            in_fy -= inv["cogs"]
+            if inv["opening"]:
+                extra_equity.append(("Opening inventory", inv["opening"]))
         return {"extra_assets": extra_assets, "extra_liabilities": extra_liab,
-                "noncash_pnl_before_fy": before, "noncash_pnl_in_fy": in_fy}
+                "noncash_pnl_before_fy": before, "noncash_pnl_in_fy": in_fy,
+                "extra_equity": extra_equity}

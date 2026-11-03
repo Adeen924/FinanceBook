@@ -88,6 +88,13 @@ STEPS = [
               "and record payments — each payment becomes a transaction automatically. "
               "The <b>A/R</b> and <b>A/P Aging</b> tabs show what's overdue."),
 
+    dict(nav="Inventory", target=lambda mw, p: getattr(p, "_add_btn", None),
+         when=lambda mw: mw.db.is_business(),
+         title="Stock you sell",
+         body="Add items, receive stock and record sales. FinanceBook values your stock "
+              "(FIFO or weighted average), flags items to reorder, and moves their cost to "
+              "<b>Cost of Goods Sold</b> when they sell."),
+
     dict(nav="Reports", target=lambda mw, p: getattr(p, "_tabs", None),
          when=lambda mw: mw.db.is_business(),
          title="Business balance sheet",
