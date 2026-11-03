@@ -39,6 +39,11 @@ def _install_error_handler():
             msg = ("That date is in a locked period, so it can't be added, changed or deleted.\n\n"
                    "To change it, unlock the period in Settings → Period Lock.")
             title = "Period Locked"
+        elif "readonly database" in text:
+            msg = ("This database is open read-only because it's in use on another computer, "
+                   "so that change wasn't saved.\n\nWhen it's closed there and OneDrive has "
+                   "finished syncing, choose Open for Editing in the yellow banner.")
+            title = "Read-Only"
         else:
             msg = (f"Something went wrong:\n\n{exc_type.__name__}: {text}\n\n"
                    "Your data is safe — nothing was saved for this action. If it keeps "
@@ -49,6 +54,84 @@ def _install_error_handler():
             QMessageBox.warning(QApplication.activeWindow(), title, msg)
 
     sys.excepthook = hook
+
+
+def _new_database_path(location: str) -> str:
+    os.makedirs(location, exist_ok=True)
+    db_path = os.path.join(location, "finances.db")
+    if os.path.exists(db_path):
+        i = 2
+        while os.path.exists(os.path.join(location, f"finances_{i}.db")):
+            i += 1
+        db_path = os.path.join(location, f"finances_{i}.db")
+    return db_path
+
+
+def _resolve_missing_database(db_path: str):
+    """
+    The active database's file isn't there at startup — usually a OneDrive
+    folder that hasn't synced yet. Never quietly create an empty database
+    where an existing one was expected: let the user retry, pick another, or
+    deliberately create a new one. Returns (path, new_name, book_type) — the
+    name/type are set only for a new database — or None to quit.
+    """
+    from PyQt6.QtWidgets import QMessageBox, QDialog
+    while True:
+        box = QMessageBox(QMessageBox.Icon.Warning, "Database Not Found",
+            f"Could not find your database at:\n{db_path}\n\n"
+            "The folder may not be available right now — for example a OneDrive folder "
+            "that hasn't finished syncing, or a network drive that isn't connected. "
+            "Wait for it and choose Retry, or pick another database.")
+        retry = box.addButton("Retry", QMessageBox.ButtonRole.AcceptRole)
+        choose = box.addButton("Choose Another Database…", QMessageBox.ButtonRole.ActionRole)
+        create = box.addButton("Create New…", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("Quit", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(retry)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is retry:
+            if os.path.exists(db_path):
+                return db_path, None, None
+        elif clicked is choose:
+            from ui.connect_dialog import choose_existing_database
+            path = choose_existing_database(None)
+            if path:
+                return path, None, None
+        elif clicked is create:
+            from ui.database_dialog import DatabaseSetupDialog
+            dialog = DatabaseSetupDialog(
+                window_title="New Database", heading="Create a New Database",
+                message="Give your new database a name and choose where to save it.",
+                default_name="Personal Finances", default_location=BASE_DIR,
+                accept_label="Create", show_book_type=True)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                return (_new_database_path(dialog.database_location),
+                        dialog.database_name, dialog.book_type)
+        else:
+            return None
+
+
+def _offer_update_for_newer_database(db_path: str):
+    """
+    The active database was upgraded by a newer FinanceBook on another
+    computer, so this one can't open it. The normal update check only runs
+    once the window is open, so check now — otherwise the user could never
+    reach the update that fixes this.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+    from updater import check_for_updates, _show_update_dialog
+    QMessageBox.information(None, "Update Needed",
+        f"Your database was updated by a newer version of FinanceBook on another "
+        f"computer:\n{db_path}\n\nThis computer needs that update too before it can "
+        "open it. FinanceBook will now check for the update.")
+    info = check_for_updates()
+    if info is not None:
+        _show_update_dialog(None, info)     # exits and relaunches if they update
+    else:
+        QMessageBox.warning(None, "Update Needed",
+            "FinanceBook couldn't find the update online. Connect to the internet and "
+            "start FinanceBook again, or download the latest version from "
+            "github.com/Adeen924/FinanceBook/releases.")
 
 
 def main():
@@ -97,6 +180,7 @@ def main():
 
     new_db_name = None
     new_book_type = None
+    connected = False
     if first_run:
         from ui.database_dialog import DatabaseSetupDialog
         dialog = DatabaseSetupDialog(
@@ -115,39 +199,50 @@ def main():
             default_name="Personal Finances",
             default_location=BASE_DIR,
             accept_label="Get Started",
-            show_book_type=True)
+            show_book_type=True,
+            show_connect=True)
         dialog.exec()
-        new_db_name = dialog.database_name
-        new_book_type = dialog.book_type
-        location = dialog.database_location
-        os.makedirs(location, exist_ok=True)
-        db_path = os.path.join(location, "finances.db")
-        if os.path.exists(db_path):
-            i = 2
-            while os.path.exists(os.path.join(location, f"finances_{i}.db")):
-                i += 1
-            db_path = os.path.join(location, f"finances_{i}.db")
+        if dialog.connected_path:
+            db_path = dialog.connected_path
+            connected = True
+        else:
+            new_db_name = dialog.database_name
+            new_book_type = dialog.book_type
+            db_path = _new_database_path(dialog.database_location)
     elif not os.path.exists(db_path):
-        QMessageBox.warning(None, "Database Not Found",
-            f"Could not find your database at:\n{db_path}\n\n"
-            "The folder may not be available right now (e.g. a cloud drive "
-            "that hasn't finished syncing). A new, empty database will be "
-            "created there instead.")
+        resolved = _resolve_missing_database(db_path)
+        if resolved is None:
+            sys.exit(0)
+        db_path, new_db_name, new_book_type = resolved
+        connected = new_db_name is None
 
+    from sheets.backup import read_user_version
+    from sheets.client import SCHEMA_VERSION
     try:
-        from sheets.client import Database
-        db = Database(db_path, book_type=new_book_type if first_run else None)
-    except Exception as e:
-        QMessageBox.critical(None, "Database Error",
-            f"Could not open database:\n\n{e}")
+        newer = os.path.getsize(db_path) > 0 and read_user_version(db_path) > SCHEMA_VERSION
+    except Exception:
+        newer = False
+    if newer:
+        _offer_update_for_newer_database(db_path)
         sys.exit(1)
 
-    if first_run:
+    # Take the database's lock (asking if another computer has it), then open
+    # it — read-only if the user chose that. Errors are shown by open_with_lock.
+    from ui.connect_dialog import open_with_lock
+    opened = open_with_lock(None, db_path, book_type=new_book_type)
+    if opened is None:
+        sys.exit(1)
+    db, lock = opened
+
+    if new_db_name is not None:
         db.set_setting("database_name", new_db_name)
         register_database(db_path, make_active=True)
-    elif not db.get_setting("database_name"):
+    elif connected:
+        register_database(db_path, make_active=True)
+    elif not db.read_only and not db.get_setting("database_name"):
         db.set_setting("database_name", "Personal Finances")
         register_database(db_path, make_active=True)
+    # auto-backup, session user and recurring posting are all no-ops read-only.
     db.auto_backup_if_due()
     from db_config import current_user_name
     db.set_session_user(current_user_name())
@@ -158,7 +253,7 @@ def main():
         posted = []
 
     from ui.main_window import MainWindow
-    window = MainWindow(db)
+    window = MainWindow(db, lock)
     window.show()
     if posted:
         QMessageBox.information(window, "Recurring Items Posted",
@@ -166,10 +261,11 @@ def main():
                                 "were added automatically. See the Recurring page.")
 
     # First-run welcome guide — shown ONCE, only for brand-new users (never on
-    # app updates). `first_run` is true only when no database was registered yet;
-    # the persistent flag is a second guard so it can never repeat.
+    # app updates, nor when connecting a database another computer already
+    # uses). `first_run` is true only when no database was registered yet; the
+    # persistent flag is a second guard so it can never repeat.
     from db_config import get_flag, set_flag
-    if first_run and not get_flag("onboarding_completed"):
+    if first_run and not connected and not get_flag("onboarding_completed"):
         try:
             window.start_tour()   # interactive coach-mark walkthrough
         except Exception:
@@ -185,7 +281,9 @@ def main():
     from updater import run_update_check
     run_update_check(window)
 
-    sys.exit(app.exec())
+    code = app.exec()
+    window.release_database()
+    sys.exit(code)
 
 
 if __name__ == "__main__":

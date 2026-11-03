@@ -4,15 +4,35 @@ Database backups — pure sqlite3/os, no Qt.
 Backups live in a "FinanceBook Backups" folder next to the database file, so a
 database kept in OneDrive / Google Drive has its backups synced with it. Copies
 are made with SQLite's online-backup API, which is consistent even while the
-database is open in WAL mode (a plain file copy could miss pages still in the
--wal file).
+database is being written (a plain file copy could catch it mid-transaction).
 """
 import os
 import re
 import sqlite3
+import urllib.parse
 from datetime import datetime
 
 BACKUP_DIRNAME = "FinanceBook Backups"
+
+
+def ro_uri(path: str) -> str:
+    """
+    A read-only SQLite URI for path. The path is percent-encoded so folder
+    names containing spaces, '#', '%' or non-ASCII characters open correctly;
+    a UNC network path (//server/share/…) keeps its leading slashes.
+    """
+    p = os.path.abspath(path).replace("\\", "/")
+    quoted = urllib.parse.quote(p, safe="/:")
+    return ("file://" + quoted if p.startswith("//") else "file:" + quoted) + "?mode=ro"
+
+
+def read_user_version(path: str) -> int:
+    """PRAGMA user_version of a database file, read without modifying it."""
+    conn = sqlite3.connect(ro_uri(path), uri=True)
+    try:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        conn.close()
 
 
 def backup_dir(db_path: str) -> str:
@@ -93,6 +113,10 @@ def restore_database(backup_path: str, db_path: str) -> str:
     if not os.path.exists(backup_path):
         raise FileNotFoundError(backup_path)
     _check_is_financebook_db(backup_path)
+    from sheets.client import SCHEMA_VERSION    # here, not at the top: client imports this module
+    if read_user_version(backup_path) > SCHEMA_VERSION:
+        raise ValueError("That backup was made by a newer version of FinanceBook. "
+                         "Update FinanceBook on this computer first, then restore it.")
     safety = backup_database(db_path, "pre-restore") if os.path.exists(db_path) else ""
     src = sqlite3.connect(backup_path)
     try:
@@ -107,7 +131,7 @@ def restore_database(backup_path: str, db_path: str) -> str:
 
 
 def _check_is_financebook_db(path: str):
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(ro_uri(path), uri=True)
     try:
         names = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -120,7 +144,7 @@ def _check_is_financebook_db(path: str):
 def read_setting_readonly(db_path: str, key: str, default: str = "") -> str:
     """Read one settings value without migrating or locking the database."""
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn = sqlite3.connect(ro_uri(db_path), uri=True)
         try:
             row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         finally:

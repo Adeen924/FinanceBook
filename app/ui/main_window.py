@@ -1,6 +1,7 @@
 """Main application window — sidebar navigation + stacked content pages."""
 import os
 import re
+import time
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                               QLabel, QStackedWidget, QMessageBox, QPushButton,
@@ -149,10 +150,16 @@ def _read_db_name(path: str) -> str:
     return read_setting_readonly(path, "database_name") or os.path.basename(path)
 
 
+def _same_path(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, db):
+    def __init__(self, db, lock=None):
+        """lock: the db_lock.DbLock held for db (None when read-only or unlockable)."""
         super().__init__()
         self.db       = db
+        self._lock    = lock
         self._base_dir = os.path.dirname(os.path.abspath(db.db_path))
         from db_config import register_database
         register_database(os.path.abspath(db.db_path))
@@ -163,7 +170,13 @@ class MainWindow(QMainWindow):
         self._page_cache: dict[str, QWidget] = {}
         self._nav_buttons: dict[str, NavButton] = {}
         self._current_page = ""
+        self._hb_busy = False
+        import db_lock
+        self._heartbeat = QTimer(self)
+        self._heartbeat.setInterval(db_lock.HEARTBEAT_SECONDS * 1000)
+        self._heartbeat.timeout.connect(self._on_heartbeat)
         self._build()
+        self._update_lock_state()
         self._nav_to("Dashboard")
 
     def _build(self):
@@ -251,8 +264,118 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(sidebar)
 
         # ── Content area ─────────────────────────────────────────────────────
+        content = QWidget()
+        content_lay = QVBoxLayout(content)
+        content_lay.setContentsMargins(8, 0, 0, 0)
+        content_lay.setSpacing(6)
+        content_lay.addWidget(self._build_read_only_banner())
         self._stack = QStackedWidget()
-        root_layout.addWidget(self._stack, 1)
+        content_lay.addWidget(self._stack, 1)
+        root_layout.addWidget(content, 1)
+
+    def _build_read_only_banner(self) -> QFrame:
+        self._ro_banner = QFrame()
+        self._ro_banner.setObjectName("ReadOnlyBanner")
+        row = QHBoxLayout(self._ro_banner)
+        row.setContentsMargins(14, 8, 10, 8)
+        self._ro_label = QLabel("")
+        self._ro_label.setWordWrap(True)
+        row.addWidget(self._ro_label, 1)
+        retry = QPushButton("Open for Editing")
+        retry.setObjectName("Secondary")
+        retry.setCursor(Qt.CursorShape.PointingHandCursor)
+        retry.clicked.connect(lambda: self.open_database(self.db.db_path))
+        row.addWidget(retry)
+        self._ro_banner.hide()
+        return self._ro_banner
+
+    # ── lock / read-only state ────────────────────────────────────────────────
+
+    def _update_lock_state(self):
+        """Show the read-only banner and run the heartbeat to match self.db/_lock."""
+        import db_lock
+        if self.db.read_only:
+            info = db_lock.read_lock(self.db.db_path) or {}
+            where = (f" — it's open on {info['machine']}"
+                     if info.get("machine") and not info.get("corrupt") else "")
+            self._ro_label.setText(
+                f"<b>Read-only</b>{where}. You can look, but changes can't be saved. "
+                "When it's closed there (and OneDrive has synced), choose Open for Editing.")
+            self._ro_banner.show()
+        else:
+            self._ro_banner.hide()
+        if self._lock is not None and self._lock.owned:
+            self._heartbeat.start()
+        else:
+            self._heartbeat.stop()
+        self.setWindowTitle("FinanceBook  (read-only)" if self.db.read_only else "FinanceBook")
+
+    def _on_heartbeat(self):
+        import db_lock
+        if self._hb_busy or self._lock is None:
+            return
+        self._hb_busy = True
+        try:
+            gap = time.time() - self._lock.last_beat
+            if gap > db_lock.STALE_AFTER_SECONDS:
+                # The computer slept (or the app hung) long enough for the lock
+                # to look abandoned; the other laptop may have opened the file
+                # and its lock may not have synced here yet.
+                if not self._lock.still_ours():
+                    self._lost_lock()
+                    return
+                if QMessageBox.question(
+                        self, "Welcome Back",
+                        f"FinanceBook was inactive for {int(gap // 60)} minutes, so its lock on "
+                        "this database expired.\n\nIf you opened this database on another "
+                        "computer in the meantime, choose No — this window switches to "
+                        "read-only so the two don't overwrite each other.\n\n"
+                        "Keep editing here?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                ) != QMessageBox.StandardButton.Yes:
+                    self._go_read_only()
+                    return
+            if not self._lock.heartbeat():
+                self._lost_lock()
+        finally:
+            self._hb_busy = False
+
+    def _go_read_only(self):
+        """Stop writing to the current database. Pages share self.db, so the
+        flag takes effect everywhere at once."""
+        if self._lock is not None:
+            self._lock.release()
+        self._lock = None
+        self.db.read_only = True
+        self._update_lock_state()
+
+    def _lost_lock(self):
+        import db_lock
+        self._lock = None
+        self.db.read_only = True
+        self._update_lock_state()
+        info = db_lock.read_lock(self.db.db_path) or {}
+        who = (db_lock.describe(info) if not info.get("corrupt") and info
+               else "It is now in use somewhere else")
+        QMessageBox.warning(
+            self, "Database Taken Over",
+            f"Another FinanceBook took over this database.\n\n{who}.\n\n"
+            "This window is now read-only so the two don't overwrite each other. "
+            "Everything you saved before now is kept.")
+
+    def release_database(self):
+        """Close the current database cleanly and give up its lock."""
+        self._heartbeat.stop()
+        try:
+            self.db.close()
+        finally:
+            if self._lock is not None:
+                self._lock.release()
+            self._lock = None
+
+    def closeEvent(self, event):
+        self.release_database()
+        super().closeEvent(event)
 
     def _visible_sections(self):
         business = self.db.is_business()
@@ -321,6 +444,7 @@ class MainWindow(QMainWindow):
             if path == current_abs:
                 current_idx = i
         self._db_combo.addItem("➕  New Database…", "__new__")
+        self._db_combo.addItem("🔗  Connect Existing Database…", "__connect__")
         self._db_combo.setCurrentIndex(current_idx)
         self._db_combo.blockSignals(False)
 
@@ -329,10 +453,54 @@ class MainWindow(QMainWindow):
         if path == "__new__":
             self._create_new_database()
             return
-        if path == os.path.abspath(self.db.db_path):
+        if path == "__connect__":
+            self.connect_existing_database()
+            return
+        if _same_path(path, self.db.db_path):
             return  # already on this one
+        if not self.open_database(path):
+            self._populate_db_combo()
+
+    def connect_existing_database(self) -> bool:
+        """Pick an existing database file (e.g. in OneDrive) and switch to it."""
+        from ui.connect_dialog import choose_existing_database
+        path = choose_existing_database(self)
+        if not path:
+            self._populate_db_combo()
+            return False
+        if _same_path(path, self.db.db_path):
+            self._populate_db_combo()
+            QMessageBox.information(self, "Connect Database", "That database is already open.")
+            return True
+        if not self.open_database(path):
+            self._populate_db_combo()
+            return False
+        return True
+
+    def open_database(self, path: str, book_type: str | None = None) -> bool:
+        """
+        Make path the active database: take its lock (asking if another
+        computer has it), open it, then let go of the current one. Returns
+        False if the user cancelled or it couldn't be opened — the current
+        database stays open and untouched.
+        """
+        from ui.connect_dialog import open_with_lock
+        reopening = _same_path(path, self.db.db_path)
+        if reopening and self._lock is not None:
+            return True     # "Open for Editing" while we already hold the lock
+        opened = open_with_lock(self, path, book_type=book_type)
+        if opened is None:
+            return False
+        new_db, new_lock = opened
+        if not reopening:
+            self.release_database()
+        self._switch_to(new_db, new_lock)
+        return True
+
+    def reopen_current(self):
+        """Re-open the current file under the lock we already hold (after a restore)."""
         from sheets.client import Database
-        self._switch_to(Database(path))
+        self._switch_to(Database(self.db.db_path, read_only=self.db.read_only), self._lock)
 
     def _create_new_database(self):
         from ui.database_dialog import DatabaseSetupDialog
@@ -360,10 +528,11 @@ class MainWindow(QMainWindow):
             while os.path.exists(os.path.join(location, f"{slug}_{i}.db")):
                 i += 1
             path = os.path.join(location, f"{slug}_{i}.db")
-        from sheets.client import Database
-        new_db = Database(path, book_type=dialog.book_type)
-        new_db.set_setting("database_name", name)
-        self._switch_to(new_db)
+        if not self.open_database(path, book_type=dialog.book_type):
+            self._populate_db_combo()
+            return
+        self.db.set_setting("database_name", name)
+        self._populate_db_combo()
 
     def delete_current_database(self) -> bool:
         """
@@ -374,11 +543,16 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QInputDialog
         from PyQt6.QtCore import QFile
         from db_config import get_known_databases, forget_database
-        from sheets.client import Database
+        import db_lock
         path = os.path.abspath(self.db.db_path)
         name = self.db.get_setting("database_name") or os.path.basename(path)
-        others = [p for p in get_known_databases()
-                  if os.path.normcase(os.path.abspath(p)) != os.path.normcase(path)]
+        if self.db.read_only:
+            QMessageBox.information(
+                self, "Delete Database",
+                f"“{name}” is open read-only because it's in use elsewhere, so it can't be "
+                "deleted from here.")
+            return False
+        others = [p for p in get_known_databases() if not _same_path(p, path)]
         if not others:
             QMessageBox.information(
                 self, "Delete Database",
@@ -397,11 +571,22 @@ class MainWindow(QMainWindow):
                                     "The name didn't match, so nothing was deleted.")
             return False
         target = others[0]
-        self._switch_to(Database(target))
+        if not self.open_database(target):
+            return False        # couldn't switch away (cancelled / in use) — nothing deleted
         forget_database(path)
         self._populate_db_combo()
+        # We released our lock when switching away; a lock here now means
+        # another computer opened it in the meantime.
+        info = db_lock.read_lock(path)
+        if info is not None and not db_lock.is_stale(info):
+            QMessageBox.warning(
+                self, "Delete Database",
+                f"“{name}” was just opened somewhere else ({db_lock.describe(info)}), so "
+                "its file was left in place. It's been removed from this computer's list only.")
+            return False
         leftovers = []
-        for f in (path, path + "-wal", path + "-shm"):
+        for f in (path, path + "-wal", path + "-shm", path + "-journal",
+                  db_lock.lock_path(path)):
             if os.path.exists(f):
                 ok_trash, _ = QFile.moveToTrash(f)
                 if not ok_trash:
@@ -426,14 +611,18 @@ class MainWindow(QMainWindow):
                                 f"“{_read_db_name(target)}”.")
         return True
 
-    def _switch_to(self, new_db):
+    def _switch_to(self, new_db, lock=None):
+        """Show new_db — already opened and, unless read-only, locked by `lock`.
+        The caller releases the previous database first (see open_database)."""
         self.db = new_db
+        self._lock = lock
         from db_config import register_database
         register_database(os.path.abspath(new_db.db_path), make_active=True)
         for i in list(self._page_cache):
             w = self._page_cache.pop(i)
             self._stack.removeWidget(w)
             w.deleteLater()
+        # These three do nothing on a read-only database.
         new_db.auto_backup_if_due()
         from db_config import current_user_name
         new_db.set_session_user(current_user_name())
@@ -446,6 +635,7 @@ class MainWindow(QMainWindow):
         self._current_page = ""
         self._build_nav()
         self._status_label.setText(f"● {os.path.basename(new_db.db_path)}")
+        self._update_lock_state()
         self._nav_to("Dashboard")
 
     # ── navigation ────────────────────────────────────────────────────────────
