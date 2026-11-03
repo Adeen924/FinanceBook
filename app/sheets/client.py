@@ -30,7 +30,8 @@ from sheets.admin_store import AdminMixin, ADMIN_SCHEMA
 #   7  — employees (people columns), time entries, payroll runs
 #   8  — mileage log, budgets
 #   9  — recurring items, audit log + triggers, period lock, created/updated_by
-SCHEMA_VERSION = 9
+#  10  — receipts: shipping, discount, duties; receipt items: item_id, sku
+SCHEMA_VERSION = 10
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -158,6 +159,12 @@ _NEW_COLUMNS = [
     # v9 — audit trail
     ("transactions", "created_by",       "TEXT DEFAULT ''"),
     ("transactions", "updated_by",       "TEXT DEFAULT ''"),
+    # v10 — receipt shipping / discount / duties, inventory item per line
+    ("receipts",      "shipping",        "REAL DEFAULT 0"),
+    ("receipts",      "discount",        "REAL DEFAULT 0"),
+    ("receipts",      "duties",          "REAL DEFAULT 0"),
+    ("receipt_items", "item_id",         "TEXT DEFAULT ''"),
+    ("receipt_items", "sku",             "TEXT DEFAULT ''"),
 ] + PEOPLE_COLUMNS
 
 # Optional transaction columns: written only when the caller's dict has the key,

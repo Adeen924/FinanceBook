@@ -30,7 +30,7 @@ class ItemDialog(QDialog):
         super().__init__(parent)
         self.db = db
         self.item = dict(item or {})
-        self.setWindowTitle("Edit Item" if item else "Add Item")
+        self.setWindowTitle("Edit Item" if (item or {}).get("id") else "Add Item")
         self.setMinimumWidth(480)
         it = self.item
         f = QFormLayout(self)
@@ -65,7 +65,7 @@ class ItemDialog(QDialog):
         self.vendor.select_by_data(it.get("default_vendor_id", ""))
         f.addRow("Vendor", self.vendor)
         self.cat = FilterComboBox(placeholder="Income category for sales")
-        for c in db.get_categories():
+        for c in db.get_categories_for_book(keep_ids=[it.get("income_category_id", "")]):
             if c.get("type") == "income":
                 self.cat.add_option(c["name"], c["id"])
         self.cat.select_by_data(it.get("income_category_id", ""))
