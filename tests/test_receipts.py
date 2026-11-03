@@ -59,7 +59,8 @@ class ReceiptDbTests(unittest.TestCase):
         self.assertFalse(dup)
         path = self.db.receipt_abs_path(r)
         self.assertTrue(os.path.isfile(path))
-        self.assertEqual(os.path.dirname(path), os.path.join(self.dir, "receipts"))
+        self.assertEqual(os.path.dirname(path),
+                         os.path.join(self.dir, "FinanceBook Receipts", "biz"))
         r2, dup2 = self.db.add_receipt_file(self.src)
         self.assertTrue(dup2)
         self.assertEqual(r2["id"], r["id"])

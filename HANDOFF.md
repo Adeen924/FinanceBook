@@ -215,6 +215,10 @@ The lock is best-effort across computers (sync delay); see the README.
   `receive_receipt_inventory()` deletes the receipt's previous purchase moves
   (by `receipt_id`) before adding, so re-booking never doubles stock;
   `book_receipt()` reuses the receipt's own transaction if called again.
+- Receipt copies go to `FinanceBook Receipts/<db file stem>/` next to the database
+  (`receipts_dir()`), never the user's own `receipts` folder; copies made by
+  v1.10.0 and older stay valid (relative paths) and Settings → Receipt Files →
+  Move Older Copies moves only recorded files (copy, SHA-256 check, re-point, delete).
 - Categories: `Database.get_categories_for_book()` is what pickers use; it hides
   personal-default categories (matched to `default_categories.py`, no tax line)
   in business books unless used, kept, or setting `show_personal_categories`.

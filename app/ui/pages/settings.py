@@ -33,6 +33,7 @@ class SettingsPage(QWidget):
         lay.addWidget(self._build_database_section())
         lay.addWidget(self._build_book_type_section())
         lay.addWidget(self._build_backup_section())
+        lay.addWidget(self._build_receipt_files_section())
         lay.addWidget(self._build_ai_section())
         lay.addWidget(self._build_control_section())
         lay.addWidget(self._build_reset_section())
@@ -238,6 +239,77 @@ class SettingsPage(QWidget):
         btn_row.addWidget(backup_btn)
         lay.addLayout(btn_row)
         return grp
+
+    # ── Receipt files ─────────────────────────────────────────────────────────
+
+    def _build_receipt_files_section(self) -> QGroupBox:
+        grp = QGroupBox("Receipt Files")
+        lay = QVBoxLayout(grp)
+        lay.setSpacing(10)
+        info = QLabel(
+            "When you add a receipt, FinanceBook saves its own copy in a <b>FinanceBook "
+            "Receipts</b> folder next to this database (one subfolder per database), so it "
+            "never mixes with receipts you keep yourself.")
+        info.setWordWrap(True)
+        info.setTextFormat(Qt.TextFormat.RichText)
+        info.setObjectName("Muted")
+        lay.addWidget(info)
+        self._legacy_lbl = QLabel("")
+        self._legacy_lbl.setWordWrap(True)
+        lay.addWidget(self._legacy_lbl)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._move_receipts_btn = QPushButton("Move Older Copies")
+        self._move_receipts_btn.setObjectName("Secondary")
+        self._move_receipts_btn.clicked.connect(self._move_legacy_receipts)
+        btn_row.addWidget(self._move_receipts_btn)
+        open_btn = QPushButton("Open Receipts Folder")
+        open_btn.setObjectName("Secondary")
+        open_btn.clicked.connect(self._open_receipts_folder)
+        btn_row.addWidget(open_btn)
+        lay.addLayout(btn_row)
+        self._refresh_receipt_files()
+        return grp
+
+    def _refresh_receipt_files(self):
+        n = len(self.db.legacy_receipt_copies())
+        self._legacy_lbl.setVisible(bool(n))
+        self._move_receipts_btn.setVisible(bool(n))
+        self._move_receipts_btn.setEnabled(not self.db.read_only)
+        if n:
+            self._legacy_lbl.setText(
+                f"{n} receipt cop{'ies' if n != 1 else 'y'} from earlier versions "
+                f"{'are' if n != 1 else 'is'} still in the shared <b>receipts</b> folder. "
+                "<b>Move Older Copies</b> moves only those files into FinanceBook Receipts — "
+                "anything else in that folder is left alone.")
+
+    def _open_receipts_folder(self):
+        import os
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+        folder = self.db.receipts_dir()
+        os.makedirs(folder, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+    def _move_legacy_receipts(self):
+        n = len(self.db.legacy_receipt_copies())
+        if not n or QMessageBox.question(
+                self, "Move Receipt Copies",
+                f"Move FinanceBook's {n} receipt cop{'ies' if n != 1 else 'y'} from the "
+                f"“receipts” folder into “FinanceBook Receipts”?\n\nOnly files FinanceBook "
+                "copied there itself are moved. Your own files stay where they are.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        res = self.db.move_legacy_receipts()
+        self._refresh_receipt_files()
+        msg = f"Moved {res['moved']} receipt cop{'ies' if res['moved'] != 1 else 'y'}."
+        if res["missing"]:
+            msg += f"\n{res['missing']} file(s) were already missing and were skipped."
+        if res["failed"]:
+            msg += (f"\n{res['failed']} couldn't be moved (in use or still syncing?) and were "
+                    "left where they were — try again later.")
+        QMessageBox.information(self, "Receipt Copies", msg)
 
     def _refresh_backups(self):
         from sheets.backup import list_backups
@@ -598,5 +670,6 @@ class SettingsPage(QWidget):
             self.db.get_setting("database_name", ""))
         self._refresh_book_type()
         self._refresh_backups()
+        self._refresh_receipt_files()
         self._refresh_ai()
         self._refresh_control()
