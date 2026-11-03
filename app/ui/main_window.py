@@ -365,6 +365,67 @@ class MainWindow(QMainWindow):
         new_db.set_setting("database_name", name)
         self._switch_to(new_db)
 
+    def delete_current_database(self) -> bool:
+        """
+        Delete the open database: switch to another one, take this one off the
+        list, and move its file to the Recycle Bin (or delete it, if there is no
+        Recycle Bin and the user agrees). Returns True if it was removed.
+        """
+        from PyQt6.QtWidgets import QInputDialog
+        from PyQt6.QtCore import QFile
+        from db_config import get_known_databases, forget_database
+        from sheets.client import Database
+        path = os.path.abspath(self.db.db_path)
+        name = self.db.get_setting("database_name") or os.path.basename(path)
+        others = [p for p in get_known_databases()
+                  if os.path.normcase(os.path.abspath(p)) != os.path.normcase(path)]
+        if not others:
+            QMessageBox.information(
+                self, "Delete Database",
+                f"“{name}” is your only database. Create another one from the database "
+                "dropdown first, then delete this one.")
+            return False
+        typed, ok = QInputDialog.getText(
+            self, "Delete Database",
+            f"This removes “{name}” from FinanceBook and moves its file to the Recycle Bin:\n"
+            f"{path}\n\nBackups in the “FinanceBook Backups” folder and receipt files are "
+            f"kept.\n\nType the database name to confirm:")
+        if not ok:
+            return False
+        if typed.strip() != name:
+            QMessageBox.information(self, "Delete Database",
+                                    "The name didn't match, so nothing was deleted.")
+            return False
+        target = others[0]
+        self._switch_to(Database(target))
+        forget_database(path)
+        self._populate_db_combo()
+        leftovers = []
+        for f in (path, path + "-wal", path + "-shm"):
+            if os.path.exists(f):
+                ok_trash, _ = QFile.moveToTrash(f)
+                if not ok_trash:
+                    leftovers.append(f)
+        if leftovers:
+            if QMessageBox.question(
+                    self, "No Recycle Bin",
+                    "This location has no Recycle Bin (for example a network drive). Delete the "
+                    "database file permanently?\n\nIf you choose No, it's only removed from "
+                    "FinanceBook's list and the file stays where it is.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) == QMessageBox.StandardButton.Yes:
+                for f in leftovers:
+                    try:
+                        os.remove(f)
+                    except OSError as e:
+                        QMessageBox.warning(self, "Delete Database",
+                                            f"Couldn't delete {os.path.basename(f)}: {e.strerror}")
+                        break
+        QMessageBox.information(self, "Database Deleted",
+                                f"“{name}” was deleted. You're now in "
+                                f"“{_read_db_name(target)}”.")
+        return True
+
     def _switch_to(self, new_db):
         self.db = new_db
         from db_config import register_database

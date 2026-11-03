@@ -63,6 +63,25 @@ def register_database(path: str, make_active: bool = False):
     _save(cfg)
 
 
+def forget_database(path: str) -> str | None:
+    """
+    Remove a database from FinanceBook's list (the file itself is untouched).
+    If it was the active one, another known database becomes active. Returns
+    the active path afterwards (None if no databases are left).
+    """
+    cfg = _load()
+    target = os.path.normcase(os.path.abspath(path))
+    known = [p for p in cfg.get("known_databases", [])
+             if os.path.normcase(os.path.abspath(p)) != target]
+    cfg["known_databases"] = known
+    active = cfg.get("active_db_path")
+    if active and os.path.normcase(os.path.abspath(active)) == target:
+        remaining = [p for p in known if os.path.exists(p)]
+        cfg["active_db_path"] = remaining[0] if remaining else None
+    _save(cfg)
+    return cfg.get("active_db_path")
+
+
 def get_flag(name: str, default: bool = False) -> bool:
     """Read a per-user boolean flag (stored in app_settings.json, so it survives
     app updates). Used e.g. to show the first-run guide only once, ever."""

@@ -388,7 +388,7 @@ class SettingsPage(QWidget):
 
     def _build_control_section(self) -> QGroupBox:
         from ui.widgets import DateField
-        grp = QGroupBox("Period Lock & Audit Trail")
+        grp = QGroupBox("Period Lock && Audit Trail")
         lay = QVBoxLayout(grp)
         lay.setSpacing(10)
         name_row = QHBoxLayout()
@@ -470,17 +470,17 @@ class SettingsPage(QWidget):
     # ── Reset section ─────────────────────────────────────────────────────────
 
     def _build_reset_section(self) -> QGroupBox:
-        grp = QGroupBox("Reset Database")
+        grp = QGroupBox("Clear or Delete")
         grp.setObjectName("DangerZone")
         lay = QVBoxLayout(grp)
         lay.setSpacing(10)
 
         warn = QLabel(
-            "<b>This deletes all accounts, transactions, rules, and "
-            "reconciliations in this database.</b> Use this when you want to "
-            "start over with a clean import. Your categories, the database file, "
-            "and its name are kept — only the data inside is cleared. "
-            "This cannot be undone."
+            "<b>Clear All Data</b> deletes all accounts, transactions, rules, and "
+            "reconciliations in this database but keeps the database itself, its "
+            "name and categories — use it to start over with a clean import.<br>"
+            "<b>Delete This Database</b> removes the whole database from FinanceBook "
+            "and moves its file to the Recycle Bin."
         )
         warn.setWordWrap(True)
         warn.setTextFormat(Qt.TextFormat.RichText)
@@ -493,8 +493,17 @@ class SettingsPage(QWidget):
         reset_btn.setObjectName("Danger")
         reset_btn.clicked.connect(self._do_reset)
         btn_row.addWidget(reset_btn)
+        self._delete_db_btn = QPushButton("Delete This Database…")
+        self._delete_db_btn.setObjectName("Danger")
+        self._delete_db_btn.clicked.connect(self._delete_database)
+        btn_row.addWidget(self._delete_db_btn)
         lay.addLayout(btn_row)
         return grp
+
+    def _delete_database(self):
+        mw = getattr(self, "_main_window", None)
+        if mw is not None and hasattr(mw, "delete_current_database"):
+            mw.delete_current_database()
 
     def _do_reset(self):
         db_name = self.db.get_setting("database_name", "this database")
