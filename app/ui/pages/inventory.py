@@ -48,6 +48,12 @@ class ItemDialog(QDialog):
         f.addRow("Type", self.kind)
         self.unit = QLineEdit(it.get("unit", "each"))
         f.addRow("Unit", self.unit)
+        self.pack = _spin(decimals=0, maximum=100_000)
+        self.pack.setMinimum(1)
+        self.pack.setValue(float(it.get("pack_size") or 1))
+        self.pack.setToolTip("How many units usually come in one pack you buy (e.g. 6 for a "
+                             "6-pack). Pre-fills receipt lines; each receipt can differ.")
+        f.addRow("Units per pack", self.pack)
         self.price = _spin(prefix="$")
         self.price.setValue(float(it.get("sale_price") or 0))
         f.addRow("Sale price", self.price)
@@ -95,6 +101,7 @@ class ItemDialog(QDialog):
         d.update({"name": self.name.text().strip(), "sku": self.sku.text().strip(),
                   "description": self.desc.text().strip(), "kind": self.kind.currentData(),
                   "unit": self.unit.text().strip() or "each", "sale_price": self.price.value(),
+                  "pack_size": int(self.pack.value()),
                   "reorder_point": self.reorder.value(), "cost_method": self.method.currentData(),
                   "default_vendor_id": self.vendor.current_data() or "",
                   "income_category_id": self.cat.current_data() or "",
@@ -131,15 +138,21 @@ class StockDialog(QDialog):
         f.addRow("Date", self.date)
         self.qty = _spin(decimals=2, maximum=1e9)
         self.qty.setValue(float(preset.get("qty") or (0 if mode == "count" else 1)))
-        f.addRow("Counted quantity" if mode == "count" else "Quantity", self.qty)
+        f.addRow("Counted units" if mode == "count" else "Units", self.qty)
+        upp = int(preset.get("units_per_pack") or 1)
+        if upp > 1:
+            packs = float(preset.get("qty") or 0) / upp
+            pack_lbl = QLabel(f"= {packs:g} pack{'s' if packs != 1 else ''} × {upp} units")
+            pack_lbl.setObjectName("Muted")
+            f.addRow("", pack_lbl)
         self.on_hand = QLabel("")
         self.on_hand.setObjectName("Muted")
         f.addRow("", self.on_hand)
-        self.cost = _spin(decimals=4, prefix="$")
+        self.cost = _spin(decimals=6, prefix="$")
         self.cost.setValue(float(preset.get("unit_cost") or 0))
         self.price = _spin(prefix="$")
         if mode in ("purchase", "opening", "return_out"):
-            f.addRow("Unit cost", self.cost)
+            f.addRow("Cost per unit", self.cost)
         if mode == "sale":
             f.addRow("Unit price", self.price)
         self.acct = QComboBox()
@@ -172,8 +185,10 @@ class StockDialog(QDialog):
             self.on_hand.setText("")
             return
         st = self.db.item_status(it)
+        pack = int(it.get("pack_size") or 1)
         self.on_hand.setText(f"On hand: {float(st['qty']):g} {it.get('unit', '')} · "
-                             f"unit cost {fmt(st['unit_cost'])}")
+                             f"cost per unit {fmt(st['unit_cost'])}" +
+                             (f" · usually {pack} per pack" if pack > 1 else ""))
         if self.mode == "sale" and not self.price.value():
             self.price.setValue(float(it.get("sale_price") or 0))
         if self.mode in ("purchase", "return_out") and not self.cost.value():

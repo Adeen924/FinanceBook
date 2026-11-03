@@ -167,12 +167,13 @@ class ReceiptsPage(QWidget):
         b.clicked.connect(self._search_items)
         row.addWidget(b)
         l2.addLayout(row)
-        self._items = DataTable(["Date", "Vendor", "Item", "Qty", "Unit", "Total", "Category"])
+        self._items = DataTable(["Date", "Vendor", "Item", "Qty", "Units", "Unit $", "Total",
+                                 "Category"])
         ih = self._items.horizontalHeader()
         self._items.setColumnWidth(0, 100)
         self._items.setColumnWidth(1, 170)
         ih.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        for c, w in ((3, 60), (4, 90), (5, 100), (6, 200)):
+        for c, w in ((3, 60), (4, 110), (5, 90), (6, 100), (7, 200)):
             self._items.setColumnWidth(c, w)
         ih.setStretchLastSection(False)
         l2.addWidget(self._items)
@@ -337,11 +338,15 @@ class ReceiptsPage(QWidget):
             t.set_item(r, 2, it.get("description", ""))
             t.set_item(r, 3, f"{it.get('qty', 1):g}",
                        align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            t.set_item(r, 4, fmt(it.get("unit_price")),
+            upp = int(it.get("units_per_pack") or 1)
+            units = float(it.get("qty") or 1) * upp
+            t.set_item(r, 4, f"{units:g}" + (f"  ({upp}/pack)" if upp > 1 else ""),
                        align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            t.set_item(r, 5, fmt(it.get("line_total")),
+            t.set_item(r, 5, fmt(it.get("unit_price")),
+                       align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            t.set_item(r, 6, fmt(it.get("line_total")),
                        align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, bold=True)
-            t.set_item(r, 6, cats.get(it.get("category_id", ""), "—"))
+            t.set_item(r, 7, cats.get(it.get("category_id", ""), "—"))
         total = money_sum(i.get("line_total") for i in rows)
         self._items_sum.setText(f"{len(rows)} matching item{'s' if len(rows) != 1 else ''}  ·  "
                                 f"Total spent: {fmt(total)}")

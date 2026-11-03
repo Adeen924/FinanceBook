@@ -7,16 +7,21 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLa
                              QScrollArea, QTextEdit, QWidget, QCheckBox, QMessageBox,
                              QAbstractItemView, QGridLayout)
 from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal, QUrl
-from PyQt6.QtGui import QPixmap, QDesktopServices
+from PyQt6.QtGui import QPixmap, QDesktopServices, QColor, QBrush
 
 from ui.widgets import DateField, FilterComboBox, SecondaryButton
 from ui.styles import WARNING, SUCCESS, MUTED
 from utils.money import D, cents, money_sum
-from utils.receipt_booking import landed_costs, receipt_total
+from utils.receipt_booking import landed_costs, receipt_total, per_unit_cost, total_units
 from parsers import receipt as R
 
-(COL_DESC, COL_QTY, COL_UNIT, COL_TOTAL, COL_CAT, COL_CLASS, COL_CHARGED, COL_BIZ, COL_KIND,
- COL_ITEM) = range(10)
+(COL_DESC, COL_QTY, COL_UNIT, COL_TOTAL, COL_UPP, COL_UNITS, COL_UCOST, COL_CAT, COL_CLASS,
+ COL_CHARGED, COL_BIZ, COL_KIND, COL_ITEM) = range(13)
+HEADERS = ["Description", "Qty", "Unit $", "Line $", "Units per\npack", "Total\nunits",
+           "Cost per\nunit", "Category", "Class / Project", "Charged to", "Business", "Type",
+           "Inventory item"]
+SUGGESTED_BG = QColor("#FFF4D6")      # a pack size read from the description
+INVALID_BG = QColor("#FDE2E1")
 KINDS = [("expense", "Expense")]   # later phases add Fixed asset / Inventory
 NEW_ITEM = "__new__"
 # Header amounts besides the subtotal/total, in form order: (key, label).
@@ -58,8 +63,10 @@ class ReceiptReviewDialog(QDialog):
         self._worker = None
         self.booked = False
         self.setWindowTitle("Review Receipt")
-        self.resize(1320, 780)
-        self.setMinimumSize(1000, 620)
+        self.resize(1480, 800)
+        self.setMinimumSize(1040, 620)
+        self._pack_notes: list[str] = []
+        self._pack_declined: set = set()
         items = db.get_receipt_items(receipt["id"])
         keep = [i.get("category_id", "") for i in items]
         self._cats = db.get_categories_for_book(keep_ids=keep)
@@ -82,6 +89,7 @@ class ReceiptReviewDialog(QDialog):
             (parsed or {}).get("method") == "manual" else []
         if (parsed or {}).get("date_note") and not items:
             notes.insert(0, parsed["date_note"])
+        notes += self._pack_notes
         if notes:
             self._show_note(notes)
         self._update_check()
@@ -226,16 +234,23 @@ class ReceiptReviewDialog(QDialog):
         self.parse_note.hide()
         rl.addWidget(self.parse_note)
 
-        self.table = QTableWidget(0, 10)
-        self.table.setHorizontalHeaderLabels(
-            ["Description", "Qty", "Unit $", "Line $", "Category", "Class / Project",
-             "Charged to", "Business", "Type", "Inventory item"])
+        self.table = QTableWidget(0, len(HEADERS))
+        self.table.setHorizontalHeaderLabels(HEADERS)
+        for col, tip in ((COL_UPP, "How many stock units one of this line's qty holds — "
+                                   "e.g. 6 for a “6 Pack”. Whole number, 1 or more."),
+                         (COL_UNITS, "Qty × units per pack"),
+                         (COL_UCOST, "Line cost ÷ total units. For Inventory lines this is the "
+                                     "landed cost: the line plus its share of tax, tip, "
+                                     "shipping and duties, less discount.")):
+            self.table.horizontalHeaderItem(col).setToolTip(tip)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(COL_DESC, QHeaderView.ResizeMode.Stretch)
-        for col, w in ((COL_QTY, 56), (COL_UNIT, 76), (COL_TOTAL, 84), (COL_CAT, 210),
-                       (COL_CLASS, 130), (COL_CHARGED, 130), (COL_BIZ, 70), (COL_KIND, 96),
-                       (COL_ITEM, 190)):
-            self.table.setColumnWidth(col, w)
+        hh.setMinimumSectionSize(56)
+        for col, w in ((COL_QTY, 56), (COL_UNIT, 76), (COL_TOTAL, 84), (COL_UPP, 76),
+                       (COL_UNITS, 64), (COL_UCOST, 88), (COL_CAT, 200), (COL_CLASS, 120),
+                       (COL_CHARGED, 120), (COL_BIZ, 70), (COL_KIND, 96), (COL_ITEM, 190)):
+            # Never narrower than the header text (fractional DPI scaling, see main.py).
+            self.table.setColumnWidth(col, max(w, hh.sectionSizeHint(col)))
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -267,13 +282,17 @@ class ReceiptReviewDialog(QDialog):
         split.addWidget(right)
         split.setStretchFactor(0, 2)
         split.setStretchFactor(1, 5)
-        split.setSizes([340, 980])
+        split.setSizes([320, 1140])
 
         btns = QHBoxLayout()
         btns.addStretch()
         cancel = SecondaryButton("Cancel")
         cancel.clicked.connect(self.reject)
-        draft = SecondaryButton("Save Draft")
+        draft = SecondaryButton("Save Changes" if self.receipt.get("status") == "booked"
+                                else "Save Draft")
+        if self.receipt.get("status") == "booked":
+            draft.setToolTip("Saves the lines (e.g. corrected units) and updates the stock this "
+                             "receipt received. Use Save to Books to change the booked amounts.")
         draft.clicked.connect(self._save_draft)
         self.book_btn = QPushButton("Save to Books")
         self.book_btn.clicked.connect(self._book)
@@ -353,6 +372,7 @@ class ReceiptReviewDialog(QDialog):
             rows.append({"description": it["description"], "qty": float(it["qty"]),
                          "unit_price": float(it["unit_price"]),
                          "line_total": float(it["line_total"]), "sku": it.get("sku", ""),
+                         "pack_suggestion": it.get("pack_suggestion"),
                          "category_id": self.db.suggest_category(vendor, it["description"])})
         if not rows and (p.get("total") or p.get("subtotal")):
             # No itemisation — one line for the whole thing.
@@ -361,6 +381,7 @@ class ReceiptReviewDialog(QDialog):
                          "line_total": amt, "category_id": self.db.suggest_category(vendor, "")})
         self.table.setRowCount(0)
         self._load_items(rows)
+        self._pack_notes = self._pack_suggestion_notes(rows)
         if p.get("raw_text"):
             self.receipt["raw_text"] = p["raw_text"]
             if hasattr(self, "raw_view"):
@@ -388,6 +409,7 @@ class ReceiptReviewDialog(QDialog):
             cell = QTableWidgetItem(fmt.format(float(v or 0)))
             cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(r, col, cell)
+        self._set_pack_cells(r, it)
         is_biz = str(it.get("is_business", it.get("business", "1"))) not in ("0", "False")
         self._set_category_cell(r, it.get("category_id", ""), personal=not is_biz)
         cls = QComboBox()
@@ -426,6 +448,106 @@ class ReceiptReviewDialog(QDialog):
         self._sync_item_cell(r)
         self.table.blockSignals(False)
         self._update_check()
+
+    def _set_pack_cells(self, r: int, it: dict):
+        """Units per pack (saved value, else an unambiguous suggestion, else 1)."""
+        sug = it.get("pack_suggestion") or None
+        upp = it.get("units_per_pack")
+        suggested = upp in (None, "") and bool(sug) and not sug.get("ambiguous")
+        if upp in (None, ""):
+            upp = sug["units"] if suggested else 1
+        cell = QTableWidgetItem(str(upp))
+        cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        cell.setData(Qt.ItemDataRole.UserRole, sug)
+        if sug:
+            cell.setBackground(QBrush(SUGGESTED_BG))
+            cell.setToolTip(
+                f"Suggested from “{sug['text']}” in the description — check it."
+                if suggested else
+                f"The description says “{sug['text']}”, but it's ambiguous, so units per "
+                f"pack was left at {upp}. Set it to {sug['units']} if that's right.")
+        self.table.setItem(r, COL_UPP, cell)
+        for col in (COL_UNITS, COL_UCOST):
+            ro = QTableWidgetItem("")
+            ro.setFlags(ro.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            ro.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(r, col, ro)
+
+    @staticmethod
+    def _pack_suggestion_notes(rows) -> list[str]:
+        sure = [r for r in rows if (r.get("pack_suggestion") or {}).get("units")
+                and not r["pack_suggestion"].get("ambiguous")]
+        unsure = [r for r in rows if (r.get("pack_suggestion") or {}).get("ambiguous")]
+        notes = []
+        if sure:
+            notes.append(f"Units per pack filled in from the description for {len(sure)} "
+                         f"line{'s' if len(sure) != 1 else ''} (highlighted) — check "
+                         f"{'them' if len(sure) != 1 else 'it'}.")
+        for r in unsure:
+            sug = r["pack_suggestion"]
+            notes.append(f"“{r['description'][:60]}”: the title says “{sug['text']}”, but it's "
+                         f"ambiguous — set Units per pack to {sug['units']} if that's right.")
+        return notes
+
+    def _upp(self, r: int) -> int | None:
+        """The row's units per pack, or None if it isn't a whole number ≥ 1."""
+        txt = self._text(r, COL_UPP)
+        if not (txt.isascii() and txt.isdigit()):
+            return None
+        n = int(txt)
+        return n if n >= 1 else None
+
+    def _invalid_upp_rows(self) -> list[str]:
+        bad = []
+        for r in range(self.table.rowCount()):
+            if not self._text(r, COL_DESC) and not D(self._text(r, COL_TOTAL)):
+                continue
+            if self._upp(r) is None:
+                bad.append(f"{self._text(r, COL_DESC) or f'line {r + 1}'} "
+                           f"(“{self._text(r, COL_UPP)}”)")
+        return bad
+
+    def _refresh_unit_columns(self):
+        """Total units and cost per unit for every row, from the current amounts."""
+        rows = []
+        for r in range(self.table.rowCount()):
+            holder = self.table.cellWidget(r, COL_BIZ)
+            kind = self.table.cellWidget(r, COL_KIND)
+            rows.append({"line_total": D(self._text(r, COL_TOTAL)),
+                         "business": holder._chk.isChecked() if holder else True,
+                         "kind": (kind.currentData() if kind else "") or "expense"})
+        a = self.amounts()
+        landed = landed_costs(rows, self.tax_mode.currentData(), tax=a["tax"], tip=a["tip"],
+                              shipping=a["shipping"], duties=a["duties"],
+                              discount=a["discount"]) if rows else []
+        self.table.blockSignals(True)
+        try:
+            for r, row in enumerate(rows):
+                upp_cell, units_cell, cost_cell = (self.table.item(r, c)
+                                                   for c in (COL_UPP, COL_UNITS, COL_UCOST))
+                if not (upp_cell and units_cell and cost_cell):
+                    continue
+                upp = self._upp(r)
+                if upp is None:
+                    upp_cell.setBackground(QBrush(INVALID_BG))
+                    upp_cell.setToolTip("Units per pack must be a whole number, 1 or more.")
+                    units_cell.setText("—")
+                    cost_cell.setText("—")
+                    continue
+                sug = upp_cell.data(Qt.ItemDataRole.UserRole)
+                if not sug:
+                    upp_cell.setBackground(QBrush())
+                    upp_cell.setToolTip("")
+                units = total_units(self._text(r, COL_QTY) or 1, upp)
+                inventory = row["kind"] == "inventory" and row["business"]
+                cost = landed[r] if inventory else row["line_total"]
+                units_cell.setText(f"{units:g}")
+                cost_cell.setText(_unit_money(per_unit_cost(cost, units)) if units > 0 else "—")
+                cost_cell.setToolTip("Landed cost per unit (incl. its share of tax, shipping, "
+                                     "duties, less discount)" if inventory else
+                                     "Line total ÷ total units")
+        finally:
+            self.table.blockSignals(False)
 
     def _set_category_cell(self, r: int, selected: str, personal: bool = False):
         cat = self._category_combo(personal=personal)
@@ -485,6 +607,12 @@ class ReceiptReviewDialog(QDialog):
     def _on_item_chosen(self, combo):
         if combo.currentData() != NEW_ITEM:
             combo.setProperty("prev", combo.currentData() or "")
+            r = self._row_of(combo, COL_ITEM)
+            item = self.db.get_item(combo.currentData() or "") or {}
+            pack = int(item.get("pack_size") or 1)
+            if r >= 0 and pack > 1:
+                # The item's usual pack size; the line can still be changed.
+                self.table.item(r, COL_UPP).setText(str(pack))
             self._update_check()
             return
         r = self._row_of(combo, COL_ITEM)
@@ -508,7 +636,7 @@ class ReceiptReviewDialog(QDialog):
         cell = self.table.item(r, COL_DESC) if r >= 0 else None
         sku = (cell.data(Qt.ItemDataRole.UserRole) or "") if cell else ""
         name = desc if len(desc) <= 80 else desc[:79].rstrip() + "…"
-        dlg = ItemDialog(self.db, {"name": name, "sku": sku,
+        dlg = ItemDialog(self.db, {"name": name, "sku": sku, "pack_size": self._upp(r) or 1,
                                    "description": desc if desc != name else ""}, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
@@ -521,7 +649,34 @@ class ReceiptReviewDialog(QDialog):
             self.table.blockSignals(True)
             self.table.item(r, COL_TOTAL).setText(f"{cents(qty * unit):.2f}")
             self.table.blockSignals(False)
+        if c == COL_UPP:
+            self.table.blockSignals(True)
+            item.setData(Qt.ItemDataRole.UserRole, None)    # typed in: no longer a suggestion
+            self.table.blockSignals(False)
+            self._offer_item_pack_default(r)
         self._update_check()
+
+    def _offer_item_pack_default(self, r: int):
+        """A line's units per pack differs from its item's default: offer to save it."""
+        upp = self._upp(r)
+        kind = self.table.cellWidget(r, COL_KIND)
+        combo = self.table.cellWidget(r, COL_ITEM)
+        if upp is None or not kind or kind.currentData() != "inventory" or not combo:
+            return
+        item = self.db.get_item(combo.currentData() or "")
+        if not item or int(item.get("pack_size") or 1) == upp \
+                or (item["id"], upp) in self._pack_declined:
+            return
+        if QMessageBox.question(
+                self, "Default Pack Size",
+                f"Make {upp} unit{'s' if upp != 1 else ''} per pack the default for "
+                f"“{item['name']}”? (It's {int(item.get('pack_size') or 1)} now.)\n\n"
+                "This only pre-fills future receipts — each receipt line keeps its own value.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) == QMessageBox.StandardButton.Yes:
+            self.db.set_item_pack_size(item["id"], upp)
+        else:
+            self._pack_declined.add((item["id"], upp))
 
     def _text(self, r, c) -> str:
         it = self.table.item(r, c)
@@ -548,6 +703,7 @@ class ReceiptReviewDialog(QDialog):
         return {k: cents(sp.value()) for k, sp in self.spins.items()}
 
     def _update_check(self, *_):
+        self._refresh_unit_columns()
         items = self.items()
         a = self.amounts()
         res = dict(a, line_items=[{"description": i["description"], "qty": D(i["qty"]),
@@ -574,6 +730,10 @@ class ReceiptReviewDialog(QDialog):
         if missing:
             warns.append("Choose an inventory item for: " + ", ".join(missing[:3]) +
                          ("…" if len(missing) > 3 else ""))
+        bad = self._invalid_upp_rows()
+        if bad:
+            warns.append("Units per pack must be a whole number, 1 or more: " +
+                         ", ".join(bad[:3]) + ("…" if len(bad) > 3 else ""))
         if self._base_txn:
             bank = cents(abs(float(self._base_txn.get("amount") or 0)))
             booked = receipt_total(items, a["tax"], a["tip"], a["shipping"], a["discount"],
@@ -614,6 +774,7 @@ class ReceiptReviewDialog(QDialog):
                 "kind": kind,
                 "item_id": "" if item_id == NEW_ITEM else (item_id or ""),
                 "sku": (cell.data(Qt.ItemDataRole.UserRole) or "") if cell else "",
+                "units_per_pack": self._upp(r) or 1,
             })
         return out
 
@@ -633,9 +794,26 @@ class ReceiptReviewDialog(QDialog):
         self.db.save_receipt(h)
         self.db.replace_receipt_items(self.receipt["id"], self.items())
 
+    def _check_units(self) -> bool:
+        bad = self._invalid_upp_rows()
+        if bad:
+            QMessageBox.warning(
+                self, "Units per Pack",
+                "Units per pack must be a whole number of 1 or more (for example 1, 6 or 12). "
+                "Fix it on:\n\n• " + "\n• ".join(bad))
+        return not bad
+
     def _save_draft(self):
+        if not self._check_units():
+            return
+        booked = self.receipt.get("status") == "booked"
         self._persist("reviewed" if self.receipt.get("status") in ("new", "", "reviewed")
                       else "")
+        if booked:
+            # Correcting units/qty after booking: update the stock this receipt
+            # received (money stays as booked).
+            items, h = self.items(), self.header()
+            self._receive_inventory(items, h, self.landed_costs(items, h))
         self.accept()
 
     def _suggest_all(self):
@@ -651,6 +829,8 @@ class ReceiptReviewDialog(QDialog):
         items = self.items()
         if not items:
             QMessageBox.warning(self, "No Items", "Add at least one line item.")
+            return
+        if not self._check_units():
             return
         no_item = [i["description"] or "(no description)" for i in items
                    if i["kind"] == "inventory" and i["business"] and not i["item_id"]]
@@ -713,14 +893,15 @@ class ReceiptReviewDialog(QDialog):
                             shipping=h["shipping"], duties=h["duties"], discount=h["discount"])
 
     def _receive_inventory(self, items, h, costs):
-        """Stock in each "Inventory" line at its landed unit cost (money already booked)."""
+        """Stock in each "Inventory" line: qty × units per pack, at the landed unit cost
+        (the money is already booked)."""
         lines = []
         for it, cost in zip(items, costs):
             if it.get("kind") != "inventory" or not it["business"] or not it.get("item_id"):
                 continue
-            qty = D(it["qty"]) or D(1)
-            lines.append({"item_id": it["item_id"], "qty": float(qty),
-                          "unit_cost": float(cost / qty), "description": it["description"]})
+            lines.append({"item_id": it["item_id"], "qty": it["qty"] or 1,
+                          "units_per_pack": it.get("units_per_pack") or 1,
+                          "landed_total": cost, "description": it["description"]})
         # Called even with no lines: a re-booked receipt whose lines are no
         # longer Inventory must drop the stock it received before.
         if lines or self.db.is_business():
@@ -783,8 +964,9 @@ class ReceiptReviewDialog(QDialog):
 
     def _ai_done(self, res: dict):
         self._apply_parsed(res)
-        if res.get("date_note"):
-            self._show_note([res["date_note"]])
+        notes = ([res["date_note"]] if res.get("date_note") else []) + self._pack_notes
+        if notes:
+            self._show_note(notes)
         self._update_check()
 
     def _ai_failed(self, msg: str):
@@ -810,3 +992,11 @@ class ReceiptReviewDialog(QDialog):
 
 
 _ORPHANS: set = set()
+
+
+def _unit_money(v) -> str:
+    """$1.075 / $4.19 — cents, or more decimals when a unit cost needs them."""
+    v = D(v)
+    if v == cents(v):
+        return f"${v:,.2f}"
+    return "$" + f"{v:,.6f}".rstrip("0")

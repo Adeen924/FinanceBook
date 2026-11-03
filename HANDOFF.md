@@ -219,6 +219,14 @@ The lock is best-effort across computers (sync delay); see the README.
   (`receipts_dir()`), never the user's own `receipts` folder; copies made by
   v1.10.0 and older stay valid (relative paths) and Settings → Receipt Files →
   Move Older Copies moves only recorded files (copy, SHA-256 check, re-point, delete).
+- Schema 11 (v1.11): `receipt_items.units_per_pack`, `items.pack_size` (whole ≥ 1,
+  default 1; `inventory_store.pack_size_value()`). Review dialog columns COL_UPP /
+  COL_UNITS / COL_UCOST; `receipt.suggest_pack_size()` adds `pack_suggestion` to
+  parsed items (ambiguous ones are shown, not applied). Stock units = qty × upp at
+  `per_unit_cost()` (6 dp). `receive_receipt_inventory()` updates the receipt's
+  existing purchase moves in place (same ids) and deletes leftovers. "Save Changes"
+  on a booked receipt re-syncs stock without touching money. book_receipt passes
+  split outflows as negative (split_transaction only flips expense categories).
 - Categories: `Database.get_categories_for_book()` is what pickers use; it hides
   personal-default categories (matched to `default_categories.py`, no tax line)
   in business books unless used, kept, or setting `show_personal_categories`.

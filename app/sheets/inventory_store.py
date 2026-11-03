@@ -47,8 +47,18 @@ MOVE_KINDS = {"opening": "Opening stock", "purchase": "Purchase", "sale": "Sale"
               "return_out": "Return to vendor"}
 ITEM_KINDS = [("finished", "Finished good / for resale"), ("material", "Raw material / supply")]
 
-_ITEM_COLS = ("sku", "name", "description", "unit", "kind", "reorder_point", "default_vendor_id",
-              "sale_price", "cost_method", "tracked", "income_category_id", "active")
+_ITEM_COLS = ("sku", "name", "description", "unit", "kind", "pack_size", "reorder_point",
+              "default_vendor_id", "sale_price", "cost_method", "tracked", "income_category_id",
+              "active")
+
+
+def pack_size_value(v) -> int:
+    """A stored pack size: a whole number ≥ 1 (anything else → 1)."""
+    try:
+        n = int(str(v).strip()) if str(v or "").strip() else 1
+    except ValueError:
+        return 1
+    return n if n >= 1 else 1
 
 
 class InventoryMixin:
@@ -64,11 +74,16 @@ class InventoryMixin:
         return dict(r) if r else None
 
     def save_item(self, data: dict) -> dict:
+        existing = self.get_item(data["id"]) if data.get("id") else None
         vals = []
         for k in _ITEM_COLS:
             v = data.get(k)
+            if k == "pack_size" and k not in data and existing:
+                v = existing.get("pack_size")      # callers that predate pack sizes
             if k in ("reorder_point", "sale_price"):
                 v = float(v or 0)
+            elif k == "pack_size":
+                v = pack_size_value(v)
             elif k in ("tracked", "active"):
                 v = 0 if str(v if v is not None else 1) in ("0", "False") else 1
             else:
@@ -76,7 +91,7 @@ class InventoryMixin:
                           else "finished" if k == "kind" else "")
             vals.append(v)
         with self._conn() as c:
-            if data.get("id") and self.get_item(data["id"]):
+            if existing:
                 c.execute(f"UPDATE items SET {','.join(k + '=?' for k in _ITEM_COLS)} WHERE id=?",
                           vals + [data["id"]])
             else:
@@ -84,6 +99,11 @@ class InventoryMixin:
                 c.execute(f"INSERT INTO items (id,{','.join(_ITEM_COLS)},created_at) VALUES "
                           f"(?,{','.join('?' * len(_ITEM_COLS))},?)", [data["id"]] + vals + [self._now()])
         return data
+
+    def set_item_pack_size(self, item_id: str, pack_size) -> None:
+        """Change only an item's default units per pack."""
+        with self._conn() as c:
+            c.execute("UPDATE items SET pack_size=? WHERE id=?", (pack_size_value(pack_size), item_id))
 
     def get_moves(self, item_id: str = "") -> list[dict]:
         with self._conn() as c:

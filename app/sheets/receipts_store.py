@@ -16,6 +16,8 @@ import shutil
 from collections import Counter
 from datetime import datetime
 
+from sheets.inventory_store import pack_size_value
+
 RECEIPTS_DIRNAME = "FinanceBook Receipts"
 LEGACY_RECEIPTS_DIRNAME = "receipts"     # used up to v1.10.0
 
@@ -283,14 +285,15 @@ class ReceiptsMixin:
                 c.execute(
                     "INSERT INTO receipt_items (id,receipt_id,line_no,description,qty,unit_price,"
                     "line_total,category_id,class_id,charged_to,is_business,kind,transaction_id,"
-                    "item_id,sku) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "item_id,sku,units_per_pack) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (iid, rid, n, it.get("description") or "", float(it.get("qty") or 1),
                      float(it.get("unit_price") or 0), float(it.get("line_total") or 0),
                      it.get("category_id") or "", it.get("class_id") or "",
                      it.get("charged_to") or "",
                      0 if str(it.get("business", it.get("is_business", "1"))) in ("0", "False") else 1,
                      it.get("kind") or "expense", it.get("transaction_id") or "",
-                     it.get("item_id") or "", it.get("sku") or ""))
+                     it.get("item_id") or "", it.get("sku") or "",
+                     pack_size_value(it.get("units_per_pack"))))
                 out.append(dict(it, id=iid, receipt_id=rid, line_no=n))
         return out
 
@@ -476,7 +479,13 @@ class ReceiptsMixin:
                 txn["split_group_id"] = ""
             saved = [self.save_transaction(txn)]
         else:
-            saved = self.split_transaction(base, lines, transfer_to=transfer_to)
+            # Plan amounts are "money out" (positive). split_transaction only
+            # flips the sign for expense categories, so pass outflows as negative
+            # — otherwise Inventory, Fixed-asset and uncategorized lines were
+            # booked as money in.
+            saved = self.split_transaction(
+                base, [ln if ln["transfer"] else dict(ln, amount=str(-float(ln["amount"])))
+                       for ln in lines], transfer_to=transfer_to)
 
         first = saved[0]
         rec = {"id": rid, "vendor": vendor, "receipt_date": date,
@@ -504,21 +513,53 @@ class ReceiptsMixin:
     def receive_receipt_inventory(self, rid: str, lines: list[dict], date: str,
                                   vendor: str = "") -> list[dict]:
         """
-        Stock in the receipt's Inventory lines — [{item_id, qty, unit_cost,
-        description}] with unit_cost the landed cost. The money is already in
-        the books (book_receipt), so no transaction is created. Stock received
-        from this receipt before (a re-booked receipt) is replaced, never added
-        twice.
+        Stock in the receipt's Inventory lines — [{item_id, qty, units_per_pack,
+        landed_total, description}]. Units = qty × units per pack; the unit cost
+        is the line's landed total ÷ units (6 decimals, see per_unit_cost). The
+        money is already in the books (book_receipt), so no transaction is made.
+
+        Receiving the same receipt again (re-booked, or its units corrected)
+        updates this receipt's existing purchase moves in place — same move ids,
+        so history and ordering are kept — removes ones no longer needed and
+        adds any new ones. Stock is never received twice.
         """
+        from utils.money import D
+        from utils.receipt_booking import per_unit_cost, total_units
         rc = self.get_receipt(rid) or {}
         with self._conn() as c:
-            c.execute("DELETE FROM stock_moves WHERE receipt_id=? AND kind='purchase'", (rid,))
+            rows = c.execute("SELECT id, item_id FROM stock_moves WHERE receipt_id=? AND "
+                             "kind='purchase' ORDER BY created_at, id", (rid,)).fetchall()
+        pool: dict = {}
+        for r in rows:
+            pool.setdefault(r["item_id"], []).append(r["id"])
         out = []
         for ln in lines:
-            if not ln.get("item_id") or not float(ln.get("qty") or 0):
+            upp = pack_size_value(ln.get("units_per_pack"))
+            units = total_units(ln.get("qty"), upp)
+            if not ln.get("item_id") or units <= 0:
                 continue
-            out.append(self.add_move(
-                ln["item_id"], date, "purchase", ln["qty"], ln.get("unit_cost") or 0,
-                txn_id=rc.get("transaction_id", ""), receipt_id=rid,
-                notes=f"Receipt: {vendor} — {ln.get('description', '')}".strip()))
+            landed = ln.get("landed_total")
+            if landed is None:                   # older callers pass a per-unit cost
+                landed = D(ln.get("unit_cost") or 0) * units
+            uc = per_unit_cost(landed, units)
+            qty = D(ln.get("qty") or 1)
+            count = (f"{qty:g} pack{'s' if qty != 1 else ''} × {upp} = {units:g} units"
+                     if upp != 1 else f"{units:g} unit{'s' if units != 1 else ''}")
+            notes = f"Receipt: {vendor} — {ln.get('description', '')} ({count})".strip()
+            reuse = pool.get(ln["item_id"]) or []
+            if reuse:
+                mid = reuse.pop(0)
+                with self._conn() as c:
+                    c.execute("UPDATE stock_moves SET date=?, qty=?, unit_cost=?, txn_id=?, notes=? "
+                              "WHERE id=?", (date, float(units), float(uc),
+                                             rc.get("transaction_id", ""), notes, mid))
+                out.append({"id": mid, "qty": float(units)})
+            else:
+                out.append(self.add_move(ln["item_id"], date, "purchase", float(units), float(uc),
+                                         txn_id=rc.get("transaction_id", ""), receipt_id=rid,
+                                         notes=notes))
+        leftover = [m for ids in pool.values() for m in ids]
+        if leftover:
+            with self._conn() as c:
+                c.executemany("DELETE FROM stock_moves WHERE id=?", [(m,) for m in leftover])
         return out

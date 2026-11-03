@@ -127,6 +127,29 @@ class BookingTests(unittest.TestCase):
                     ship = [t for t in saved if t["category_id"] == self.cats["Shipping"]]
                     self.assertEqual(round(-float(ship[0]["amount"]), 2), float(p["shipping"]))
 
+    def test_split_lines_of_every_kind_are_money_out(self):
+        # Regression: inventory, fixed-asset and uncategorized split lines were
+        # booked with a positive (money in) amount.
+        items = [item("Chips", "60.00", kind="inventory"),
+                 item("Drill", "100.00", kind="asset"),
+                 item("Tape", "10.00", self.cats["Supplies"]),
+                 item("Mystery", "5.00", "")]
+        saved = self.db.book_receipt(self.rc["id"], {"vendor": "Mixed", "tax": "17.50"}, items,
+                                     account_id=self.bank["id"], date="2026-01-01")
+        self.assertEqual(len(saved), 4)
+        self.assertTrue(all(float(t["amount"]) < 0 for t in saved),
+                        [(t["memo"], t["amount"]) for t in saved])
+        self.assertEqual(round(self.db.account_balance(self.bank["id"]), 2), -192.50)
+
+    def test_company_paid_split_with_personal_line(self):
+        checking = self.db.save_account({"name": "Biz Checking", "type": "checking"})
+        items = [item("Chips", "60.00", kind="inventory"), item("Gum", "2.00", biz=False)]
+        self.db.book_receipt(self.rc["id"], {"vendor": "Mixed"}, items,
+                             account_id=checking["id"], date="2026-01-01")
+        self.assertEqual(round(self.db.account_balance(checking["id"]), 2), -62.00)
+        draws = self.db.get_account_by_role("owner_draws")
+        self.assertEqual(round(self.db.account_balance(draws["id"]), 2), 2.00)
+
     def test_receipts_without_new_fields_book_as_before(self):
         items = [item("Paper", "10.00", self.cats["Supplies"])]
         saved = self.db.book_receipt(self.rc["id"], {"vendor": "Staples", "tax": "0.80"}, items,
@@ -198,7 +221,8 @@ def _downgrade_to_v9(path):
             conn.execute(f"DROP TRIGGER {name}")
         for table, col in (("receipts", "shipping"), ("receipts", "discount"),
                            ("receipts", "duties"), ("receipt_items", "item_id"),
-                           ("receipt_items", "sku")):
+                           ("receipt_items", "sku"), ("receipt_items", "units_per_pack"),
+                           ("items", "pack_size")):
             conn.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
         conn.execute("PRAGMA user_version = 9")
         conn.commit()
