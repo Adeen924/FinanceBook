@@ -31,7 +31,8 @@ from sheets.admin_store import AdminMixin, ADMIN_SCHEMA
 #   8  — mileage log, budgets
 #   9  — recurring items, audit log + triggers, period lock, created/updated_by
 #  10  — receipts: shipping, discount, duties; receipt items: item_id, sku
-SCHEMA_VERSION = 10
+#  11  — receipt items: units_per_pack; items: pack_size (default 1)
+SCHEMA_VERSION = 11
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -165,6 +166,9 @@ _NEW_COLUMNS = [
     ("receipts",      "duties",          "REAL DEFAULT 0"),
     ("receipt_items", "item_id",         "TEXT DEFAULT ''"),
     ("receipt_items", "sku",             "TEXT DEFAULT ''"),
+    # v11 — pack sizes (a "6 Pack" line = 6 stock units per qty)
+    ("receipt_items", "units_per_pack",  "INTEGER DEFAULT 1"),
+    ("items",         "pack_size",       "INTEGER DEFAULT 1"),
 ] + PEOPLE_COLUMNS
 
 # Optional transaction columns: written only when the caller's dict has the key,

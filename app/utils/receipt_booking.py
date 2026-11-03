@@ -12,7 +12,7 @@ plan_receipt_lines() returns (business_lines, personal_lines), each a list of
  memo, item_indexes}. Lines are grouped by category/class/charged-to/kind so
 one receipt books as one transaction split by category.
 """
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from utils.money import D, cents, allocate, money_sum, ZERO
 
@@ -113,6 +113,27 @@ def plan_receipt_lines(items, tax=0, tip=0, mode=TAX_PROPORTIONAL,
                              "class_id": "", "charged_to": "", "kind": "expense",
                              "item_indexes": []})
     return business, personal
+
+
+UNIT_COST_PLACES = Decimal("0.000001")
+
+
+def total_units(qty, units_per_pack=1) -> Decimal:
+    """Stock units on a line: e.g. 2 packs × 6 = 12."""
+    return D(qty or 1) * D(units_per_pack or 1)
+
+
+def per_unit_cost(total, units) -> Decimal:
+    """
+    Cost of one unit, kept to 6 decimals (half up) rather than cents, so that
+    units × unit cost rounds back to the exact total — e.g. a $6.45 six-pack is
+    $1.075 a unit, not $1.08 (which would value the six at $6.48). Exact to the
+    cent for any line under 10,000 units; deterministic either way.
+    """
+    units = D(units)
+    if units <= 0:
+        return ZERO
+    return (D(total) / units).quantize(UNIT_COST_PLACES, rounding=ROUND_HALF_UP)
 
 
 def receipt_total(items, tax=0, tip=0, shipping=0, discount=0, duties=0) -> Decimal:

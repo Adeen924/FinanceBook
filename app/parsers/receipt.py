@@ -431,7 +431,7 @@ def finish(res: dict, summary: Summary, items: list[dict]) -> dict:
     f = summary.found
     for k in ("shipping", "discount", "duties", "tax", "tip"):
         res[k] = cents(f.get(k, ZERO))
-    res["line_items"] = items
+    res["line_items"] = annotate_packs(items)
     total = f.get("total_strong", f.get("total", ZERO))
     extras = res["shipping"] + res["duties"] + res["tax"] + res["tip"] - res["discount"]
     if "subtotal" in f:
@@ -562,6 +562,46 @@ def _item_from_line(label: str, amt: Decimal) -> dict:
     desc = re.sub(r"\s{2,}", " ", desc).strip(" .:-$")
     return {"description": desc or label, "qty": qty, "unit_price": cents(unit),
             "line_total": amt, "sku": ""}
+
+
+# ── pack sizes ("6 Pack" = 6 stock units per qty) ───────────────────────────
+
+_MEASURE = (r"(?:\s*[x×]\s*\d|\s*(?:ft|feet|foot|in|inch|inches|mm|cm|m|meters?|oz|lbs?|g|kg|"
+            r"gb|tb|ml|l|v|w|mah|gauge|awg)\b|\s*(?:''|\"|'|”|’))")
+_PACK_PATTERNS = [
+    re.compile(r"\b(\d{1,4})\s*-?\s*(?:pack|pk)\b", re.I),
+    re.compile(r"\bpack\s+of\s+(\d{1,4})\b(?!" + _MEASURE + ")", re.I),
+    re.compile(r"\bset\s+of\s+(\d{1,4})\b(?!" + _MEASURE + ")", re.I),
+    re.compile(r"\b(\d{1,4})\s*-?\s*(?:count|ct)\b", re.I),
+]
+# "3 Pack of 10 ft cables": 3 packs of a 10-count? or one 3-pack of 10 ft cables?
+_PACK_OF_NUMBER = re.compile(r"\b\d{1,4}\s*-?\s*pack\s+of\s+\d+(?!\s*[x×]\s*\d)", re.I)
+
+
+def suggest_pack_size(description: str) -> dict | None:
+    """
+    A suggested units-per-pack from an item title, or None. Returns
+    {"units", "text" (what matched), "ambiguous"}; an ambiguous suggestion is
+    shown to the user but never applied for them.
+    """
+    found = []
+    for rx in _PACK_PATTERNS:
+        for m in rx.finditer(description or ""):
+            n = int(m.group(1))
+            if n > 1:
+                found.append((m.start(), n, m.group(0).strip()))
+    if not found:
+        return None
+    found.sort()
+    _, units, text = found[0]
+    ambiguous = len({n for _, n, _ in found}) > 1 or bool(_PACK_OF_NUMBER.search(description))
+    return {"units": units, "text": text, "ambiguous": ambiguous}
+
+
+def annotate_packs(items: list[dict]) -> list[dict]:
+    for i in items:
+        i["pack_suggestion"] = suggest_pack_size(i.get("description", ""))
+    return items
 
 
 def check_totals(res: dict) -> list[str]:
@@ -804,7 +844,7 @@ def normalize_ai_result(data: dict) -> dict:
                       "qty": qty, "unit_price": cents(it.get("unit_price") or 0),
                       "line_total": cents(it.get("line_total") or 0),
                       "sku": str(it.get("sku") or "").strip()[:60]})
-    res["line_items"] = items
+    res["line_items"] = annotate_packs(items)
     res["warnings"] = check_totals(res)
     return res
 
