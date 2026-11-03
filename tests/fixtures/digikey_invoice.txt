@@ -1,0 +1,39 @@
+701 Brooks Ave South,                                          www.digikey.com
+PO Box 677
+Invoice # 900000001
+Thief River Falls, MN 56701-0677
+USA                                                            Completed Salesorder USD $
+Salesorder / Packlist:           100000000 / PL1
+JORDAN SAMPLE                                          JORDAN SAMPLE
+Customer:                     900000000
+100 EXAMPLE STREET                                100 EXAMPLE STREET
+ANYTOWN CA 90000-0000                            ANYTOWN CA 90000-0000                            Payment Terms:                VISA / 0000
+UNITED STATES OF AMERICA                           UNITED STATES OF AMERICA                          Shipping Method:               U2D
+Tracking #:                     1Z0000000000000000
+JORDAN SAMPLE                                          DIGIKEY ELECTRONICS
+ANYTOWN CA 90000                                  701 BROOKS AVE. SOUTH
+UNITED STATES OF AMERICA                           P.O. BOX 677
+THIEF RIVER FALLS MN 56701-0677
+UNITED STATES OF AMERICA
+Order Source:            Order Date:             Invoice Date:             Ship Date:            Document Date:
+INTERNET             13-Oct-2026           13-Oct-2026           13-Oct-2026        13-Oct-2026/AUTO
+Line                                                            Unit Price     Amount
+Ordered     Cancelled     Shipped                                                 Item Number/ Description
+Item                                                            USD $          USD $
+1           4              0              4        PART: 2648-SC1633CT-ND                                        DESC: RASPBERRY PI PICO 2 W RP2350                           8.42000          33.68 T
+MFG : Raspberry Pi (VA) / SC1633
+ECCN: 5A992C                         HTSUS: 8471.50.0150
+COO : UNITED KINGDOM                         LOT QTY: 4
+ROHS3 COMP REACH UNAFFECTED Jun-2024
+Sales Amount                   33.68
+Shipping charges applied                   13.99
+** Charges subtotal **                   47.67
+Sales Tax                    2.61
+Total charged to credit card                   50.28
+USD $
+T indicates taxable amounts
+Box   Ship Method             Tracking                         Weight             Line Item                            Part                              Quantity
+1          U2D      1Z0000000000000000               0.06 kgs / 2 oz                        1      2648-SC1633CT-ND                                                       4
+General - WEB ORDER ID: 300000000
+DUNS No: 05 760 2120 FEI No: 41-1234968 Any applicable sales tax not collected on this invoice is the responsibility of the customer.
+Page 1 of 2

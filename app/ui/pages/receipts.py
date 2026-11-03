@@ -3,8 +3,8 @@ import os
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
                              QFileDialog, QMessageBox, QHeaderView, QTabWidget, QLineEdit,
-                             QFrame)
-from PyQt6.QtCore import Qt, QDate, QUrl
+                             QFrame, QProgressDialog)
+from PyQt6.QtCore import Qt, QDate, QUrl, QThread, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 
 from ui.widgets import PageTitle, DataTable, SecondaryButton, DateField, fmt_date
@@ -53,11 +53,45 @@ class DropZone(QFrame):
             self._on_files(paths)
 
 
+class ParseWorker(QThread):
+    """Reads receipt files (PDF text, Windows OCR) off the UI thread."""
+    done = pyqtSignal(list)          # [(receipt_id, parsed result)]
+
+    def __init__(self, jobs):
+        super().__init__()
+        self._jobs = list(jobs)      # [(receipt_id, path)]
+
+    def run(self):
+        out = []
+        for rid, path in self._jobs:
+            try:
+                res = R.parse_file(path)
+            except Exception:        # a bad file must never crash the app
+                res = R.empty_result("manual")
+                res["warnings"] = [R.MSG_BAD_PDF if path.lower().endswith(".pdf")
+                                   else R.MSG_IMAGE]
+            out.append((rid, res))
+        self.done.emit(out)
+
+
+def receipt_fields(parsed: dict) -> dict:
+    """The receipts-table columns filled from a parse result."""
+    out = {"vendor": parsed["vendor"], "receipt_date": parsed["date"],
+           "parse_method": parsed["method"], "raw_text": parsed["raw_text"]}
+    for k in R.MONEY_FIELDS:
+        out[k] = parsed.get(k) or 0
+    if parsed.get("order_number"):
+        out["notes"] = f"Order # {parsed['order_number']}"
+    return out
+
+
 class ReceiptsPage(QWidget):
     def __init__(self, db, parent=None):
         super().__init__(parent)
         self.db = db
         self._receipts: list[dict] = []
+        self._workers: set = set()
+        self.last_worker = None
         self._build()
 
     def _build(self):
@@ -200,7 +234,7 @@ class ReceiptsPage(QWidget):
             self.add_files(paths)
 
     def add_files(self, paths: list[str]):
-        added, dups, bad = [], [], []
+        dups, bad, jobs = [], [], []
         for p in paths:
             ext = os.path.splitext(p)[1].lower()
             if not os.path.isfile(p) or ext not in R.SUPPORTED_EXTS:
@@ -214,14 +248,7 @@ class ReceiptsPage(QWidget):
             if dup:
                 dups.append(rc)
                 continue
-            parsed = R.parse_file(self.db.receipt_abs_path(rc))
-            self.db.save_receipt({"id": rc["id"], "vendor": parsed["vendor"],
-                                  "receipt_date": parsed["date"],
-                                  "subtotal": parsed["subtotal"], "tax": parsed["tax"],
-                                  "tip": parsed["tip"], "total": parsed["total"],
-                                  "parse_method": parsed["method"],
-                                  "raw_text": parsed["raw_text"]})
-            added.append((self.db.get_receipt(rc["id"]), parsed))
+            jobs.append((rc["id"], self.db.receipt_abs_path(rc)))
         self.refresh()
         notes = []
         if dups:
@@ -231,6 +258,36 @@ class ReceiptsPage(QWidget):
             notes.append("Skipped (unsupported or unreadable): " + ", ".join(bad))
         if notes:
             QMessageBox.information(self, "Receipts", "\n\n".join(notes))
+        if jobs:
+            self._parse_async(jobs, self._parsed_new)
+
+    def _parse_async(self, jobs, then):
+        """Parse files on a worker thread behind a progress dialog, then call then(results)."""
+        prog = QProgressDialog("Reading receipt…" if len(jobs) == 1
+                               else f"Reading {len(jobs)} receipts…", "", 0, 0, self)
+        prog.setCancelButton(None)
+        prog.setWindowTitle("Receipts")
+        prog.setWindowModality(Qt.WindowModality.WindowModal)
+        prog.setMinimumDuration(300)
+        w = ParseWorker(jobs)
+        self._workers.add(w)
+        self.last_worker = w
+
+        def finished(results):
+            prog.close()
+            then(results)
+        w.done.connect(finished)
+        w.finished.connect(lambda w=w: self._workers.discard(w))
+        w.start()
+
+    def _parsed_new(self, results):
+        added = []
+        for rid, parsed in results:
+            self.db.save_receipt(dict(receipt_fields(parsed), id=rid))
+            rc = self.db.get_receipt(rid)
+            if rc:
+                added.append((rc, parsed))
+        self.refresh()
         if len(added) == 1:
             self._review(*added[0])
 
@@ -244,7 +301,9 @@ class ReceiptsPage(QWidget):
         rc = self.db.get_receipt(rc["id"]) or rc
         if parsed is None and not self.db.get_receipt_items(rc["id"]) \
                 and rc.get("status") != "booked" and rc.get("file_path"):
-            parsed = R.parse_file(self.db.receipt_abs_path(rc))
+            self._parse_async([(rc["id"], self.db.receipt_abs_path(rc))],
+                              lambda res, rc=rc: self._review(rc, res[0][1]))
+            return
         dlg = ReceiptReviewDialog(self.db, rc, parent=self, parsed=parsed)
         dlg.exec()
         self.refresh()

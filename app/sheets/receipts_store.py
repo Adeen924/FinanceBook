@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS vendor_memory (
 );
 """
 
-_RECEIPT_MONEY = ("subtotal", "tax", "tip", "total")
+_RECEIPT_MONEY = ("subtotal", "shipping", "discount", "duties", "tax", "tip", "total")
 _ITEM_MONEY = ("qty", "unit_price", "line_total")
 
 
@@ -166,8 +166,8 @@ class ReceiptsMixin:
         return _row(r) if r else None
 
     def save_receipt(self, data: dict) -> dict:
-        cols = ("vendor", "receipt_date", "currency", "subtotal", "tax", "tip", "total",
-                "status", "parse_method", "raw_text", "transaction_id", "split_group_id", "notes")
+        cols = (("vendor", "receipt_date", "currency") + _RECEIPT_MONEY +
+                ("status", "parse_method", "raw_text", "transaction_id", "split_group_id", "notes"))
         present = [k for k in cols if k in data]
         if not present:
             return data
@@ -208,14 +208,15 @@ class ReceiptsMixin:
                 iid = self._new_id()
                 c.execute(
                     "INSERT INTO receipt_items (id,receipt_id,line_no,description,qty,unit_price,"
-                    "line_total,category_id,class_id,charged_to,is_business,kind,transaction_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "line_total,category_id,class_id,charged_to,is_business,kind,transaction_id,"
+                    "item_id,sku) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (iid, rid, n, it.get("description") or "", float(it.get("qty") or 1),
                      float(it.get("unit_price") or 0), float(it.get("line_total") or 0),
                      it.get("category_id") or "", it.get("class_id") or "",
                      it.get("charged_to") or "",
                      0 if str(it.get("business", it.get("is_business", "1"))) in ("0", "False") else 1,
-                     it.get("kind") or "expense", it.get("transaction_id") or ""))
+                     it.get("kind") or "expense", it.get("transaction_id") or "",
+                     it.get("item_id") or "", it.get("sku") or ""))
                 out.append(dict(it, id=iid, receipt_id=rid, line_no=n))
         return out
 
@@ -322,6 +323,7 @@ class ReceiptsMixin:
     def book_receipt(self, rid: str, header: dict, items: list[dict], *,
                      account_id: str, date: str, tax_mode: str = "proportional",
                      tax_category_id: str = "", tip_category_id: str = "",
+                     shipping_category_id: str = "", duties_category_id: str = "",
                      paid_by: str = "", base_txn: dict | None = None) -> list[dict]:
         """
         Save a reviewed receipt to the books as ONE transaction split by
@@ -337,6 +339,11 @@ class ReceiptsMixin:
         from utils.receipt_booking import plan_receipt_lines
         from sheets.client import BUSINESS_ACCOUNTS
 
+        if base_txn is None:
+            # Booking a receipt again replaces its transaction, never adds a second.
+            rc = self.get_receipt(rid) or {}
+            if rc.get("status") == "booked" and rc.get("transaction_id"):
+                base_txn = self.get_transaction(rc["transaction_id"])
         # Fixed-asset lines are capitalised: filed under the balance-sheet
         # category, then depreciated from the asset register.
         if any(i.get("kind") == "asset" for i in items):
@@ -349,7 +356,9 @@ class ReceiptsMixin:
 
         business, personal = plan_receipt_lines(
             items, header.get("tax"), header.get("tip"), tax_mode,
-            tax_category_id, tip_category_id)
+            tax_category_id, tip_category_id, shipping=header.get("shipping"),
+            discount=header.get("discount"), duties=header.get("duties"),
+            shipping_category_id=shipping_category_id, duties_category_id=duties_category_id)
         acct = self.get_account(account_id) or {}
         owner_funded = (acct.get("role") or "") in ("owner_capital", "due_to_owner", "owner_paid")
         reimbursable = "1" if (acct.get("role") in ("due_to_owner", "reimb_payable") or (
@@ -374,6 +383,9 @@ class ReceiptsMixin:
                      "payee": base.get("payee") or vendor,
                      "memo": base.get("memo") or f"Receipt: {vendor}".strip(": "),
                      "paid_by": paid_by, "reimbursable": reimbursable})
+        note = (header.get("notes") or "").strip()       # e.g. "Order # 111-…"
+        if note and note not in (base.get("notes") or ""):
+            base["notes"] = " · ".join(x for x in (base.get("notes") or "", note) if x)
         if not base_txn:
             base.update({"date": date, "account_id": account_id})
 
@@ -393,12 +405,14 @@ class ReceiptsMixin:
             saved = self.split_transaction(base, lines, transfer_to=transfer_to)
 
         first = saved[0]
-        self.save_receipt({"id": rid, "vendor": vendor, "receipt_date": date,
-                           "subtotal": header.get("subtotal"), "tax": header.get("tax"),
-                           "tip": header.get("tip"), "total": header.get("total"),
-                           "currency": header.get("currency") or "USD",
-                           "status": "booked", "transaction_id": first["id"],
-                           "split_group_id": first.get("split_group_id", "")})
+        rec = {"id": rid, "vendor": vendor, "receipt_date": date,
+               "currency": header.get("currency") or "USD"}
+        rec.update({k: header.get(k) for k in _RECEIPT_MONEY})
+        if "notes" in header:
+            rec["notes"] = header.get("notes") or ""
+        rec.update({"status": "booked", "transaction_id": first["id"],
+                    "split_group_id": first.get("split_group_id", "")})
+        self.save_receipt(rec)
         with self._conn() as c:
             c.execute("DELETE FROM attachments WHERE receipt_id=?", (rid,))
         self.attach_receipt(rid, first)
@@ -410,3 +424,27 @@ class ReceiptsMixin:
         if spend:
             self.remember_vendor(vendor, spend.most_common(1)[0][0])
         return saved
+
+    # ── inventory received from a receipt ────────────────────────────────────
+
+    def receive_receipt_inventory(self, rid: str, lines: list[dict], date: str,
+                                  vendor: str = "") -> list[dict]:
+        """
+        Stock in the receipt's Inventory lines — [{item_id, qty, unit_cost,
+        description}] with unit_cost the landed cost. The money is already in
+        the books (book_receipt), so no transaction is created. Stock received
+        from this receipt before (a re-booked receipt) is replaced, never added
+        twice.
+        """
+        rc = self.get_receipt(rid) or {}
+        with self._conn() as c:
+            c.execute("DELETE FROM stock_moves WHERE receipt_id=? AND kind='purchase'", (rid,))
+        out = []
+        for ln in lines:
+            if not ln.get("item_id") or not float(ln.get("qty") or 0):
+                continue
+            out.append(self.add_move(
+                ln["item_id"], date, "purchase", ln["qty"], ln.get("unit_cost") or 0,
+                txn_id=rc.get("transaction_id", ""), receipt_id=rid,
+                notes=f"Receipt: {vendor} — {ln.get('description', '')}".strip()))
+        return out

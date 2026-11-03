@@ -1,0 +1,33 @@
+INVOICE
+JiaLiChuang (HongKong) Co., Limited
+Invoice No:        13310000A2026100200000000
+Unit 21, 28/F, Metropole Square
+No.2 On Yiu Street, Shatin, New Territories
+Invoice Date:     08/10/2026
+HONG KONG, China
+Reference:        ABCDE0000000000000
+support@jlcpcb.com
++86 755 23919769                                                            Batch No:         W2026100200000000
+JLCPCB.COM
+Ship Via:           UPS Worldwide Express
+Saver(DDP)
+Type of Trade:    DDP
+Ship To:                                                            Billing To:
+Jordan Sample                                                            Jordan Sample
+100 Example Street                                                            100 Example Street
+California Anytown 90000                                                            California Anytown 90000
+US                                                            UNITED STATES OF AMERICA
+Email:jordan@example.com                                                            Email:jordan@example.com
+Tel:+15550000000                                                            Tel:5550000000
+VAT No:                                                            VAT No:
+Product                                             File Name                   Order Number                           QTY                        Unit Price                  Ext.Price
+Gerber_Sample-Proj
+1       Rigid Populated printed circuit board             ect_PCB_Sample-Proj     SMT026100000000-Y2                    5                              USD $9.03                  USD $45.13
+Merchandise Total:                    USD $45.13
+Shipping:                               USD $35.13
+Merchandise Discount:             -USD $10.00
+Subtotal:                               USD $70.26
+States Sales&Use Tax:                 USD $2.73
+Import Taxes:                          USD $16.79
+Tax rates vary for different products; please refer to the tax details                                                            Grand Total:                           USD $89.78
+.

@@ -126,7 +126,7 @@ class DocDialog(QDialog):
     def _cat_combo(self) -> FilterComboBox:
         want = "income" if self.doc_type == "invoice" else None
         combo = FilterComboBox(placeholder="Category")
-        cats = self.db.get_categories()
+        cats = self.db.get_categories_for_book()
         for c in cats:
             if c.get("parent_id"):
                 continue

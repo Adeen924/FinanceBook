@@ -122,7 +122,7 @@ class TransactionsPage(QWidget):
 
     def refresh(self):
         accounts = self.db.get_accounts()
-        cats = self.db.get_categories()
+        cats = self.db.get_categories_for_book()
 
         # Repopulate filter combos
         self._acct_filter.blockSignals(True)
@@ -412,7 +412,7 @@ class TransactionsPage(QWidget):
 
         # Quick category submenu
         cat_menu = menu.addMenu("Set Category")
-        cats = self.db.get_categories()
+        cats = self.db.get_categories_for_book()
         roots = [c for c in cats if not c.get("parent_id")]
         for cat in roots:
             act = QAction(cat["name"], self)

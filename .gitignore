@@ -37,3 +37,6 @@ Thumbs.db
 # ── Update staging / backups created at runtime ─────────
 app_backup/
 .update/
+
+# Real receipts used for parser development (contain personal data)
+_private_samples/

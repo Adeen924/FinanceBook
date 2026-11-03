@@ -1,0 +1,16 @@
+Final Details for Order #114-3333333-4444444
+Order Placed: March 3, 2026
+Amazon.com order number: 114-3333333-4444444
+Order Total: $34.12
+Shipped on March 4, 2026
+Items Ordered                                                         Price
+1 of: Notebook, College Ruled, 5 Pack                                  $12.49
+Sold by: Paper Goods Inc
+3 of: Gel Pens, Black                                                  $5.50
+Sold by: Amazon.com Services, Inc
+Item(s) Subtotal:   $28.99
+Shipping & Handling:   $4.99
+Total before tax:   $33.98
+Estimated tax to be collected:   $2.10
+Promotion Applied:   -$1.96
+Grand Total:   $34.12
