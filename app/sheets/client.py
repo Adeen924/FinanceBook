@@ -13,6 +13,7 @@ from sheets.receipts_store import ReceiptsMixin, RECEIPTS_SCHEMA
 from sheets.assets_store import AssetsMixin, ComputedMixin, ASSETS_SCHEMA
 from sheets.sales_store import SalesMixin, SALES_SCHEMA
 from sheets.inventory_store import InventoryMixin, INVENTORY_SCHEMA
+from sheets.payroll_store import PayrollMixin, PAYROLL_SCHEMA, PEOPLE_COLUMNS
 
 # Bump whenever SCHEMA or _migrate() changes. An existing database with a lower
 # PRAGMA user_version is backed up before it is migrated.
@@ -22,7 +23,8 @@ from sheets.inventory_store import InventoryMixin, INVENTORY_SCHEMA
 #   4  — fixed assets / prepaids, asset usage
 #   5  — contacts, invoices, bills, document payments; transactions.contact_id
 #   6  — inventory items and stock movements
-SCHEMA_VERSION = 6
+#   7  — employees (people columns), time entries, payroll runs
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -147,7 +149,7 @@ _NEW_COLUMNS = [
     ("accounts",     "role",             "TEXT DEFAULT ''"),
     ("categories",   "tax_line",         "TEXT DEFAULT ''"),
     ("categories",   "deduct_pct",       "REAL DEFAULT 100"),
-]
+] + PEOPLE_COLUMNS
 
 # Optional transaction columns: written only when the caller's dict has the key,
 # so older code paths that build a txn dict from scratch can't blank them.
@@ -201,7 +203,8 @@ class _ClosingConnection(sqlite3.Connection):
             self.close()
 
 
-class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryMixin):
+class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryMixin,
+               PayrollMixin):
     def __init__(self, db_path: str, book_type: str | None = None):
         """
         Open (creating/migrating as needed) the database at db_path.
@@ -232,6 +235,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             conn.executescript(ASSETS_SCHEMA)
             conn.executescript(SALES_SCHEMA)
             conn.executescript(INVENTORY_SCHEMA)
+            conn.executescript(PAYROLL_SCHEMA)
         self._migrate()
         if is_new and book_type in (BOOK_PERSONAL, BOOK_BUSINESS):
             self.set_setting("book_type", book_type)

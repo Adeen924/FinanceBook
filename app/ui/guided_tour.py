@@ -95,6 +95,14 @@ STEPS = [
               "(FIFO or weighted average), flags items to reorder, and moves their cost to "
               "<b>Cost of Goods Sold</b> when they sell."),
 
+    dict(nav="People & Payroll", target=lambda mw, p: getattr(p, "_add_btn", None),
+         when=lambda mw: mw.db.is_business(),
+         title="Employees, payroll & 1099s",
+         body="Add employees and log their hours, then run payroll: FinanceBook "
+              "<b>estimates</b> withholding and employer taxes from the IRS tables and books "
+              "wages, net pay and taxes owed. The <b>Contractors</b> tab flags who needs a "
+              "1099-NEC. Not a substitute for a payroll provider."),
+
     dict(nav="Reports", target=lambda mw, p: getattr(p, "_tabs", None),
          when=lambda mw: mw.db.is_business(),
          title="Business balance sheet",

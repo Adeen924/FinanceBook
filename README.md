@@ -61,6 +61,14 @@ single-member LLC), not just personal money. Create a new database and choose
   sits on the Balance Sheet as Inventory and moves to Cost of Goods Sold on the
   P&L when it sells. Low-stock items are flagged; a valuation report exports to
   CSV. Add stock straight from a receipt line.
+- **Employees, payroll & 1099s (v1.6)** — W-2 employees with W-4 details,
+  hours logging, and payroll runs that **estimate** federal withholding (IRS
+  Pub 15-T 2026), Social Security and Medicare, FUTA/SUTA and state withholding,
+  then book wages, net pay and the taxes you owe (shown on the Balance Sheet
+  until you pay them). The Contractors tab totals payments to each 1099
+  contractor and flags who crosses the 1099-NEC threshold ($2,000 for payments
+  made in 2026), with a CSV summary. Payroll figures are estimates — not a
+  substitute for a payroll provider or accountant.
 
 Tax-related labels are bookkeeping aids, not tax advice — confirm treatment with
 your accountant.
@@ -99,6 +107,7 @@ from the in-app banner.
   Equity section, and use categories mapped to Schedule C.
 - **Stay backed up** — automatic daily backups next to each database, plus
   one-click backup and restore.
+- **Run simple payroll** — estimated withholding and payroll taxes, plus 1099 tracking.
 - **Track inventory** — stock on hand, FIFO / average cost, and cost of goods sold.
 - **Invoice customers and track bills** — numbered PDF invoices, bills,
   payments, and A/R / A/P aging.

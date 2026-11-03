@@ -1,0 +1,112 @@
+{
+  "_about": "US federal figures for tax year 2026 used by FinanceBook's payroll, 1099, mileage and estimated-tax helpers. ESTIMATES FOR BOOKKEEPING — not a substitute for a payroll provider or accountant. Edit this file (or add tax_tables_2027.json) when the IRS publishes new numbers; no code changes needed. Every value lists its source; anything unverified is marked TODO and not used for calculations.",
+  "year": 2026,
+  "compiled": "2026-11-02",
+
+  "social_security": {
+    "wage_base": 184500,
+    "employee_rate": 0.062,
+    "employer_rate": 0.062,
+    "source": "IRS Pub 15 (2026), What's New — https://www.irs.gov/pub/irs-pdf/p15.pdf"
+  },
+  "medicare": {
+    "employee_rate": 0.0145,
+    "employer_rate": 0.0145,
+    "additional_rate": 0.009,
+    "additional_withholding_threshold": 200000,
+    "source": "IRS Pub 15 (2026); https://www.irs.gov/businesses/small-businesses-self-employed/questions-and-answers-for-the-additional-medicare-tax"
+  },
+  "futa": {
+    "gross_rate": 0.06,
+    "net_rate_after_credit": 0.006,
+    "wage_base": 7000,
+    "credit_reduction_states": {},
+    "credit_reduction_note": "TODO: the 2026 credit-reduction list is final only after Nov 10, 2026. DOL's potential list: California 1.5% (5.3% if the BCR add-on is not waived), U.S. Virgin Islands 4.8% (may not apply — reported loan payoff). Add confirmed states here as {\"CA\": 0.015}.",
+    "source": "IRS Pub 15 (2026) §14; https://oui.doleta.gov/unemploy/futa_credit.asp"
+  },
+  "self_employment": {
+    "rate": 0.153,
+    "social_security_part": 0.124,
+    "medicare_part": 0.029,
+    "net_earnings_factor": 0.9235,
+    "minimum_net_earnings": 400,
+    "deduction_share": 0.5,
+    "source": "2026 Form 1040-ES SE worksheet — https://www.irs.gov/pub/irs-pdf/f1040es.pdf"
+  },
+
+  "withholding_pub15t": {
+    "_about": "Pub 15-T (2026) Worksheet 1A, Percentage Method Tables for Automated Payroll Systems, STANDARD withholding rate schedules (Form W-4 from 2020 or later, Step 2 box NOT checked). Rows: [at least, but less than (null = no limit), base tax, rate, of excess over]. Step-2-checkbox tables and pre-2020 W-4 (allowances) are NOT loaded.",
+    "step2_unchecked_adjustment": {"mfj": 12900, "single": 8600, "hoh": 8600},
+    "pre2020_allowance": 4300,
+    "standard": {
+      "mfj": [[0, 19300, 0.00, 0.00, 0], [19300, 44100, 0.00, 0.10, 19300],
+              [44100, 120100, 2480.00, 0.12, 44100], [120100, 230700, 11600.00, 0.22, 120100],
+              [230700, 422850, 35932.00, 0.24, 230700], [422850, 531750, 82048.00, 0.32, 422850],
+              [531750, 788000, 116896.00, 0.35, 531750], [788000, null, 206583.50, 0.37, 788000]],
+      "single": [[0, 7500, 0.00, 0.00, 0], [7500, 19900, 0.00, 0.10, 7500],
+                 [19900, 57900, 1240.00, 0.12, 19900], [57900, 113200, 5800.00, 0.22, 57900],
+                 [113200, 209275, 17966.00, 0.24, 113200], [209275, 263725, 41024.00, 0.32, 209275],
+                 [263725, 648100, 58448.00, 0.35, 263725], [648100, null, 192979.25, 0.37, 648100]],
+      "hoh": [[0, 15550, 0.00, 0.00, 0], [15550, 33250, 0.00, 0.10, 15550],
+              [33250, 83000, 1770.00, 0.12, 33250], [83000, 121250, 7740.00, 0.22, 83000],
+              [121250, 217300, 16155.00, 0.24, 121250], [217300, 271750, 39207.00, 0.32, 217300],
+              [271750, 656150, 56631.00, 0.35, 271750], [656150, null, 191171.00, 0.37, 656150]]
+    },
+    "source": "IRS Pub 15-T (2026), p.12 — https://www.irs.gov/pub/irs-pdf/p15t.pdf"
+  },
+
+  "income_tax": {
+    "_about": "2026 brackets: [taxable income over, rate]. Used only for the rough estimated-tax helper.",
+    "brackets": {
+      "single": [[0, 0.10], [12400, 0.12], [50400, 0.22], [105700, 0.24], [201775, 0.32], [256225, 0.35], [640600, 0.37]],
+      "mfj": [[0, 0.10], [24800, 0.12], [100800, 0.22], [211400, 0.24], [403550, 0.32], [512450, 0.35], [768700, 0.37]],
+      "hoh": [[0, 0.10], [17700, 0.12], [67450, 0.22], [105700, 0.24], [201750, 0.32], [256200, 0.35], [640600, 0.37]]
+    },
+    "standard_deduction": {"single": 16100, "mfj": 32200, "hoh": 24150},
+    "qbi_rate": 0.20,
+    "qbi_threshold": {"single": 201750, "mfj": 403500, "hoh": 201750},
+    "source": "Rev. Proc. 2025-32 §4.01, §4.14, §4.26 — https://www.irs.gov/pub/irs-drop/rp-25-32.pdf"
+  },
+
+  "estimated_tax_due_dates": {
+    "dates": ["2026-04-15", "2026-06-15", "2026-09-15", "2027-01-15"],
+    "source": "2026 Form 1040-ES p.4 — https://www.irs.gov/pub/irs-pdf/f1040es.pdf"
+  },
+
+  "form_1099": {
+    "_about": "Reporting threshold by the calendar year payments were made.",
+    "nec_threshold_by_year": {"2025": 600, "2026": 2000},
+    "deadline_for_2026_payments": "2027-02-01",
+    "note": "Payments made by card or through PayPal/Venmo business are reported by the processor on Form 1099-K, not by you on 1099-NEC. Threshold is inflation-indexed from 2027 — add the new figure here.",
+    "source": "https://www.irs.gov/instructions/i1099mec; Rev. Proc. 2025-32 §2.15"
+  },
+
+  "mileage": {
+    "_about": "IRS standard business mileage rate, by date range (the 2026 rate changed on July 1).",
+    "business_rates": [
+      {"from": "2025-01-01", "to": "2025-12-31", "rate": 0.70},
+      {"from": "2026-01-01", "to": "2026-06-30", "rate": 0.725},
+      {"from": "2026-07-01", "to": "2026-12-31", "rate": 0.76}
+    ],
+    "source": "https://www.irs.gov/tax-professionals/standard-mileage-rates (Notice 2026-10; IR-2026-29)"
+  },
+
+  "home_office_simplified": {
+    "rate_per_sqft": 5,
+    "max_sqft": 300,
+    "source": "https://www.irs.gov/businesses/small-businesses-self-employed/simplified-option-for-home-office-deduction"
+  },
+
+  "section_179": {
+    "limit": 2560000,
+    "phaseout_threshold": 4090000,
+    "bonus_depreciation_rate": 1.0,
+    "source": "Rev. Proc. 2025-32 §4.24; IRS Notice 2026-11 (100% bonus for property acquired after Jan 19, 2025)"
+  },
+
+  "meals": {
+    "business_meals_deductible": 0.5,
+    "employer_provided_meals_deductible": 0.0,
+    "source": "Pub 463 (2025); Pub 15-B (2026) — employer-provided meals 0% deductible for amounts paid after 2025"
+  }
+}
