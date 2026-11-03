@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from sheets import backup as _backup
 from sheets.receipts_store import ReceiptsMixin, RECEIPTS_SCHEMA
 from sheets.assets_store import AssetsMixin, ComputedMixin, ASSETS_SCHEMA
+from sheets.sales_store import SalesMixin, SALES_SCHEMA
 
 # Bump whenever SCHEMA or _migrate() changes. An existing database with a lower
 # PRAGMA user_version is backed up before it is migrated.
@@ -18,7 +19,8 @@ from sheets.assets_store import AssetsMixin, ComputedMixin, ASSETS_SCHEMA
 #   2  — business books: people, owner roles, paid_by/charged_to, tax lines
 #   3  — receipts, receipt line items, attachments, vendor memory
 #   4  — fixed assets / prepaids, asset usage
-SCHEMA_VERSION = 4
+#   5  — contacts, invoices, bills, document payments; transactions.contact_id
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -138,6 +140,8 @@ _NEW_COLUMNS = [
     ("transactions", "charged_to",       "TEXT DEFAULT ''"),
     ("transactions", "reimbursable",     "INTEGER DEFAULT 0"),
     ("transactions", "updated_at",       "TEXT DEFAULT ''"),
+    # v5 — vendors / customers
+    ("transactions", "contact_id",       "TEXT DEFAULT ''"),
     ("accounts",     "role",             "TEXT DEFAULT ''"),
     ("categories",   "tax_line",         "TEXT DEFAULT ''"),
     ("categories",   "deduct_pct",       "REAL DEFAULT 100"),
@@ -145,7 +149,7 @@ _NEW_COLUMNS = [
 
 # Optional transaction columns: written only when the caller's dict has the key,
 # so older code paths that build a txn dict from scratch can't blank them.
-_TXN_EXTRA_COLS = ("paid_by", "charged_to", "reimbursable")
+_TXN_EXTRA_COLS = ("paid_by", "charged_to", "reimbursable", "contact_id")
 
 # Fields the UI expects as strings "0"/"1"
 _BOOL_FIELDS  = {"is_transfer", "reconciled", "active", "reimbursable"}
@@ -195,7 +199,7 @@ class _ClosingConnection(sqlite3.Connection):
             self.close()
 
 
-class Database(ReceiptsMixin, AssetsMixin, ComputedMixin):
+class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin):
     def __init__(self, db_path: str, book_type: str | None = None):
         """
         Open (creating/migrating as needed) the database at db_path.
@@ -224,6 +228,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin):
             conn.executescript(SCHEMA)
             conn.executescript(RECEIPTS_SCHEMA)
             conn.executescript(ASSETS_SCHEMA)
+            conn.executescript(SALES_SCHEMA)
         self._migrate()
         if is_new and book_type in (BOOK_PERSONAL, BOOK_BUSINESS):
             self.set_setting("book_type", book_type)
@@ -538,6 +543,9 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin):
             "reconciled":       mirror.get("reconciled", "0") if mirror else "0",
             "notes":            saved.get("notes", ""),
             "split_group_id":   "",
+            # The vendor/customer applies to both sides; paid_by does not (the
+            # owner paying into a company account isn't an owner-paid expense).
+            "contact_id":       saved.get("contact_id", "") or "",
         })
         return saved
 
@@ -975,7 +983,14 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin):
         return False
 
     def apply_rules(self, txns: list[dict]) -> list[dict]:
-        """Apply active rules to a list of transaction dicts (modifies in-place)."""
+        """Apply active rules to a list of transaction dicts (modifies in-place).
+        Rules win; then a matching vendor/customer fills the contact and, if the
+        transaction is still uncategorized, that contact's default category."""
+        self._apply_category_rules(txns)
+        self.apply_contacts(txns)
+        return txns
+
+    def _apply_category_rules(self, txns: list[dict]) -> list[dict]:
         rules = [r for r in self.get_rules()
                  if str(r.get("active", "1")) == "1"]
         rules.sort(key=lambda r: -(int(r.get("priority") or 0)))

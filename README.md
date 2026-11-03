@@ -50,6 +50,12 @@ single-member LLC), not just personal money. Create a new database and choose
   on the P&L, shows assets at book value on the Balance Sheet, and works out the
   gain or loss when you sell one. Add an asset straight from a receipt line or
   a transaction.
+- **Invoices, bills & contacts (v1.4)** — keep vendors and customers (with
+  payment terms and 1099 flags), send numbered invoices as PDFs, enter bills,
+  and record payments (each becomes a transaction automatically; sales tax on
+  invoices goes to a Sales Tax Payable liability). A/R and A/P aging show
+  what's overdue, the dashboard shows what you're owed and what you owe, and
+  imported bank lines are matched to vendors automatically.
 
 Tax-related labels are bookkeeping aids, not tax advice — confirm treatment with
 your accountant.
@@ -88,6 +94,8 @@ from the in-app banner.
   Equity section, and use categories mapped to Schedule C.
 - **Stay backed up** — automatic daily backups next to each database, plus
   one-click backup and restore.
+- **Invoice customers and track bills** — numbered PDF invoices, bills,
+  payments, and A/R / A/P aging.
 - **Track equipment and depreciation** — an asset register with automatic
   depreciation schedules and gain/loss on sale.
 - **Keep receipts with your books** — attach receipt files to transactions and
