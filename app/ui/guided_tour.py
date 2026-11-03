@@ -73,6 +73,14 @@ STEPS = [
               "reads the vendor, date, tax and line items, lets you pick a category for "
               "each item, and saves it as one split transaction with the receipt attached."),
 
+    dict(nav="Assets", target=lambda mw, p: getattr(p, "_add_btn", None),
+         when=lambda mw: mw.db.is_business(),
+         title="Equipment, vehicles & prepaids",
+         body="Add machines and other long-lived purchases here. FinanceBook spreads "
+              "their cost as <b>depreciation</b> (straight-line, declining balance, units, "
+              "Section 179 or MACRS) — no bank entries needed — and shows their book value "
+              "on the Balance Sheet."),
+
     dict(nav="Reports", target=lambda mw, p: getattr(p, "_tabs", None),
          when=lambda mw: mw.db.is_business(),
          title="Business balance sheet",

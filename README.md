@@ -43,6 +43,13 @@ single-member LLC), not just personal money. Create a new database and choose
   receipt file is only sent when you click.
 - **Attach receipts to any transaction** — including imported bank lines (look
   for the 📎), then itemize that bank charge from its receipt.
+- **Fixed assets & depreciation (v1.3)** — keep a register of machines,
+  vehicles, equipment and prepaid expenses (insurance, licenses). FinanceBook
+  calculates depreciation automatically — straight-line, declining balance,
+  units of production (machine hours), Section 179 / bonus, or MACRS — shows it
+  on the P&L, shows assets at book value on the Balance Sheet, and works out the
+  gain or loss when you sell one. Add an asset straight from a receipt line or
+  a transaction.
 
 Tax-related labels are bookkeeping aids, not tax advice — confirm treatment with
 your accountant.
@@ -81,6 +88,8 @@ from the in-app banner.
   Equity section, and use categories mapped to Schedule C.
 - **Stay backed up** — automatic daily backups next to each database, plus
   one-click backup and restore.
+- **Track equipment and depreciation** — an asset register with automatic
+  depreciation schedules and gain/loss on sale.
 - **Keep receipts with your books** — attach receipt files to transactions and
   turn itemized receipts into split transactions automatically.
 

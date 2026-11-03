@@ -150,6 +150,16 @@ class ReportsPage(QWidget):
             if sub:
                 bucket[group]["subs"][sub] = bucket[group]["subs"].get(sub, 0) + amt
 
+        # Non-cash lines (depreciation, gains on asset sales) — company-wide, so
+        # they're left out when filtering to a single class.
+        if not cls_filter:
+            for ln in self.db.computed_pnl_lines(start, end):
+                bucket = income_groups if ln["section"] == "income" else expense_groups
+                g = bucket.setdefault(ln["group"], {"total": 0.0, "subs": {}})
+                g["total"] += float(ln["amount"])
+                if ln["name"]:
+                    g["subs"][ln["name"]] = g["subs"].get(ln["name"], 0) + float(ln["amount"])
+
         total_income   = sum(g["total"] for g in income_groups.values())
         total_expenses = sum(g["total"] for g in expense_groups.values())
         total_debt     = sum(g["total"] for g in debt_groups.values())
@@ -228,8 +238,10 @@ class ReportsPage(QWidget):
         """Balance sheet data from the shared, tested ledger math."""
         from utils.ledger import balance_sheet
         cats = {c["id"]: c for c in self.db.get_categories()}
+        fy_start = f"{as_of[:4]}-01-01"
         return balance_sheet(self.db.get_accounts(active=None),
-                             self.db.get_transactions(end=as_of), cats, as_of)
+                             self.db.get_transactions(end=as_of), cats, as_of, fy_start,
+                             **self.db.balance_sheet_extras(as_of, fy_start))
 
     def _run_bs(self):
         as_of = self._date_to.date().toString("yyyy-MM-dd")
@@ -313,6 +325,10 @@ class ReportsPage(QWidget):
                             t.get("payee",""), cat_name,
                             clsmap.get(t.get("class_id",""),{}).get("name",""),
                             t.get("amount","")])
+            for ln in self.db.computed_pnl_lines(start, end):
+                label = ln["group"] + (f" > {ln['name']}" if ln["name"] else "")
+                w.writerow([end, "(computed)", "Non-cash: " + ln["computed"], label, "",
+                            f"{ln['amount']:.2f}"])
 
     def _run_business_bs(self, as_of: str):
         """Accountant layout: Assets = Liabilities + Equity, all positive."""

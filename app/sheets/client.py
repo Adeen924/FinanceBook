@@ -10,13 +10,15 @@ from datetime import datetime, timedelta
 
 from sheets import backup as _backup
 from sheets.receipts_store import ReceiptsMixin, RECEIPTS_SCHEMA
+from sheets.assets_store import AssetsMixin, ComputedMixin, ASSETS_SCHEMA
 
 # Bump whenever SCHEMA or _migrate() changes. An existing database with a lower
 # PRAGMA user_version is backed up before it is migrated.
 #   1  — implicit: everything up to v1.0.22 (user_version was never set → 0)
 #   2  — business books: people, owner roles, paid_by/charged_to, tax lines
 #   3  — receipts, receipt line items, attachments, vendor memory
-SCHEMA_VERSION = 3
+#   4  — fixed assets / prepaids, asset usage
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -193,7 +195,7 @@ class _ClosingConnection(sqlite3.Connection):
             self.close()
 
 
-class Database(ReceiptsMixin):
+class Database(ReceiptsMixin, AssetsMixin, ComputedMixin):
     def __init__(self, db_path: str, book_type: str | None = None):
         """
         Open (creating/migrating as needed) the database at db_path.
@@ -221,6 +223,7 @@ class Database(ReceiptsMixin):
         with self._conn() as conn:
             conn.executescript(SCHEMA)
             conn.executescript(RECEIPTS_SCHEMA)
+            conn.executescript(ASSETS_SCHEMA)
         self._migrate()
         if is_new and book_type in (BOOK_PERSONAL, BOOK_BUSINESS):
             self.set_setting("book_type", book_type)
@@ -1088,10 +1091,25 @@ class Database(ReceiptsMixin):
         self.get_transfer_category_id()
 
     def seed_business_categories(self):
-        """Add the Schedule C category tree once (skips names that already exist)."""
+        """
+        Add the Schedule C category tree once (skips names that already exist),
+        then any categories added in later releases (BUSINESS_CATEGORY_ADDITIONS,
+        tracked by business_categories_version) — so a category the user deleted
+        is never re-added.
+        """
+        from business_categories import BUSINESS_CATEGORIES, BUSINESS_CATEGORY_ADDITIONS
         if self.get_setting("business_categories_seeded") == "1":
+            have = int(self.get_setting("business_categories_version", "1") or 1)
+            for ver, entries in sorted(BUSINESS_CATEGORY_ADDITIONS.items()):
+                if ver > have:
+                    for ctype, name, line, pct in entries:
+                        if not any(c["name"] == name and not c.get("parent_id")
+                                   for c in self.get_categories()):
+                            self.save_category({"name": name, "type": ctype,
+                                                "tax_line": line, "deduct_pct": pct})
+            self.set_setting("business_categories_version",
+                             str(max(BUSINESS_CATEGORY_ADDITIONS, default=1)))
             return
-        from business_categories import BUSINESS_CATEGORIES
         existing = {(c["name"].lower(), c.get("parent_id") or "", c.get("type")): c
                     for c in self.get_categories()}
 
@@ -1116,8 +1134,13 @@ class Database(ReceiptsMixin):
                     else:
                         cname, cline, cpct = child, line, pct
                     _ensure(cname, ctype, parent["id"], cline, cpct)
+        for ver, entries in sorted(BUSINESS_CATEGORY_ADDITIONS.items()):
+            for ctype, name, line, pct in entries:
+                _ensure(name, ctype, "", line, pct)
         self.set_setting("business_categories_seeded", "1")
         self.set_setting("default_categories_seeded", "1")
+        self.set_setting("business_categories_version",
+                         str(max(BUSINESS_CATEGORY_ADDITIONS, default=1)))
 
     # ── people ───────────────────────────────────────────────────────────────
 

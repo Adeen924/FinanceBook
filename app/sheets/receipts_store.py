@@ -337,6 +337,12 @@ class ReceiptsMixin:
         from utils.receipt_booking import plan_receipt_lines
         from sheets.client import BUSINESS_ACCOUNTS
 
+        # Fixed-asset lines are capitalised: filed under the balance-sheet
+        # category, then depreciated from the asset register.
+        if any(i.get("kind") == "asset" for i in items):
+            fa = self.fixed_asset_category_id()
+            items = [dict(i, category_id=fa) if i.get("kind") == "asset" else i for i in items]
+
         business, personal = plan_receipt_lines(
             items, header.get("tax"), header.get("tip"), tax_mode,
             tax_category_id, tip_category_id)
