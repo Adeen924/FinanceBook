@@ -191,29 +191,54 @@ class DashboardPage(QWidget):
         grid.addLayout(hdr, 0, 0, 1, 12)
 
         # KPI row
-        self._kpi_net   = KpiCard("Net worth", "wallet", accent=True)
-        self._kpi_asset = KpiCard("Assets", "trend_up")
-        self._kpi_liab  = KpiCard("Liabilities", "card")
-        self._kpi_flow  = KpiCard("Cash flow this month", "flow")
+        self._business = self.db.is_business()
+        if self._business:
+            self._kpi_net   = KpiCard("Cash on hand", "wallet", accent=True)
+            self._kpi_asset = KpiCard("Revenue YTD", "trend_up")
+            self._kpi_liab  = KpiCard("Expenses YTD", "card")
+            self._kpi_flow  = KpiCard("Net profit YTD", "flow")
+        else:
+            self._kpi_net   = KpiCard("Net worth", "wallet", accent=True)
+            self._kpi_asset = KpiCard("Assets", "trend_up")
+            self._kpi_liab  = KpiCard("Liabilities", "card")
+            self._kpi_flow  = KpiCard("Cash flow this month", "flow")
         for i, card in enumerate((self._kpi_net, self._kpi_asset,
                                   self._kpi_liab, self._kpi_flow)):
             grid.addWidget(card, 1, i * 3, 1, 3)
 
-        grid.addWidget(self._build_chart_card(), 2, 0, 1, 8)
-        grid.addWidget(self._build_donut_card(), 2, 8, 1, 4)
-        grid.addWidget(self._build_recent_card(), 3, 0, 1, 8)
-        grid.addWidget(self._build_accounts_card(), 3, 8, 1, 4)
+        row = 2
         self._biz_cards = None
-        if self.db.is_business():
+        if self._business:
             self._kpi_ar = KpiCard("Owed to you", "invoice")
             self._kpi_ap = KpiCard("You owe", "card")
+            self._kpi_owner = KpiCard("Invested", "owner")
             self._kpi_overdue = KpiCard("Overdue", "calendar")
-            for i, card in enumerate((self._kpi_ar, self._kpi_ap, self._kpi_overdue)):
+            for i, (card, page) in enumerate(((self._kpi_ar, "Invoices & Bills"),
+                                              (self._kpi_ap, "Invoices & Bills"),
+                                              (self._kpi_owner, "Owner Investment"),
+                                              (self._kpi_overdue, "Invoices & Bills"))):
                 card.setCursor(Qt.CursorShape.PointingHandCursor)
-                card.mousePressEvent = lambda e: self._goto("Invoices & Bills")
-                grid.addWidget(card, 4, i * 4, 1, 4)
+                card.mousePressEvent = lambda e, p=page: self._goto(p)
+                grid.addWidget(card, row, i * 3, 1, 3)
+            grid.addWidget(self._build_coming_up_card(), row + 1, 0, 1, 12)
             self._biz_cards = True
-        grid.setRowStretch(5, 1)
+            row += 2
+        grid.addWidget(self._build_chart_card(), row, 0, 1, 8)
+        grid.addWidget(self._build_donut_card(), row, 8, 1, 4)
+        grid.addWidget(self._build_recent_card(), row + 1, 0, 1, 8)
+        grid.addWidget(self._build_accounts_card(), row + 1, 8, 1, 4)
+        grid.setRowStretch(row + 2, 1)
+
+    def _build_coming_up_card(self) -> GlassCard:
+        card = GlassCard()
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.setSpacing(6)
+        lay.addLayout(_section_header("Coming up", "Bills, reminders and things to deal with"))
+        self._coming = QVBoxLayout()
+        self._coming.setSpacing(4)
+        lay.addLayout(self._coming)
+        return card
 
     def _build_chart_card(self) -> GlassCard:
         card = GlassCard()
@@ -347,12 +372,70 @@ class DashboardPage(QWidget):
             self._load_business()
 
     def _load_business(self):
+        today = date.today()
+        iso = today.isoformat()
         t = self.db.ar_ap_totals()
         self._kpi_ar.set_values(money(float(t["ar"])), "invoices", None, "not yet received")
         self._kpi_ap.set_values(money(float(t["ap"])), "bills", None, "not yet paid")
         n = t["ar_overdue"] + t["ap_overdue"]
         self._kpi_overdue.set_values(str(n), f"{t['ar_overdue']} in · {t['ap_overdue']} out",
-                                     None if not n else False, "past due date")
+                                     None if not n else False, "past due")
+        from utils.ledger import owner_investment
+        oi = owner_investment(self.db.get_accounts(active=None), self.db.get_transactions(end=iso),
+                              "", iso, self.db.owner_person_id())
+        self._kpi_owner.set_values(money(float(oi["net_investment"])),
+                                   f"owed {money(float(oi['owed_now']), cents=False)}", None,
+                                   "net of draws")
+        self._load_coming_up(today, t)
+
+    def _load_coming_up(self, today, t):
+        from datetime import timedelta
+        while self._coming.count():
+            w = self._coming.takeAt(0).widget()
+            if w:
+                w.hide()          # deleteLater alone leaves it painted until the next loop
+                w.deleteLater()
+        iso = today.isoformat()
+        soon = (today + timedelta(days=14)).isoformat()
+        items = []          # (text, page, urgent)
+        if t["ar_overdue"]:
+            items.append((f"{t['ar_overdue']} overdue invoice(s) — {money(float(t['ar_overdue_amt']))} "
+                          "to collect", "Invoices & Bills", True))
+        bills = [d for d in self.db.open_documents("bill", iso) if d.get("due_date", "") <= soon]
+        for d in bills[:4]:
+            items.append((f"Bill from {d['contact'] or 'vendor'} — {money(float(d['balance']))} due "
+                          f"{fmt_date(d['due_date'])}", "Invoices & Bills", d["due_date"] < iso))
+        for r in self.db.upcoming_recurring(iso)[:4]:
+            items.append((f"{r['name']} — {money(float(r['template'].get('amount') or 0))} "
+                          f"{'was due' if r['overdue'] else 'due'} {fmt_date(r['next_date'])}",
+                          "Recurring", r["overdue"]))
+        try:
+            from utils.payroll import load_tables
+            from utils.taxes import next_due_dates
+            nxt = next_due_dates(load_tables(today.year), iso)
+            if nxt and nxt[0] <= (today + timedelta(days=30)).isoformat():
+                items.append((f"Estimated tax payment due {fmt_date(nxt[0])}", "Taxes", False))
+        except Exception:
+            pass
+        owed = self.db.payroll_liability_balance()
+        if owed >= 0.005:
+            items.append((f"Payroll taxes owed: {money(owed)}", "People & Payroll", False))
+        stp = self.db.get_account_by_role("sales_tax_payable")
+        if stp and -self.db.account_balance(stp["id"]) >= 0.005:
+            items.append((f"Sales tax collected, not yet paid: {money(-self.db.account_balance(stp['id']))}",
+                          "Taxes", False))
+        low = self.db.inventory_totals(iso)["low_stock"]
+        if low:
+            items.append((f"Low stock: {', '.join(low[:5])}", "Inventory", False))
+        if not items:
+            items.append(("You're all caught up. 🎉", "", False))
+        for text, page, urgent in items[:9]:
+            lbl = QLabel(("● " if urgent else "○ ") + text)
+            lbl.setStyleSheet(f"color:{DANGER if urgent else S.TEXT}; padding:2px 0;")
+            if page:
+                lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+                lbl.mousePressEvent = lambda e, p=page: self._goto(p)
+            self._coming.addWidget(lbl)
 
     def _goto(self, page_name: str):
         mw = getattr(self, "_main_window", None)
@@ -384,7 +467,35 @@ class DashboardPage(QWidget):
         good = delta < 0 if invert else delta > 0
         return text, good
 
+    def _load_business_kpis(self):
+        """Cash on hand and year-to-date revenue / expenses / profit (incl. computed lines)."""
+        from utils.reports import pnl_rows
+        from utils.money import money_sum
+        today = date.today()
+        cash_types = ("checking", "savings", "cash", "gift card", "other")
+        self._balances = {a["id"]: self.db.account_balance(a["id"]) for a in self._accounts}
+        cash = sum(b for a in self._accounts for b in [self._balances[a["id"]]]
+                   if (not a.get("role") or a.get("role") == "petty_cash")
+                   and a.get("type") in cash_types)
+        since = (today - timedelta(days=30)).isoformat()
+        moved = sum(float(t.get("amount") or 0) for t in self.db.get_transactions(start=since)
+                    if any(a["id"] == t.get("account_id") and (not a.get("role") or a.get("role") == "petty_cash")
+                           and a.get("type") in cash_types for a in self._accounts))
+        chip, good = self._pct_chip(moved, cash)
+        self._kpi_net.set_values(money(cash), chip, good, "vs. 30 days ago")
+        rows = self.db.report_rows(f"{today.year}-01-01", today.isoformat())
+        rev = money_sum(r["amount"] for r in rows if r["section"] == "income")
+        exp = -money_sum(r["amount"] for r in rows if r["section"] == "expense")
+        net = rev - exp
+        self._kpi_asset.set_values(money(float(rev)), str(today.year), None, "income")
+        self._kpi_liab.set_values(money(float(exp)), str(today.year), None, "incl. non-cash")
+        margin = f"{float(net / rev * 100):.0f}% margin" if rev else "—"
+        self._kpi_flow.set_values(money(float(net)), margin, None if not rev else net >= 0, "")
+
     def _load_kpis(self):
+        if getattr(self, "_business", False):
+            self._load_business_kpis()
+            return
         today = date.today()
         since = (today - timedelta(days=30)).isoformat()
         recent = self.db.get_transactions(start=since)

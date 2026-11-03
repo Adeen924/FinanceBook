@@ -58,6 +58,11 @@ STEPS = [
               "<b>Split</b> a purchase across categories or mark it a "
               "<b>Transfer</b> between accounts."),
 
+    dict(nav="Recurring", target=lambda mw, p: getattr(p, "_add_btn", None),
+         title="Rent, subscriptions & other repeats",
+         body="Set up anything that repeats. FinanceBook can add it automatically when it's "
+              "due, or remind you on the Dashboard so you can post it with one click."),
+
     dict(nav="Owner Investment", target=lambda mw, p: getattr(p, "_expense_btn", None),
          when=lambda mw: mw.db.is_business(),
          title="Business: money you put in",

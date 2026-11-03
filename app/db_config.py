@@ -75,6 +75,11 @@ def set_flag(name: str, value: bool = True):
     _save(cfg)
 
 
+def current_user_name() -> str:
+    """Name recorded in the audit trail: the one set in Settings, else the Windows user."""
+    return get_value("user_name") or os.environ.get("USERNAME") or os.environ.get("USER") or "user"
+
+
 def get_value(name: str, default: str = "") -> str:
     """Per-user (per-machine) string setting — not synced with any database."""
     v = _load().get(name, default)

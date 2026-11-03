@@ -76,6 +76,12 @@ single-member LLC), not just personal money. Create a new database and choose
   Package** of CSVs for your accountant. New report tabs: P&L by month, by
   class / project / campaign (with ROI), by vendor, by person, cash flow
   statement, and budget vs. actual.
+- **Recurring, audit trail & period lock (v1.8)** — set up rent, subscriptions
+  and other repeats to post automatically or remind you; every change is logged
+  with who made it and when (Settings → View Audit Log); lock a month or year
+  once it's closed so nothing in it changes by accident. Business books get a
+  new dashboard: cash on hand, revenue / expenses / profit this year, what
+  you're owed and owe, what you've invested, and a "Coming up" list.
 
 Tax-related labels are bookkeeping aids, not tax advice — confirm treatment with
 your accountant.
@@ -99,7 +105,10 @@ from the in-app banner.
 - **Organize spending** — assign transactions to categories and subcategories so
   you can see where the money actually goes.
 - **Automate the busywork** — set up rules that categorize recurring
-  transactions automatically as they come in.
+  transactions automatically as they come in, and recurring items (rent,
+  subscriptions) that post themselves or remind you.
+- **Keep an audit trail** — see who changed what and when, and lock closed
+  periods.
 - **Reconcile against statements** — tick off transactions and confirm your
   records match the bank, the same way an accountant would.
 - **See the whole picture** — Profit & Loss, Balance Sheet, cash flow, P&L by

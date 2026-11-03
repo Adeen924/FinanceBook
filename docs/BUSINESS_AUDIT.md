@@ -235,3 +235,29 @@ existing DB to Business is additive (adds categories/accounts, removes nothing).
 `currency` column is kept and new money columns carry no implicit currency, so
 it can be added later); MACRS mid-quarter convention and ADS tables (only GDS
 half-year is implemented); state payroll tax tables; e-filing.
+
+---
+
+## 6. Delivery log (what actually shipped)
+
+| Version | Phase | Highlights |
+|---|---|---|
+| v1.1.0 | 1 | Book type; owner-paid model (capital / Due to Owner / funding sources / reimburse / draws / "opened a bank account"); Owner Investment page + CSV; BS Equity section; Schedule C categories (`tax_line`, deductible %); schema versioning, pre-migration + daily backups, backup/restore; grouped sidebar |
+| v1.2.0 | 2 | Receipts page (copy to `receipts/`, SHA-256 dedupe), stdlib text/eml/html/PDF parser, opt-in Anthropic vision reader (DPAPI-encrypted key), review screen → one split transaction, `receipt_items` search, vendor memory, 📎 attachments on any transaction, itemize imported lines |
+| v1.3.0 | 3 | Assets: SL, DB, units, §179/bonus, MACRS GDS half-year (Pub 946 Table A-1); book vs tax schedules; dispose with gain/loss; prepaid amortization; computed depreciation on P&L, NBV on BS |
+| v1.4.0 | 4 | Contacts (masked tax IDs, 1099 flag, payee matching), invoices with PDF (QTextDocument + QPdfWriter), bills, payments → transactions (cash basis; sales tax → liability), A/R & A/P aging, dashboard cards |
+| v1.5.0 | 5 | Inventory: items, FIFO / weighted average, receive/sell/count/opening stock, COGS on P&L, Inventory on BS, valuation report, receipt lines → stock |
+| v1.6.0 | 6 | `app/data/tax_tables_2026.json`; payroll estimates (Pub 15-T Worksheet 1A, FICA w/ wage base, Addl. Medicare, FUTA, SUTA, state %), runs posted via Payroll Liabilities, tax deposits, 1099-NEC summary by payment year |
+| v1.7.0 | 7a | Schedule C summary, estimated taxes, sales tax report + remit, mileage log (date-ranged IRS rate), home office helper, Year-End Package; P&L by month / class (ROI) / vendor / person, cash flow, budget vs actual |
+| v1.8.0 | 7b | Recurring transactions & bills (auto-post / reminders), audit log via triggers (who/what/when) + viewer, period lock, global error handler, business dashboard with "Coming up" |
+
+### Known limitations / future work
+
+- **Cash basis only.** Invoices/bills are memo items until paid. An accrual toggle is future work.
+- **MACRS**: half-year GDS only — no mid-quarter convention, ADS, or 27.5/39-year real property. §179 limits aren't enforced (shown in the data file for reference).
+- **Payroll**: federal withholding only for 2020+ W-4 without the Step 2 checkbox; no state income-tax tables (flat % you enter); no pre-tax deductions/benefits; no 941/940/W-2 forms; 2026 FUTA credit-reduction states not final (TODO in the data file).
+- **Inventory**: no assemblies / bills of materials; invoice lines don't move stock (use Sell).
+- **Estimated taxes**: rough federal estimate only (no credits, state tax, QBI phase-out).
+- **Multi-currency**: not implemented; `accounts.currency` is preserved and no new code assumes USD in stored data.
+- **Text PDFs** using CID/Type0 fonts may not yield text with the stdlib parser — use AI reading or manual entry.
+

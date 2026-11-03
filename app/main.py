@@ -24,6 +24,33 @@ def _get_data_dir() -> str:
 BASE_DIR = _get_data_dir()
 
 
+def _install_error_handler():
+    """
+    Show unexpected errors in a message box instead of letting PyQt abort the
+    app (its default for an exception inside a button handler). A locked
+    accounting period gets a friendly explanation.
+    """
+    import traceback
+
+    def hook(exc_type, exc, tb):
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+        text = str(exc)
+        if "period is locked" in text:
+            msg = ("That date is in a locked period, so it can't be added, changed or deleted.\n\n"
+                   "To change it, unlock the period in Settings → Period Lock.")
+            title = "Period Locked"
+        else:
+            msg = (f"Something went wrong:\n\n{exc_type.__name__}: {text}\n\n"
+                   "Your data is safe — nothing was saved for this action. If it keeps "
+                   "happening, please report it on the Issues page.")
+            title = "FinanceBook"
+        traceback.print_exception(exc_type, exc, tb)
+        if QApplication.instance() is not None:
+            QMessageBox.warning(QApplication.activeWindow(), title, msg)
+
+    sys.excepthook = hook
+
+
 def main():
     from PyQt6.QtWidgets import QApplication, QMessageBox
     from PyQt6.QtGui import QIcon
@@ -40,6 +67,7 @@ def main():
         pass
 
     app = QApplication(sys.argv)
+    _install_error_handler()
     app.setApplicationName("FinanceBook")
     app.setApplicationDisplayName("FinanceBook")
     app.setStyle("Fusion")
@@ -121,10 +149,21 @@ def main():
         db.set_setting("database_name", "Personal Finances")
         register_database(db_path, make_active=True)
     db.auto_backup_if_due()
+    from db_config import current_user_name
+    db.set_session_user(current_user_name())
+    try:
+        from datetime import date as _date
+        posted = db.process_recurring(_date.today().isoformat())
+    except Exception:
+        posted = []
 
     from ui.main_window import MainWindow
     window = MainWindow(db)
     window.show()
+    if posted:
+        QMessageBox.information(window, "Recurring Items Posted",
+                                f"{len(posted)} recurring transaction(s) / bill(s) that came due "
+                                "were added automatically. See the Recurring page.")
 
     # First-run welcome guide — shown ONCE, only for brand-new users (never on
     # app updates). `first_run` is true only when no database was registered yet;
