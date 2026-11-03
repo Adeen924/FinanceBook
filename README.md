@@ -12,6 +12,29 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New: business books (v1.1)
+
+FinanceBook can now keep the books for a **small business** (sole proprietor or
+single-member LLC), not just personal money. Create a new database and choose
+**Business**, or switch an existing one in **Settings → Book Type**.
+
+- **No business bank account yet? No problem.** Record company expenses you
+  pay out of your own pocket as either a **capital contribution** (your
+  investment) or money the **company owes you**. Pay yourself back later with
+  one click (**Reimburse Owner**), and switch to a real business account
+  whenever you open one.
+- **Owner Investment page** — how much you've put in, been repaid, taken out,
+  and are still owed, with every owner-paid expense listed and a CSV export.
+- **Balance Sheet with an Equity section** — owner contributions, draws,
+  retained earnings and this year's profit, and it always balances.
+- **Schedule C categories** — business categories mapped to IRS Schedule C
+  lines (meals flagged 50%), including a full Advertising & Marketing group.
+- **Automatic backups** — a daily backup next to your database (keeps the last
+  10), a backup before every upgrade, and one-click backup/restore in Settings.
+
+Tax-related labels are bookkeeping aids, not tax advice — confirm treatment with
+your accountant.
+
 ## New look (v1.0.22)
 
 FinanceBook has a fresh, light "glass" design: translucent cards over a soft
@@ -39,7 +62,13 @@ from the in-app banner.
 - **Track loans** — record a loan and FinanceBook works out the payment
   schedule, splitting each payment into principal and interest.
 - **Keep separate books** — run completely separate databases for, say,
-  personal, company, and property finances, and switch between them.
+  personal, company, and property finances, and switch between them. Each one
+  is either a **Personal** or a **Business** book.
+- **Run a small business** — track money you put in or take out as the owner
+  (even with no business bank account), see a proper Balance Sheet with an
+  Equity section, and use categories mapped to Schedule C.
+- **Stay backed up** — automatic daily backups next to each database, plus
+  one-click backup and restore.
 
 ## Your data stays yours
 

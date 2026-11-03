@@ -2,7 +2,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QFormLayout, QMessageBox,
-    QScrollArea, QFrame, QLineEdit,
+    QScrollArea, QFrame, QLineEdit, QCheckBox, QSpinBox, QFileDialog,
 )
 from PyQt6.QtCore import Qt
 from ui.widgets import PageTitle
@@ -31,6 +31,8 @@ class SettingsPage(QWidget):
 
         lay.addWidget(self._build_qb_section())
         lay.addWidget(self._build_database_section())
+        lay.addWidget(self._build_book_type_section())
+        lay.addWidget(self._build_backup_section())
         lay.addWidget(self._build_reset_section())
         lay.addWidget(self._build_about_section())
         lay.addStretch()
@@ -102,6 +104,195 @@ class SettingsPage(QWidget):
         QMessageBox.information(self, "Saved",
             f"Database renamed to \"{name}\".\n"
             "The new name will appear in the sidebar dropdown.")
+
+    # ── Book type ─────────────────────────────────────────────────────────────
+
+    def _build_book_type_section(self) -> QGroupBox:
+        grp = QGroupBox("Book Type")
+        lay = QVBoxLayout(grp)
+        lay.setSpacing(10)
+        self._book_info = QLabel("")
+        self._book_info.setWordWrap(True)
+        self._book_info.setTextFormat(Qt.TextFormat.RichText)
+        self._book_info.setObjectName("InfoBox")
+        lay.addWidget(self._book_info)
+        row = QHBoxLayout()
+        row.addStretch()
+        self._book_btn = QPushButton("")
+        self._book_btn.setObjectName("Secondary")
+        self._book_btn.clicked.connect(self._toggle_book_type)
+        row.addWidget(self._book_btn)
+        lay.addLayout(row)
+        return grp
+
+    def _refresh_book_type(self):
+        if self.db.is_business():
+            self._book_info.setText(
+                "This is a <b>Business</b> book: Schedule C categories, owner "
+                "investment tracking and the Business pages are turned on.")
+            self._book_btn.setText("Switch to Personal…")
+        else:
+            self._book_info.setText(
+                "This is a <b>Personal</b> book. Switch to <b>Business</b> to "
+                "track a company: it adds Schedule C categories, built-in owner "
+                "accounts (Capital, Draws, Due to Owner, Petty Cash) and the "
+                "Business pages. Nothing you already have is changed or removed.")
+            self._book_btn.setText("Switch to Business…")
+
+    def _toggle_book_type(self):
+        to_business = not self.db.is_business()
+        if to_business:
+            msg = ("Turn this database into a Business book?\n\n"
+                   "FinanceBook will back it up first, then ADD business categories, "
+                   "owner equity accounts and an 'Owner' person. Your existing "
+                   "accounts, transactions and categories are not changed.")
+        else:
+            msg = ("Switch this database back to a Personal book?\n\n"
+                   "Business pages will be hidden. Nothing is deleted — the business "
+                   "categories and owner accounts stay, and switching back to "
+                   "Business shows everything again.")
+        if QMessageBox.question(self, "Change Book Type", msg,
+                                QMessageBox.StandardButton.Yes |
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            if to_business:
+                self.db.backup_now("manual")
+            self.db.set_book_type("business" if to_business else "personal")
+        except Exception as e:
+            QMessageBox.critical(self, "Could Not Switch", str(e))
+            return
+        self._refresh_book_type()
+        mw = getattr(self, "_main_window", None)
+        if mw is not None and hasattr(mw, "refresh_navigation"):
+            mw.refresh_navigation()
+
+    # ── Backups ───────────────────────────────────────────────────────────────
+
+    def _build_backup_section(self) -> QGroupBox:
+        grp = QGroupBox("Backups")
+        lay = QVBoxLayout(grp)
+        lay.setSpacing(10)
+        info = QLabel(
+            "Backups are saved in a <b>FinanceBook Backups</b> folder next to this "
+            "database, so a database in OneDrive / Google Drive has its backups "
+            "synced too. FinanceBook also backs up automatically before every "
+            "upgrade that changes the database.")
+        info.setWordWrap(True)
+        info.setTextFormat(Qt.TextFormat.RichText)
+        info.setObjectName("Muted")
+        lay.addWidget(info)
+
+        auto_row = QHBoxLayout()
+        self._auto_chk = QCheckBox("Back up automatically once a day, keeping the last")
+        self._auto_chk.toggled.connect(self._save_backup_prefs)
+        auto_row.addWidget(self._auto_chk)
+        self._keep_spin = QSpinBox()
+        self._keep_spin.setRange(1, 100)
+        self._keep_spin.valueChanged.connect(self._save_backup_prefs)
+        auto_row.addWidget(self._keep_spin)
+        auto_row.addWidget(QLabel("backups"))
+        auto_row.addStretch()
+        lay.addLayout(auto_row)
+
+        self._backup_status = QLabel("")
+        self._backup_status.setObjectName("Muted")
+        self._backup_status.setWordWrap(True)
+        lay.addWidget(self._backup_status)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        open_btn = QPushButton("Open Backups Folder")
+        open_btn.setObjectName("Secondary")
+        open_btn.clicked.connect(self._open_backup_folder)
+        btn_row.addWidget(open_btn)
+        restore_btn = QPushButton("Restore from Backup…")
+        restore_btn.setObjectName("Secondary")
+        restore_btn.clicked.connect(self._restore_backup)
+        btn_row.addWidget(restore_btn)
+        backup_btn = QPushButton("Back Up Now")
+        backup_btn.clicked.connect(self._backup_now)
+        btn_row.addWidget(backup_btn)
+        lay.addLayout(btn_row)
+        return grp
+
+    def _refresh_backups(self):
+        from sheets.backup import list_backups
+        self._auto_chk.blockSignals(True)
+        self._keep_spin.blockSignals(True)
+        self._auto_chk.setChecked(self.db.get_setting("auto_backup_enabled", "1") == "1")
+        self._keep_spin.setValue(int(self.db.get_setting("auto_backup_keep", "10") or 10))
+        self._auto_chk.blockSignals(False)
+        self._keep_spin.blockSignals(False)
+        backups = list_backups(self.db.db_path)
+        if backups:
+            import os
+            from datetime import datetime
+            newest = backups[0]
+            when = datetime.fromtimestamp(os.path.getmtime(newest)).strftime("%m/%d/%Y %I:%M %p")
+            self._backup_status.setText(
+                f"{len(backups)} backup{'s' if len(backups) != 1 else ''} on file. "
+                f"Newest: {os.path.basename(newest)} ({when}).")
+        else:
+            self._backup_status.setText("No backups yet.")
+
+    def _save_backup_prefs(self, *_):
+        self.db.set_setting("auto_backup_enabled", "1" if self._auto_chk.isChecked() else "0")
+        self.db.set_setting("auto_backup_keep", str(self._keep_spin.value()))
+
+    def _backup_now(self):
+        try:
+            path = self.db.backup_now("manual")
+        except Exception as e:
+            QMessageBox.critical(self, "Backup Failed", str(e))
+            return
+        self._refresh_backups()
+        QMessageBox.information(self, "Backed Up", f"Saved a backup to:\n{path}")
+
+    def _open_backup_folder(self):
+        import os
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+        from sheets.backup import backup_dir
+        folder = backup_dir(self.db.db_path)
+        os.makedirs(folder, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+    def _restore_backup(self):
+        import os
+        from sheets.backup import backup_dir, restore_database
+        start = backup_dir(self.db.db_path)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose a Backup to Restore",
+            start if os.path.isdir(start) else os.path.dirname(self.db.db_path),
+            "FinanceBook databases (*.db)")
+        if not path:
+            return
+        if os.path.abspath(path) == os.path.abspath(self.db.db_path):
+            QMessageBox.warning(self, "Restore", "That is the database that's open now.")
+            return
+        db_name = self.db.get_setting("database_name", "this database")
+        if QMessageBox.warning(
+                self, "Restore Backup",
+                f"Replace everything in \"{db_name}\" with the contents of:\n\n"
+                f"{os.path.basename(path)}\n\nThe current data is backed up first, "
+                "so you can undo this by restoring that backup.",
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+        ) != QMessageBox.StandardButton.Ok:
+            return
+        try:
+            safety = restore_database(path, self.db.db_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Restore Failed", str(e))
+            return
+        QMessageBox.information(
+            self, "Restored",
+            "Backup restored. Your previous data was saved as:\n"
+            f"{os.path.basename(safety)}")
+        mw = getattr(self, "_main_window", None)
+        if mw is not None and hasattr(mw, "_switch_to"):
+            from sheets.client import Database
+            mw._switch_to(Database(self.db.db_path))
 
     # ── Reset section ─────────────────────────────────────────────────────────
 
@@ -198,3 +389,5 @@ class SettingsPage(QWidget):
     def refresh(self):
         self._db_name_edit.setText(
             self.db.get_setting("database_name", ""))
+        self._refresh_book_type()
+        self._refresh_backups()

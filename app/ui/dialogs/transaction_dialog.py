@@ -8,11 +8,24 @@ from PyQt6.QtCore import QDate
 from ui.widgets import FilterComboBox, DateField
 
 
+# Owner-paid treatments (business books): which built-in account the expense
+# is recorded in.
+OWNER_TREATMENTS = [
+    ("capital",   "Capital contribution — I'm investing it (not repaid)", "owner_capital"),
+    ("reimburse", "Company owes me — reimburse me later", "due_to_owner"),
+]
+
+
 class TransactionDialog(QDialog):
-    def __init__(self, db, transaction: dict = None, account_id: str = "", parent=None):
+    def __init__(self, db, transaction: dict = None, account_id: str = "", parent=None,
+                 preset: dict = None):
         super().__init__(parent)
         self.db = db
         self.transaction = transaction or {}
+        # preset: initial values for a NEW transaction (e.g. paid_by=owner from
+        # the Owner Investment page). Ignored when editing.
+        self._preset = {} if transaction else dict(preset or {})
+        self._business = db.is_business()
         # When True, this dialog already persisted the result (a split and/or a
         # transfer), so the caller must NOT re-save get_data() on top of it.
         self.handled = False
@@ -42,12 +55,19 @@ class TransactionDialog(QDialog):
         self._accounts = self.db.get_accounts()
         for a in self._accounts:
             self.account_combo.addItem(a["name"], a["id"])
-        cur_acct = self.transaction.get("account_id") or account_id
+        cur_acct = (self.transaction.get("account_id") or account_id
+                    or self._default_business_account())
         for i, a in enumerate(self._accounts):
             if a["id"] == cur_acct:
                 self.account_combo.setCurrentIndex(i)
                 break
+
+        if self._business:
+            self._build_paid_by_rows(form)
         form.addRow("Account *", self.account_combo)
+        if self._business:
+            self.account_combo.currentIndexChanged.connect(self._sync_paid_by_from_account)
+            self._init_paid_by()
 
         # Payee
         self.payee_edit = QLineEdit(self.transaction.get("payee",""))
@@ -86,6 +106,20 @@ class TransactionDialog(QDialog):
         self.cat_combo.select_by_data(self.transaction.get("category_id",""))
         form.addRow("Category", self.cat_combo)
 
+        if self._business:
+            self.charged_combo = FilterComboBox(placeholder="Company (general business)")
+            self.charged_combo.add_option("Company (general business)", "")
+            for p in self.db.get_people():
+                self.charged_combo.add_option(f"Person · {p['name']}", f"person:{p['id']}")
+            for c in self.db.get_classes():
+                self.charged_combo.add_option(f"Project / Class · {c['name']}", f"class:{c['id']}")
+            self.charged_combo.select_by_data(
+                self.transaction.get("charged_to") or self._preset.get("charged_to", "")
+                or "")
+            if not self.charged_combo.currentText():
+                self.charged_combo.setCurrentIndex(0)
+            form.addRow("Charged to", self.charged_combo)
+
         # ── Transfer section ───────────────────────────────────────────────────
         sep0 = QFrame(); sep0.setFrameShape(QFrame.Shape.HLine); sep0.setObjectName("Muted")
         form.addRow(sep0)
@@ -107,7 +141,7 @@ class TransactionDialog(QDialog):
         _hint.setObjectName("Muted"); _hint.setWordWrap(True)
         _tb.addWidget(_hint)
         form.addRow("Goes to account", self._transfer_box)
-        self._transfer_box.setVisible(False)
+        self._set_row_visible(self._transfer_box, False)
 
         # ── Split section ──────────────────────────────────────────────────────
         self._split_chk = QCheckBox("Split this transaction across multiple categories")
@@ -157,7 +191,7 @@ class TransactionDialog(QDialog):
         self._loan_preview.setWordWrap(True)
         form.addRow("", self._loan_preview)
 
-        self._loan_combo.setVisible(self._loan_chk.isChecked())
+        self._set_row_visible(self._loan_combo, self._loan_chk.isChecked())
         self._loan_preview.setVisible(self._loan_chk.isChecked())
         if self._loan_chk.isChecked():
             self._update_loan_preview()
@@ -209,6 +243,146 @@ class TransactionDialog(QDialog):
 
         self._update_loan_lock()
 
+    # ── business: who paid ─────────────────────────────────────────────────────
+
+    def _default_business_account(self) -> str:
+        """New business entries default to the company's chosen funding account
+        (set when a business bank account is opened), if it still exists."""
+        if not self._business or self.transaction:
+            return ""
+        acct_id = self.db.get_setting("default_funding_account")
+        if acct_id and any(a["id"] == acct_id for a in self.db.get_accounts()):
+            return acct_id
+        return ""
+
+    def _build_paid_by_rows(self, form):
+        self._owner_id = self.db.owner_person_id()
+        self.paid_by_combo = QComboBox()
+        self.paid_by_combo.addItem("Company account (bank, card, petty cash)", "")
+        for p in self.db.get_people():
+            owner_label = "Me" if p["name"].strip().lower() == "owner" else p["name"]
+            label = (f"{owner_label} (owner) — my own money" if p["id"] == self._owner_id
+                     else f"{p['name']} — paid personally")
+            self.paid_by_combo.addItem(label, p["id"])
+        form.addRow("Paid by", self.paid_by_combo)
+
+        self.treatment_combo = QComboBox()
+        for key, label, _role in OWNER_TREATMENTS:
+            self.treatment_combo.addItem(label, key)
+        form.addRow("Treat as", self.treatment_combo)
+        self._treatment_hint = QLabel(
+            "Recorded in a built-in owner account, so no business bank account is "
+            "needed. Capital is your investment; “Company owes me” shows as a "
+            "liability until you use Reimburse Owner.")
+        self._treatment_hint.setObjectName("Muted")
+        self._treatment_hint.setWordWrap(True)
+        form.addRow("", self._treatment_hint)
+        self.paid_by_combo.currentIndexChanged.connect(self._on_paid_by_changed)
+        self.treatment_combo.currentIndexChanged.connect(self._on_paid_by_changed)
+
+    def _role_of(self, acct_id: str) -> str:
+        a = next((a for a in self._accounts if a["id"] == acct_id), None)
+        return (a or {}).get("role", "") or ""
+
+    def _select_account_by_role(self, role: str, name: str, atype: str):
+        acct = self.db.get_or_create_role_account(role, name, atype)
+        if not any(a["id"] == acct["id"] for a in self._accounts):
+            self._accounts.append(acct)
+            self.account_combo.addItem(acct["name"], acct["id"])
+            if hasattr(self, "_transfer_acct_combo"):
+                self._transfer_acct_combo.addItem(acct["name"], acct["id"])
+        ix = self.account_combo.findData(acct["id"])
+        if ix >= 0:
+            self.account_combo.blockSignals(True)
+            self.account_combo.setCurrentIndex(ix)
+            self.account_combo.blockSignals(False)
+
+    def _init_paid_by(self):
+        t = self.transaction
+        paid_by = t.get("paid_by") if t else self._preset.get("paid_by")
+        role = self._role_of(self.account_combo.currentData() or "")
+        if not t and paid_by is None and not self._default_business_account():
+            # No company account chosen yet → most likely the owner paid.
+            has_bank = any(not a.get("role") and a.get("type") not in ("equity", "liability")
+                           for a in self._accounts)
+            paid_by = "" if has_bank else self._owner_id
+        if role in ("owner_capital", "due_to_owner", "owner_paid"):
+            paid_by = self._owner_id
+        treatment = ("reimburse" if role == "due_to_owner"
+                     else "capital" if role in ("owner_capital", "owner_paid")
+                     else self._preset.get("treatment")
+                     or self.db.get_setting("owner_paid_default_treatment", "capital"))
+        self.paid_by_combo.blockSignals(True)
+        self.treatment_combo.blockSignals(True)
+        ix = self.paid_by_combo.findData(paid_by or "")
+        self.paid_by_combo.setCurrentIndex(max(ix, 0))
+        self.treatment_combo.setCurrentIndex(max(self.treatment_combo.findData(treatment), 0))
+        self.paid_by_combo.blockSignals(False)
+        self.treatment_combo.blockSignals(False)
+        if not t:
+            self._on_paid_by_changed()
+        else:
+            # Editing: show how it was recorded, never move it to another account.
+            self._update_paid_by_visibility()
+
+    def _update_paid_by_visibility(self):
+        is_owner = self.paid_by_combo.currentData() == self._owner_id
+        self._set_row_visible(self.treatment_combo, is_owner)
+        self._treatment_hint.setVisible(is_owner)
+
+    def _on_paid_by_changed(self, *_):
+        who = self.paid_by_combo.currentData() or ""
+        self._update_paid_by_visibility()
+        if who == self._owner_id:
+            key = self.treatment_combo.currentData()
+            role = next(r for k, _l, r in OWNER_TREATMENTS if k == key)
+            from sheets.client import BUSINESS_ACCOUNTS
+            name, atype = BUSINESS_ACCOUNTS[role]
+            if self._role_of(self.account_combo.currentData() or "") != "owner_paid" \
+                    or key != "capital":
+                self._select_account_by_role(role, name, atype)
+        elif who:
+            self._select_account_by_role("reimb_payable", "Reimbursements Payable", "liability")
+        elif self._role_of(self.account_combo.currentData() or ""):
+            # Back to a company account: pick the default funding / first real one.
+            target = self.db.get_setting("default_funding_account") or next(
+                (a["id"] for a in self._accounts if not a.get("role")), "")
+            ix = self.account_combo.findData(target)
+            if ix >= 0:
+                self.account_combo.blockSignals(True)
+                self.account_combo.setCurrentIndex(ix)
+                self.account_combo.blockSignals(False)
+
+    def _sync_paid_by_from_account(self, *_):
+        """Picking an owner account by hand updates Paid by to match."""
+        role = self._role_of(self.account_combo.currentData() or "")
+        self.paid_by_combo.blockSignals(True)
+        self.treatment_combo.blockSignals(True)
+        if role in ("owner_capital", "due_to_owner", "owner_paid"):
+            self.paid_by_combo.setCurrentIndex(max(self.paid_by_combo.findData(self._owner_id), 0))
+            self.treatment_combo.setCurrentIndex(
+                self.treatment_combo.findData("reimburse" if role == "due_to_owner" else "capital"))
+        elif not role:
+            self.paid_by_combo.setCurrentIndex(0)
+        self.paid_by_combo.blockSignals(False)
+        self.treatment_combo.blockSignals(False)
+        self._update_paid_by_visibility()
+
+    def _business_fields(self) -> dict:
+        if not self._business:
+            return {}
+        who = self.paid_by_combo.currentData() or ""
+        role = self._role_of(self.account_combo.currentData() or "")
+        reimb = role in ("due_to_owner", "reimb_payable")
+        if who == self._owner_id and role == "owner_paid":
+            acct = next((a for a in self._accounts if a["id"] == self.account_combo.currentData()), {})
+            reimb = acct.get("type") == "liability"
+        out = {"paid_by": who, "reimbursable": "1" if reimb else "0",
+               "charged_to": self.charged_combo.current_data() or ""}
+        if out["charged_to"].startswith("class:"):
+            out["class_id"] = out["charged_to"][6:]
+        return out
+
     # ── combo builders ──────────────────────────────────────────────────────────
 
     def _category_sign(self, cat_id: str) -> int:
@@ -257,7 +431,15 @@ class TransactionDialog(QDialog):
         field_widget.setVisible(visible)
 
     def _on_transfer_toggled(self, on: bool):
-        self._transfer_box.setVisible(on)
+        self._set_row_visible(self._transfer_box, on)
+        if self._business:
+            self._set_row_visible(self.paid_by_combo, not on)
+            self._set_row_visible(self.charged_combo, not on)
+            if on:
+                self._set_row_visible(self.treatment_combo, False)
+                self._treatment_hint.setVisible(False)
+            else:
+                self._update_paid_by_visibility()
         # Transfers need no payee or category — they're filed automatically under
         # "Account Transfers" and excluded from P&L. Hide those rows for clarity.
         self._set_row_visible(self.payee_edit, not on)
@@ -265,7 +447,7 @@ class TransactionDialog(QDialog):
         self._amount_note.setVisible(not on)
         if on and self._loan_chk.isChecked():
             self._force_off(self._loan_chk)
-            self._loan_combo.setVisible(False)
+            self._set_row_visible(self._loan_combo, False)
             self._loan_preview.setVisible(False)
         self._update_loan_lock()
 
@@ -273,7 +455,7 @@ class TransactionDialog(QDialog):
         self._split_box.setVisible(on)
         if on and self._loan_chk.isChecked():
             self._force_off(self._loan_chk)
-            self._loan_combo.setVisible(False)
+            self._set_row_visible(self._loan_combo, False)
             self._loan_preview.setVisible(False)
         self._update_loan_lock()
 
@@ -313,14 +495,14 @@ class TransactionDialog(QDialog):
     def _on_loan_toggled(self, checked: bool):
         if checked:
             self._force_off(self._transfer_chk, self._split_chk)
-            self._transfer_box.setVisible(False)
+            self._set_row_visible(self._transfer_box, False)
             self._split_box.setVisible(False)
             # Transfer was just force-disabled (signals blocked), so restore the
             # Payee/Category rows it had hidden.
             self._set_row_visible(self.payee_edit, True)
             self._set_row_visible(self.cat_combo, True)
             self._amount_note.setVisible(True)
-        self._loan_combo.setVisible(checked)
+        self._set_row_visible(self._loan_combo, checked)
         self._loan_preview.setVisible(checked)
         self._update_loan_lock()
         if checked:
@@ -458,7 +640,44 @@ class TransactionDialog(QDialog):
             QMessageBox.warning(self, "No Loans",
                                 "No loans exist yet. Add one on the Loans page first.")
             return
+        if self._business and self._maybe_record_as_draw():
+            return
+        if self._business and self.paid_by_combo.currentData() == self._owner_id:
+            self.db.set_setting("owner_paid_default_treatment",
+                                self.treatment_combo.currentData() or "capital")
         self.accept()
+
+    def _maybe_record_as_draw(self) -> bool:
+        """Company money spent on the owner personally isn't a business expense —
+        offer to book it as an Owner's Draw. Returns True if handled."""
+        if (self.paid_by_combo.currentData() or "") != "" or \
+                self.charged_combo.current_data() != f"person:{self._owner_id}":
+            return False
+        if self._role_of(self.account_combo.currentData() or ""):
+            return False
+        reply = QMessageBox.question(
+            self, "Personal Expense",
+            "This was paid with company money but charged to you personally.\n\n"
+            "Record it as an Owner's Draw (money you took out) instead of a "
+            "business expense? Draws are not deductible and stay off the P&L.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No |
+            QMessageBox.StandardButton.Cancel)
+        if reply == QMessageBox.StandardButton.Cancel:
+            return True
+        if reply == QMessageBox.StandardButton.No:
+            return False
+        from sheets.client import BUSINESS_ACCOUNTS
+        name, atype = BUSINESS_ACCOUNTS["owner_draws"]
+        draws = self.db.get_or_create_role_account("owner_draws", name, atype)
+        data = self.get_data()
+        data["amount"] = str(abs(self.amount_spin.value()))
+        if self.transaction.get("id"):
+            self.db.delete_transaction_full(self.transaction)
+            data.pop("id", None)
+        self.db.save_transfer_pair(data, draws["id"])
+        self.handled = True
+        self.accept()
+        return True
 
     def get_data(self) -> dict:
         data = dict(self.transaction)
@@ -479,6 +698,7 @@ class TransactionDialog(QDialog):
             "category_id": cat_id,
             "notes":      self.notes_edit.toPlainText().strip(),
         })
+        data.update(self._business_fields())
 
         # Loan split
         if self._loan_chk.isChecked():

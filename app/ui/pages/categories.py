@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QTreeWidget, QTreeWidgetItem, QDialog, QFormLayout,
                               QLineEdit, QComboBox, QDialogButtonBox, QMessageBox,
-                              QLabel)
+                              QLabel, QDoubleSpinBox)
 from PyQt6.QtCore import Qt, QVariantAnimation
 from PyQt6.QtGui import QColor, QBrush
 from ui.widgets import PageTitle, SecondaryButton, DangerButton, MutedLabel
@@ -76,6 +76,29 @@ class CategoryDialog(QDialog):
             self.type_combo.setCurrentIndex(ix)
         form.addRow("Type", self.type_combo)
 
+        # Business books: Schedule C line and deductible share (meals = 50%).
+        self.tax_combo = None
+        if db.is_business():
+            from business_categories import TAX_LINES
+            self.tax_combo = QComboBox()
+            self.tax_combo.addItem("— Not on Schedule C —", "")
+            for code, label in TAX_LINES.items():
+                self.tax_combo.addItem(label, code)
+            ix = self.tax_combo.findData((edit_cat or {}).get("tax_line", ""))
+            self.tax_combo.setCurrentIndex(max(ix, 0))
+            form.addRow("Schedule C line", self.tax_combo)
+            self.pct_spin = QDoubleSpinBox()
+            self.pct_spin.setRange(0, 100)
+            self.pct_spin.setDecimals(0)
+            self.pct_spin.setSuffix(" %")
+            self.pct_spin.setValue(float((edit_cat or {}).get("deduct_pct") or 100))
+            form.addRow("Deductible", self.pct_spin)
+            hint = QLabel("Business meals are generally 50% deductible. "
+                          "Confirm tax treatment with your accountant.")
+            hint.setObjectName("Muted")
+            hint.setWordWrap(True)
+            form.addRow("", hint)
+
         # A sub-category shares its parent's income/expense nature.
         if require_parent and self.parent_combo is not None:
             self.parent_combo.currentIndexChanged.connect(lambda _: self._sync_type())
@@ -96,6 +119,10 @@ class CategoryDialog(QDialog):
             ix = self.type_combo.findData(parent.get("type", "expense"))
             if ix >= 0:
                 self.type_combo.setCurrentIndex(ix)
+            if getattr(self, "tax_combo", None) is not None and not self.edit_cat:
+                ix = self.tax_combo.findData(parent.get("tax_line", ""))
+                self.tax_combo.setCurrentIndex(max(ix, 0))
+                self.pct_spin.setValue(float(parent.get("deduct_pct") or 100))
 
     def _ok(self):
         if not self.name_edit.text().strip():
@@ -112,6 +139,9 @@ class CategoryDialog(QDialog):
             "parent_id": pid or "",
             "type": self.type_combo.currentData() or "expense",
         })
+        if self.tax_combo is not None:
+            data["tax_line"] = self.tax_combo.currentData() or ""
+            data["deduct_pct"] = str(self.pct_spin.value())
         return data
 
 
@@ -209,7 +239,8 @@ class CategoriesPage(QWidget):
 
         # ── One table for the whole hierarchy ──
         self._tree = QTreeWidget()
-        self._tree.setHeaderLabels(["Name", "Kind", "Type"])
+        self._tree.setHeaderLabels(["Name", "Kind", "Type", "Schedule C"]
+                                   if self.db.is_business() else ["Name", "Kind", "Type"])
         self._tree.setColumnWidth(0, 360)
         self._tree.setColumnWidth(1, 150)
         self._tree.setAlternatingRowColors(True)
@@ -252,7 +283,13 @@ class CategoriesPage(QWidget):
         self._tree.expandAll()
 
     def _make_item(self, name, kind, type_str, kind_key, data) -> QTreeWidgetItem:
-        item = QTreeWidgetItem([name, kind, type_str])
+        cols = [name, kind, type_str]
+        if self.db.is_business() and kind_key == "category":
+            line = data.get("tax_line") or ""
+            pct = float(data.get("deduct_pct") or 100)
+            cols.append((f"Line {line}" if line else "—")
+                        + (f"  ({pct:.0f}% deductible)" if pct < 100 else ""))
+        item = QTreeWidgetItem(cols)
         item.setData(0, Qt.ItemDataRole.UserRole, {"kind": kind_key, "data": data})
         return item
 

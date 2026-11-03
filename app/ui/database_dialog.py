@@ -5,15 +5,18 @@ from the sidebar.
 """
 import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                              QLineEdit, QPushButton, QFileDialog, QFrame)
+                              QLineEdit, QPushButton, QFileDialog, QFrame,
+                              QRadioButton, QButtonGroup)
 
 
 class DatabaseSetupDialog(QDialog):
     def __init__(self, parent=None, *, window_title="New Database",
                  heading="New Database", message="",
                  default_name="My Finances", default_location="",
-                 accept_label="Create"):
+                 accept_label="Create", show_book_type=False):
         super().__init__(parent)
+        self._show_book_type = show_book_type
+        self.book_type = "personal"
         self.setWindowTitle(window_title)
         self.setMinimumWidth(600)
         # Populated on accept; left as the defaults if the user cancels.
@@ -71,6 +74,25 @@ class DatabaseSetupDialog(QDialog):
         loc_row.addWidget(browse_btn)
         lay.addLayout(loc_row)
 
+        if self._show_book_type:
+            type_label = QLabel("What is this database for?")
+            type_label.setStyleSheet("font-weight:bold;")
+            lay.addWidget(type_label)
+            self._personal_rb = QRadioButton(
+                "Personal — household money, personal categories")
+            self._business_rb = QRadioButton(
+                "Business — company books: Schedule C categories, owner "
+                "investment and business pages")
+            self._personal_rb.setChecked(True)
+            group = QButtonGroup(self)
+            group.addButton(self._personal_rb)
+            group.addButton(self._business_rb)
+            lay.addWidget(self._personal_rb)
+            lay.addWidget(self._business_rb)
+            hint = QLabel("You can switch later in Settings → Book Type.")
+            hint.setObjectName("Muted")
+            lay.addWidget(hint)
+
         lay.addStretch()
 
         btn_row = QHBoxLayout()
@@ -97,4 +119,6 @@ class DatabaseSetupDialog(QDialog):
             return
         self.database_name = name
         self.database_location = location
+        if self._show_book_type and self._business_rb.isChecked():
+            self.book_type = "business"
         self.accept()

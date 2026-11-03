@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QFrame, QFileDialog, QMessageBox)
 from PyQt6.QtCore import Qt, QDate
 from ui.widgets import PageTitle, SecondaryButton, DateField, fmt_date
-from ui.styles  import SUCCESS, DANGER, TEXT, MUTED
+from ui.styles  import SUCCESS, DANGER, TEXT, MUTED, WARNING
 
 
 class ReportsPage(QWidget):
@@ -68,7 +68,7 @@ class ReportsPage(QWidget):
         self._pnl_tree.setAlternatingRowColors(True)
         self._pnl_tree.header().setStretchLastSection(True)
         pnl_lay.addWidget(self._pnl_tree)
-        self._tabs.addTab(pnl, "Profit & Loss")
+        self._tabs.addTab(pnl, "Profit && Loss")
 
         # ── Balance Sheet tab ──
         bs = QWidget()
@@ -126,6 +126,7 @@ class ReportsPage(QWidget):
         income_groups: dict[str, dict] = {}
         expense_groups: dict[str, dict] = {}
         debt_groups: dict[str, dict] = {}
+        capital_groups: dict[str, dict] = {}
 
         for t in txns:
             amt = float(t.get("amount") or 0)
@@ -139,6 +140,8 @@ class ReportsPage(QWidget):
                 bucket = income_groups
             elif cat_type == "debt_repayment":
                 bucket = debt_groups
+            elif cat_type in ("asset", "inventory"):
+                bucket = capital_groups
             else:
                 bucket = expense_groups
             if group not in bucket:
@@ -200,6 +203,13 @@ class ReportsPage(QWidget):
             debt_root = _add_group("Debt Repayment", debt_groups, -1)
             self._pnl_tree.addTopLevelItem(debt_root)
             debt_root.setExpanded(True)
+        # Fixed-asset / inventory purchases are balance-sheet items: they reach
+        # the P&L later as depreciation or cost of goods sold.
+        if capital_groups:
+            cap_root = _add_group("Asset & Inventory Purchases (on Balance Sheet)",
+                                  capital_groups, -1)
+            self._pnl_tree.addTopLevelItem(cap_root)
+            cap_root.setExpanded(True)
 
         color = SUCCESS if net >= 0 else DANGER
         debt_html = (f" &nbsp;&nbsp; <b>Debt Repayment:</b> "
@@ -214,20 +224,24 @@ class ReportsPage(QWidget):
         )
         self._pnl_summary.setTextFormat(Qt.TextFormat.RichText)
 
+    def _balance_sheet(self, as_of: str) -> dict:
+        """Balance sheet data from the shared, tested ledger math."""
+        from utils.ledger import balance_sheet
+        cats = {c["id"]: c for c in self.db.get_categories()}
+        return balance_sheet(self.db.get_accounts(active=None),
+                             self.db.get_transactions(end=as_of), cats, as_of)
+
     def _run_bs(self):
         as_of = self._date_to.date().toString("yyyy-MM-dd")
         self._bs_as_of_lbl.setText(f"As of {fmt_date(as_of)}")
-        accounts = self.db.get_accounts()
-        assets, liabilities = [], []
-        for acct in accounts:
-            txns = self.db.get_transactions(account_id=acct["id"], end=as_of)
-            opening = float(acct.get("opening_balance") or 0)
-            bal = opening + sum(float(t.get("amount") or 0) for t in txns)
-            acct = dict(acct, balance=bal)
-            if acct.get("type") in ("credit", "credit card", "loan", "liability"):
-                liabilities.append(acct)
-            else:
-                assets.append(acct)
+        if self.db.is_business():
+            self._run_business_bs(as_of)
+            return
+        bs = self._balance_sheet(as_of)
+        # Personal books keep the familiar layout: liabilities as (negative)
+        # balances and Net Worth at the bottom.
+        assets = [{"name": n, "balance": float(v)} for n, v, _ in bs["assets"]]
+        liabilities = [{"name": n, "balance": -float(v)} for n, v, _ in bs["liabilities"]]
 
         def _money(amt):
             return f"${amt:,.2f}" if amt >= 0 else f"(${abs(amt):,.2f})"
@@ -264,6 +278,7 @@ class ReportsPage(QWidget):
         f = eq_item.font(0); f.setBold(True); f.setPointSize(f.pointSize()+2)
         eq_item.setFont(0, f); eq_item.setFont(1, f)
         self._bs_tree.addTopLevelItem(eq_item)
+        self._bs_tree.expandAll()
 
     def _export_csv(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export Report", "report.csv",
@@ -299,13 +314,64 @@ class ReportsPage(QWidget):
                             clsmap.get(t.get("class_id",""),{}).get("name",""),
                             t.get("amount","")])
 
+    def _run_business_bs(self, as_of: str):
+        """Accountant layout: Assets = Liabilities + Equity, all positive."""
+        from PyQt6.QtGui import QColor
+        bs = self._balance_sheet(as_of)
+        self._bs_tree.clear()
+        right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+
+        def _money(amt):
+            amt = float(amt)
+            return f"${amt:,.2f}" if amt >= 0 else f"(${abs(amt):,.2f})"
+
+        def _bold(item, size_delta=0):
+            f = item.font(0); f.setBold(True)
+            if size_delta:
+                f.setPointSize(f.pointSize() + size_delta)
+            item.setFont(0, f); item.setFont(1, f)
+
+        def _section(label, lines, total):
+            root = QTreeWidgetItem([label, ""])
+            for name, amt, meta in lines:
+                item = QTreeWidgetItem([name, _money(amt)])
+                item.setTextAlignment(1, right)
+                if meta.get("plug"):
+                    item.setForeground(0, QColor(WARNING))
+                    item.setToolTip(0,
+                        "Money that moved through non-P&L categories (such as loan "
+                        "principal) without a matching balance-sheet entry, or a "
+                        "transfer whose other half is missing. Record the loan "
+                        "payment as a transfer to the loan account to clear it.")
+                root.addChild(item)
+            tot = QTreeWidgetItem([f"Total {label}", _money(total)])
+            tot.setTextAlignment(1, right)
+            _bold(tot)
+            root.addChild(tot)
+            root.setExpanded(True)
+            self._bs_tree.addTopLevelItem(root)
+
+        _section("Assets", bs["assets"], bs["total_assets"])
+        _section("Liabilities", bs["liabilities"], bs["total_liabilities"])
+        _section("Equity", bs["equity"], bs["total_equity"])
+        both = bs["total_liabilities"] + bs["total_equity"]
+        item = QTreeWidgetItem(["Total Liabilities & Equity", _money(both)])
+        item.setTextAlignment(1, right)
+        item.setForeground(1, QColor(SUCCESS if bs["balanced"] else DANGER))
+        _bold(item, 1)
+        self._bs_tree.addTopLevelItem(item)
+        self._bs_tree.expandAll()
+
     def _export_bs_csv(self, path: str):
         import csv
         as_of = self._date_to.date().toString("yyyy-MM-dd")
+        bs = self._balance_sheet(as_of)
         with open(path, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["Account", "Type", "Balance"])
-            for acct in self.db.get_accounts():
-                txns = self.db.get_transactions(account_id=acct["id"], end=as_of)
-                bal = float(acct.get("opening_balance") or 0) + sum(float(t.get("amount") or 0) for t in txns)
-                w.writerow([acct["name"], acct.get("type",""), f"{bal:.2f}"])
+            w.writerow(["Section", "Line", "Amount"])
+            for section, key, total_key in (("Assets", "assets", "total_assets"),
+                                            ("Liabilities", "liabilities", "total_liabilities"),
+                                            ("Equity", "equity", "total_equity")):
+                for name, amt, _ in bs[key]:
+                    w.writerow([section, name, f"{amt:.2f}"])
+                w.writerow([section, f"Total {section}", f"{bs[total_key]:.2f}"])
