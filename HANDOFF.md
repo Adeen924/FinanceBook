@@ -183,6 +183,50 @@ The lock is best-effort across computers (sync delay); see the README.
 
 ---
 
+## Receipt reading, shipping, inventory lines (v1.10, schema 10)
+
+- `parsers/pdf_text.py` — stdlib PDF reader: object scan (+ object streams /
+  xref streams), page tree, Flate/LZW/AHx/A85 + PNG predictors, content-stream
+  interpreter (CTM, Tm/Td/TD/T*/'/", Tj/TJ), simple fonts (WinAnsi/MacRoman/
+  Standard + Differences, Widths) and Type0 fonts (Identity-H/embedded CMap, /W)
+  with ToUnicode. `glyphs_to_text()` groups glyphs by baseline, orders by x and
+  turns wide gaps into 3+ spaces (cells). Only pages' content is read (orphan
+  streams are ignored); rotated text is dropped; `MAX_PAGES` = 30. Encrypted →
+  `PDFEncrypted`. `receipt.pdf_to_text` falls back to the old regex reader for
+  page-less files.
+- `parsers/ocr.py` — Windows.Media.Ocr via `powershell -EncodedCommand`
+  (no .ps1 file, no execution-policy issue, `CREATE_NO_WINDOW`), image path in
+  env var `FB_OCR_IMAGE`; returns word boxes rebuilt with `glyphs_to_text`.
+  Used for images and image-only PDFs (embedded DCT JPEGs). `parse_file` can
+  take seconds, so `ReceiptsPage` runs it in `ParseWorker` (QThread) behind a
+  progress dialog.
+- `parsers/receipt.py` — result dict gained `shipping`, `discount` (positive),
+  `duties`, `order_number`, `date_note`, item `sku`. `GENERIC_LABELS` +
+  `Summary` + `finish()` = the shared "label next to an amount" logic; subtotal
+  is items only. `parse_date_info()` reports ambiguous numeric dates.
+  `register_vendor_parser()`; vendors live in `parsers/receipt_vendors.py`
+  (Amazon, DigiKey, JLCPCB). AI schema has the new fields (old replies still
+  normalise).
+- `utils/receipt_booking.py` — `item_extras()/landed_costs()`: discount always
+  spread over items; separate mode books the expense lines' share of tax/tip/
+  shipping/duties as own lines but keeps the inventory/asset lines' share on
+  them (landed cost, not double-expensed).
+- Schema 10: `receipts.shipping/discount/duties`, `receipt_items.item_id/sku`.
+  `receive_receipt_inventory()` deletes the receipt's previous purchase moves
+  (by `receipt_id`) before adding, so re-booking never doubles stock;
+  `book_receipt()` reuses the receipt's own transaction if called again.
+- Categories: `Database.get_categories_for_book()` is what pickers use; it hides
+  personal-default categories (matched to `default_categories.py`, no tax line)
+  in business books unless used, kept, or setting `show_personal_categories`.
+  Lookups/reports keep using `get_categories()`.
+- Tests: `test_pdf_text.py`, `test_receipt_vendors.py` (an optional class runs
+  `_private_samples/` when present — never commit that folder),
+  `test_receipt_booking.py`, `test_categories_book.py`, `test_receipt_ui.py`.
+  Sanitized fixtures in `tests/fixtures/` (regenerate PDFs with
+  `tests/fixtures/make_pdf_fixtures.py`).
+
+---
+
 ## Auto-categorization rules
 
 Rules run in priority order (higher number first). First match wins.
