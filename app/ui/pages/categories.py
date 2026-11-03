@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QTreeWidget, QTreeWidgetItem, QDialog, QFormLayout,
                               QLineEdit, QComboBox, QDialogButtonBox, QMessageBox,
-                              QLabel, QDoubleSpinBox)
+                              QLabel, QDoubleSpinBox, QCheckBox)
 from PyQt6.QtCore import Qt, QVariantAnimation
 from PyQt6.QtGui import QColor, QBrush
 from ui.widgets import PageTitle, SecondaryButton, DangerButton, MutedLabel
@@ -57,7 +57,8 @@ class CategoryDialog(QDialog):
             self.parent_combo = QComboBox()
             if edit_cat is not None and not require_parent:
                 self.parent_combo.addItem("— Top-level category —", "")
-            for c in [c for c in db.get_categories() if not c.get("parent_id")]:
+            for c in [c for c in db.get_categories_for_book(keep_ids=[parent_id or ""])
+                      if not c.get("parent_id")]:
                 if not edit_cat or c["id"] != edit_cat.get("id"):
                     self.parent_combo.addItem(c["name"], c["id"])
             target = parent_id or (edit_cat or {}).get("parent_id", "")
@@ -166,7 +167,7 @@ class ClassDialog(QDialog):
 
         # Parent must be a Sub-category (a category that itself has a parent).
         self.parent_combo = QComboBox()
-        cats = db.get_categories()
+        cats = db.get_categories_for_book()
         cat_by_id = {c["id"]: c for c in cats}
         for sub in [c for c in cats if c.get("parent_id")]:
             top = cat_by_id.get(sub.get("parent_id"), {}).get("name", "?")
@@ -236,6 +237,17 @@ class CategoriesPage(QWidget):
         btn_row.addWidget(add_sub_btn)
         btn_row.addWidget(add_cls_btn)
         btn_row.addStretch()
+        if self.db.is_business():
+            # Personal categories (from before the book became a business
+            # book) are kept but hidden from pickers unless this is on.
+            self._show_personal = QCheckBox("Show personal categories")
+            self._show_personal.setToolTip(
+                "Personal categories stay in your books. Used ones are always shown; "
+                "tick this to offer the rest in every category list too.")
+            self._show_personal.setChecked(
+                self.db.get_setting("show_personal_categories") == "1")
+            self._show_personal.toggled.connect(self._toggle_personal)
+            btn_row.addWidget(self._show_personal)
         btn_row.addWidget(del_btn)
         lay.addLayout(btn_row)
 
@@ -252,11 +264,15 @@ class CategoriesPage(QWidget):
     def refresh(self):
         self._load()
 
+    def _toggle_personal(self, on: bool):
+        self.db.set_setting("show_personal_categories", "1" if on else "0")
+        self._load()
+
     # ── loading ────────────────────────────────────────────────────────────────
 
     def _load(self):
         self._tree.clear()
-        cats = self.db.get_categories()
+        cats = self.db.get_categories_for_book()
         classes = self.db.get_classes()
 
         classes_by_parent = {}

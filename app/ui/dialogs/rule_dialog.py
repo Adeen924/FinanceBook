@@ -84,7 +84,8 @@ class RuleDialog(QDialog):
         # Category
         self.cat_combo = QComboBox()
         self.cat_combo.addItem("— No change —", "")
-        cats = self.db.get_categories() if self.db else []
+        cats = self.db.get_categories_for_book(
+            keep_ids=[self.rule.get("category_id", "")]) if self.db else []
         for c in cats:
             prefix = "    " if c.get("parent_id") else ""
             self.cat_combo.addItem(prefix + c["name"], c["id"])

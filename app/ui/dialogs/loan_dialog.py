@@ -107,7 +107,7 @@ class LoanDialog(QDialog):
         # Interest expense category
         self.cat_combo = QComboBox()
         self.cat_combo.addItem("— None —", "")
-        cats = self.db.get_categories()
+        cats = self.db.get_categories_for_book(keep_ids=[self.loan.get("interest_category_id", "")])
         roots = [c for c in cats if not c.get("parent_id")]
         for cat in roots:
             self.cat_combo.addItem(cat["name"], cat["id"])

@@ -70,7 +70,7 @@ class RecurringDialog(QDialog):
         self.amount.setValue(float(t.get("amount") or 0))
         f.addRow("Amount", self.amount)
         self.cat = FilterComboBox(placeholder="Category")
-        cats = db.get_categories()
+        cats = db.get_categories_for_book(keep_ids=[t.get("category_id", "")])
         for c in cats:
             if not c.get("parent_id"):
                 self.cat.add_option(c["name"], c["id"])

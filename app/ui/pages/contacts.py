@@ -60,8 +60,9 @@ class ContactDialog(QDialog):
         self.is_1099.setChecked(str(c.get("is_1099", "0")) == "1")
         f.addRow("", self.is_1099)
         self.cat = FilterComboBox(placeholder="Default category (optional)")
-        for cat in db.get_categories():
-            parent_cat = next((p for p in db.get_categories() if p["id"] == cat.get("parent_id")), None)
+        cats = db.get_categories_for_book(keep_ids=[c.get("default_category_id", "")])
+        for cat in cats:
+            parent_cat = next((p for p in cats if p["id"] == cat.get("parent_id")), None)
             self.cat.add_option(f"{parent_cat['name']} → {cat['name']}" if parent_cat else cat["name"],
                                 cat["id"])
         self.cat.select_by_data(c.get("default_category_id", ""))

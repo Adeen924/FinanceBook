@@ -820,6 +820,51 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             return _to_dicts(c.execute(
                 "SELECT * FROM categories WHERE active=1 ORDER BY name").fetchall())
 
+    def personal_default_category_ids(self) -> set:
+        """
+        Categories that came from the personal default tree (default_categories.py)
+        and were not taken over by the business tree (which gives the ones it
+        shares a tax line). Matched on type + parent name + name.
+        """
+        from default_categories import DEFAULT_CATEGORIES
+        defaults = set()
+        for ctype, groups in DEFAULT_CATEGORIES.items():
+            for parent, children in groups.items():
+                defaults.add((ctype, "", parent.lower()))
+                for child in children:
+                    defaults.add((ctype, parent.lower(), child.lower()))
+        cats = self.get_categories()
+        names = {c["id"]: c["name"].lower() for c in cats}
+        return {c["id"] for c in cats
+                if not (c.get("tax_line") or "")
+                and (c.get("type"), names.get(c.get("parent_id") or "", ""),
+                     c["name"].lower()) in defaults}
+
+    def get_categories_for_book(self, include_personal: bool | None = None,
+                                keep_ids=()) -> list[dict]:
+        """
+        Categories for pickers. A personal book gets every category. A business
+        book hides the personal default categories (kept, never deleted —
+        reports still use get_categories()) unless they are used by a
+        transaction, listed in keep_ids, or "Show personal categories" is on.
+        """
+        cats = self.get_categories()
+        if not self.is_business():
+            return cats
+        if include_personal is None:
+            include_personal = self.get_setting("show_personal_categories") == "1"
+        if include_personal:
+            return cats
+        with self._conn() as c:
+            used = {r[0] for r in c.execute(
+                "SELECT DISTINCT category_id FROM transactions WHERE category_id!=''")}
+        hide = self.personal_default_category_ids() - used - set(keep_ids or ())
+        by_id = {c["id"]: c for c in cats}
+        for cid in [c["id"] for c in cats if c["id"] not in hide]:
+            parent = by_id[cid].get("parent_id") or ""
+            hide.discard(parent)              # a visible child keeps its parent
+        return [c for c in cats if c["id"] not in hide]
+
     def get_category(self, cat_id: str) -> dict | None:
         with self._conn() as c:
             return _to_dict(c.execute(

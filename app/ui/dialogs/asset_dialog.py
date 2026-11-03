@@ -83,10 +83,10 @@ class AssetDialog(QDialog):
         self.salvage = self._money(a.get("salvage"))
         f.addRow("Salvage value", self.salvage)
         self.cat = FilterComboBox(placeholder="Depreciation expense category")
-        for c in self.db.get_categories():
+        cats = self.db.get_categories_for_book(keep_ids=[a.get("expense_category_id", "")])
+        for c in cats:
             if c.get("type") == "expense":
-                parent = next((p for p in self.db.get_categories()
-                               if p["id"] == c.get("parent_id")), None)
+                parent = next((p for p in cats if p["id"] == c.get("parent_id")), None)
                 self.cat.add_option(f"{parent['name']} → {c['name']}" if parent else c["name"],
                                     c["id"])
         default_cat = a.get("expense_category_id") or next(

@@ -468,7 +468,8 @@ class TransactionDialog(QDialog):
     def _build_category_combo(self) -> FilterComboBox:
         """Filterable category combo: roots as 'Name', subs as 'Parent → Child'."""
         combo = FilterComboBox(placeholder="Type to search categories…")
-        cats = self._cats
+        cats = self.db.get_categories_for_book(
+            keep_ids=[self.transaction.get("category_id", "")])
         roots = [c for c in cats if not c.get("parent_id")]
         for cat in roots:
             combo.add_option(cat["name"], cat["id"])

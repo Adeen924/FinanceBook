@@ -33,7 +33,7 @@ class SplitDialog(QDialog):
         self.setWindowTitle("Split Transaction")
         self.setMinimumWidth(620)
 
-        self._cats = self.db.get_categories()
+        self._cats = self.db.get_categories_for_book(keep_ids=[self.base.get("category_id", "")])
         self._rows: list[dict] = []   # each: {host, cat, amount, memo, transfer}
 
         # Transfer mode: lines can be flagged to move to this destination account.
