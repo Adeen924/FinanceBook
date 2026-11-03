@@ -1,6 +1,8 @@
 """
 SQLite database backend.
 All data lives in finances.db — a single file synced by OneDrive / Google Drive.
+The file is kept in rollback-journal mode so it is complete on disk after every
+commit (see Database._conn).
 No external services or credentials required.
 """
 import os
@@ -200,6 +202,26 @@ def _to_dicts(rows) -> list[dict]:
     return [_to_dict(r) for r in rows]
 
 
+class NewerSchemaError(Exception):
+    """The file was upgraded by a newer FinanceBook than this one."""
+    def __init__(self, version: int):
+        super().__init__(
+            f"This database was updated by a newer version of FinanceBook "
+            f"(database format {version}; this app supports up to {SCHEMA_VERSION}). "
+            "Update FinanceBook on this computer first, then open it again.")
+        self.version = version
+
+
+class ReadOnlyUpgradeError(Exception):
+    """A read-only open was asked for, but the file needs a schema upgrade first."""
+    def __init__(self, version: int):
+        super().__init__(
+            "This database was last saved by an older version of FinanceBook and "
+            "needs a one-time upgrade, which can't be done while it's open read-only. "
+            "Open it for editing once it's no longer in use elsewhere.")
+        self.version = version
+
+
 class _ClosingConnection(sqlite3.Connection):
     """`with self._conn() as c:` commits (or rolls back) AND closes, so no
     connection lingers holding a Windows file lock (matters for restore)."""
@@ -212,25 +234,78 @@ class _ClosingConnection(sqlite3.Connection):
 
 class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryMixin,
                PayrollMixin, TaxMixin, AdminMixin):
-    def __init__(self, db_path: str, book_type: str | None = None):
+    def __init__(self, db_path: str, book_type: str | None = None,
+                 read_only: bool = False):
         """
         Open (creating/migrating as needed) the database at db_path.
         book_type is only used when the file is brand new: 'business' seeds the
         Schedule C categories and owner accounts instead of the personal tree.
+
+        read_only=True opens an existing, up-to-date database without writing
+        anything — no migration, no triggers, no seeding — and every later
+        write fails with "attempt to write a readonly database". Used when
+        another computer holds the database's lock.
         """
         self.db_path = db_path
         self.last_migration_backup = ""
         self.session_user = ""
+        self.read_only = read_only
+        version = self._existing_version()
+        if version is not None and version > SCHEMA_VERSION:
+            # An older app must never open (and "migrate" or rewrite triggers
+            # in) a file a newer app has already upgraded.
+            raise NewerSchemaError(version)
+        if read_only:
+            if version is None:
+                raise FileNotFoundError(db_path)
+            if version < SCHEMA_VERSION:
+                raise ReadOnlyUpgradeError(version)
+            return
         self._init_schema(book_type)
+
+    def _existing_version(self) -> int | None:
+        """user_version of the file on disk, or None if it doesn't exist yet."""
+        if not os.path.exists(self.db_path) or os.path.getsize(self.db_path) == 0:
+            return None
+        return _backup.read_user_version(self.db_path)
 
     # ── internal ──────────────────────────────────────────────────────────────
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, factory=_ClosingConnection)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        if self.read_only:
+            conn.execute("PRAGMA query_only=ON")
+        else:
+            # Rollback-journal (DELETE) mode rather than WAL: after every commit
+            # the .db file alone is complete, with no -wal/-shm side files for
+            # OneDrive / Google Drive to sync out of step with it. Databases
+            # created in WAL mode by older versions are converted on first use;
+            # if another connection is open the switch waits for a later one.
+            try:
+                conn.execute("PRAGMA journal_mode=DELETE")
+            except sqlite3.OperationalError:
+                pass
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
+
+    def close(self):
+        """
+        Leave the file self-contained for syncing: fold any WAL left by an
+        older version (or a crash) into the .db and remove the side files.
+        Connections are per-operation, so none are held open here.
+        """
+        if self.read_only or not os.path.exists(self.db_path):
+            return
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.execute("PRAGMA journal_mode=DELETE")
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            pass
 
     def _init_schema(self, book_type: str | None = None):
         is_new = (not os.path.exists(self.db_path)
@@ -1242,7 +1317,10 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         Daily automatic backup, keeping the newest N (setting auto_backup_keep,
         default 10). Returns the new backup's path, or '' if none was due.
         Never raises — a failed backup must not stop the app from opening.
+        Skipped in read-only mode: the copy's owner makes the backups.
         """
+        if self.read_only:
+            return ""
         try:
             if self.get_setting("auto_backup_enabled", "1") != "1":
                 return ""

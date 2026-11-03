@@ -58,6 +58,8 @@ class AdminMixin:
 
     def set_session_user(self, name: str):
         self.session_user = (name or "").strip() or "unknown"
+        if self.read_only:
+            return
         with self._conn() as c:
             c.execute("INSERT OR REPLACE INTO app_session (k, user) VALUES (1, ?)",
                       (self.session_user,))
@@ -198,9 +200,12 @@ class AdminMixin:
                        rec["id"]))
 
     def process_recurring(self, today: str) -> list[dict]:
-        """Post every auto-post occurrence due on or before today. Returns what was made."""
+        """Post every auto-post occurrence due on or before today. Returns what was made.
+        Nothing is posted read-only — the computer editing the database posts them."""
         from utils.recurring import due_occurrences
         made = []
+        if self.read_only:
+            return made
         for rec in self.get_recurring():
             if not rec["active"] or not rec["auto_post"]:
                 continue
