@@ -120,6 +120,13 @@ class TransactionDialog(QDialog):
                 self.charged_combo.setCurrentIndex(0)
             form.addRow("Charged to", self.charged_combo)
 
+            self.contact_combo = FilterComboBox(placeholder="Vendor / customer (optional)")
+            for c in self.db.get_contacts():
+                self.contact_combo.add_option(c["name"], c["id"])
+            self.contact_combo.select_by_data(self.transaction.get("contact_id", ""))
+            form.addRow("Vendor / customer", self.contact_combo)
+            self.payee_edit.editingFinished.connect(self._suggest_contact)
+
         # ── Transfer section ───────────────────────────────────────────────────
         sep0 = QFrame(); sep0.setFrameShape(QFrame.Shape.HLine); sep0.setObjectName("Muted")
         form.addRow(sep0)
@@ -422,6 +429,15 @@ class TransactionDialog(QDialog):
         self.treatment_combo.blockSignals(False)
         self._update_paid_by_visibility()
 
+    def _suggest_contact(self):
+        if self.contact_combo.current_data():
+            return
+        c = self.db.match_contact(self.payee_edit.text())
+        if c:
+            self.contact_combo.select_by_data(c["id"])
+            if not self.cat_combo.current_data() and c.get("default_category_id"):
+                self.cat_combo.select_by_data(c["default_category_id"])
+
     def _business_fields(self) -> dict:
         if not self._business:
             return {}
@@ -432,7 +448,8 @@ class TransactionDialog(QDialog):
             acct = next((a for a in self._accounts if a["id"] == self.account_combo.currentData()), {})
             reimb = acct.get("type") == "liability"
         out = {"paid_by": who, "reimbursable": "1" if reimb else "0",
-               "charged_to": self.charged_combo.current_data() or ""}
+               "charged_to": self.charged_combo.current_data() or "",
+               "contact_id": self.contact_combo.current_data() or ""}
         if out["charged_to"].startswith("class:"):
             out["class_id"] = out["charged_to"][6:]
         return out

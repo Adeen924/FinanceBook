@@ -203,7 +203,17 @@ class DashboardPage(QWidget):
         grid.addWidget(self._build_donut_card(), 2, 8, 1, 4)
         grid.addWidget(self._build_recent_card(), 3, 0, 1, 8)
         grid.addWidget(self._build_accounts_card(), 3, 8, 1, 4)
-        grid.setRowStretch(4, 1)
+        self._biz_cards = None
+        if self.db.is_business():
+            self._kpi_ar = KpiCard("Owed to you", "invoice")
+            self._kpi_ap = KpiCard("You owe", "card")
+            self._kpi_overdue = KpiCard("Overdue", "calendar")
+            for i, card in enumerate((self._kpi_ar, self._kpi_ap, self._kpi_overdue)):
+                card.setCursor(Qt.CursorShape.PointingHandCursor)
+                card.mousePressEvent = lambda e: self._goto("Invoices & Bills")
+                grid.addWidget(card, 4, i * 4, 1, 4)
+            self._biz_cards = True
+        grid.setRowStretch(5, 1)
 
     def _build_chart_card(self) -> GlassCard:
         card = GlassCard()
@@ -333,6 +343,16 @@ class DashboardPage(QWidget):
         self._load_recent()
         self._load_accounts()
         self._load_alerts()
+        if self._biz_cards:
+            self._load_business()
+
+    def _load_business(self):
+        t = self.db.ar_ap_totals()
+        self._kpi_ar.set_values(money(float(t["ar"])), "invoices", None, "not yet received")
+        self._kpi_ap.set_values(money(float(t["ap"])), "bills", None, "not yet paid")
+        n = t["ar_overdue"] + t["ap_overdue"]
+        self._kpi_overdue.set_values(str(n), f"{t['ar_overdue']} in · {t['ap_overdue']} out",
+                                     None if not n else False, "past due date")
 
     def _goto(self, page_name: str):
         mw = getattr(self, "_main_window", None)

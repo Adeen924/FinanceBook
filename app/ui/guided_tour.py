@@ -81,6 +81,13 @@ STEPS = [
               "Section 179 or MACRS) — no bank entries needed — and shows their book value "
               "on the Balance Sheet."),
 
+    dict(nav="Invoices & Bills", target=lambda mw, p: getattr(p, "_add_btn", None),
+         when=lambda mw: mw.db.is_business(),
+         title="Invoices, bills & who owes what",
+         body="Create numbered invoices (export them as PDF), enter bills from vendors, "
+              "and record payments — each payment becomes a transaction automatically. "
+              "The <b>A/R</b> and <b>A/P Aging</b> tabs show what's overdue."),
+
     dict(nav="Reports", target=lambda mw, p: getattr(p, "_tabs", None),
          when=lambda mw: mw.db.is_business(),
          title="Business balance sheet",

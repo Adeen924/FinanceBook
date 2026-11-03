@@ -376,6 +376,19 @@ class ReportsPage(QWidget):
         item.setForeground(1, QColor(SUCCESS if bs["balanced"] else DANGER))
         _bold(item, 1)
         self._bs_tree.addTopLevelItem(item)
+        # Cash basis: open invoices/bills are memo items, not in the totals.
+        t = self.db.ar_ap_totals(as_of)
+        if t["ar"] or t["ap"]:
+            memo = QTreeWidgetItem(["Memo (cash basis — not included above)", ""])
+            for label, v in (("Accounts receivable (unpaid invoices)", t["ar"]),
+                             ("Accounts payable (unpaid bills)", t["ap"])):
+                if v:
+                    m = QTreeWidgetItem([label, _money(v)])
+                    m.setTextAlignment(1, right)
+                    m.setForeground(0, QColor(MUTED))
+                    m.setForeground(1, QColor(MUTED))
+                    memo.addChild(m)
+            self._bs_tree.addTopLevelItem(memo)
         self._bs_tree.expandAll()
 
     def _export_bs_csv(self, path: str):
