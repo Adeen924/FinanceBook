@@ -41,6 +41,14 @@ TAX_LINES = {
     "30":  "Line 30 · Business use of home",
 }
 
+# Categories introduced after the first business release, by version:
+# version → [(type, name, tax_line, deduct_pct)]. Type "asset" = a Balance
+# Sheet category (purchases are capitalised, not expensed).
+BUSINESS_CATEGORY_ADDITIONS = {
+    2: [("asset", "Fixed Assets (purchases & sales)", "", 100),
+        ("asset", "Prepaid Expenses", "", 100)],
+}
+
 BUSINESS_CATEGORIES = {
     "income": [
         ("Sales", "1", 100, ["Product Sales", "Online Sales"]),

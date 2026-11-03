@@ -36,8 +36,11 @@ class _AIWorker(QThread):
 
 
 def kinds_for(db) -> list[tuple[str, str]]:
-    """Line-item types available in this book (extended by later phases)."""
-    return list(KINDS)
+    """Line-item types available in this book."""
+    kinds = list(KINDS)
+    if db.is_business():
+        kinds.append(("asset", "Fixed asset"))
+    return kinds
 
 
 class ReceiptReviewDialog(QDialog):
@@ -514,7 +517,28 @@ class ReceiptReviewDialog(QDialog):
             QMessageBox.warning(self, "Can't Save", str(e))
             return
         self.booked = True
+        self._register_assets(items, h, acct_id)
         self.accept()
+
+    def _register_assets(self, items, h, acct_id):
+        """Offer to add each "Fixed asset" line to the asset register."""
+        from utils.money import allocate
+        assets = [i for i in items if i.get("kind") == "asset" and i["business"]]
+        if not assets:
+            return
+        shares = allocate(D(h["tax"]) + D(h["tip"]), [i["line_total"] for i in items])
+        rc = self.db.get_receipt(self.receipt["id"]) or {}
+        from ui.dialogs.asset_dialog import AssetDialog
+        for it in assets:
+            share = shares[items.index(it)] if self.tax_mode.currentData() == "proportional" else 0
+            dlg = AssetDialog(self.db, parent=self, preset={
+                "name": it["description"], "vendor": h["vendor"],
+                "purchase_date": h["receipt_date"], "in_service_date": h["receipt_date"],
+                "cost": float(D(it["line_total"]) + D(share)),
+                "purchase_txn_id": rc.get("transaction_id", ""),
+                "receipt_id": self.receipt["id"]})
+            if dlg.exec() == AssetDialog.DialogCode.Accepted:
+                self.db.save_asset(dlg.get_data())
 
     # ── AI ───────────────────────────────────────────────────────────────────
 

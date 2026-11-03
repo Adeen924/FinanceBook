@@ -425,6 +425,11 @@ class TransactionsPage(QWidget):
                     sub_act.triggered.connect(lambda _, s=sub: self._set_category(txn, s["id"]))
                     cat_menu.addAction(sub_act)
 
+        if self.db.is_business() and str(txn.get("is_transfer", "0")) != "1":
+            fa_act = QAction("Add as Fixed Asset…", self)
+            fa_act.triggered.connect(lambda: self._add_as_asset(txn))
+            menu.addAction(fa_act)
+
         menu.addSeparator()
         att_act = QAction("Attach Receipt or File…", self)
         att_act.triggered.connect(lambda: self._attach_file(txn))
@@ -465,6 +470,28 @@ class TransactionsPage(QWidget):
                                   "receipt_date": txn.get("date", ""),
                                   "total": abs(float(txn.get("amount") or 0))})
         self.db.attach_receipt(rc["id"], txn)
+        self._apply_filter()
+
+    def _add_as_asset(self, txn):
+        from ui.dialogs.asset_dialog import AssetDialog
+        dlg = AssetDialog(self.db, parent=self, preset={
+            "name": txn.get("memo") or txn.get("payee") or "", "vendor": txn.get("payee", ""),
+            "purchase_date": txn.get("date", ""), "in_service_date": txn.get("date", ""),
+            "cost": abs(float(txn.get("amount") or 0)), "purchase_txn_id": txn.get("id", "")})
+        if dlg.exec() != AssetDialog.DialogCode.Accepted:
+            return
+        data = dlg.get_data()
+        self.db.save_asset(data)
+        cat = self.db.get_category(txn.get("category_id", "")) or {}
+        if cat.get("type") != "asset" and QMessageBox.question(
+                self, "Move Purchase to the Balance Sheet?",
+                "So the cost isn't expensed twice (once now, again as depreciation), "
+                "re-file this purchase under “Fixed Assets (purchases & sales)”?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) == QMessageBox.StandardButton.Yes:
+            txn["category_id"] = self.db.fixed_asset_category_id(
+                data.get("asset_class") == "prepaid")
+            self.db.save_transaction(txn)
         self._apply_filter()
 
     def _open_receipt(self, rc):
