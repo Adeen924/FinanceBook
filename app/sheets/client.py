@@ -15,6 +15,7 @@ from sheets.sales_store import SalesMixin, SALES_SCHEMA
 from sheets.inventory_store import InventoryMixin, INVENTORY_SCHEMA
 from sheets.payroll_store import PayrollMixin, PAYROLL_SCHEMA, PEOPLE_COLUMNS
 from sheets.tax_store import TaxMixin, TAX_SCHEMA
+from sheets.admin_store import AdminMixin, ADMIN_SCHEMA
 
 # Bump whenever SCHEMA or _migrate() changes. An existing database with a lower
 # PRAGMA user_version is backed up before it is migrated.
@@ -26,7 +27,8 @@ from sheets.tax_store import TaxMixin, TAX_SCHEMA
 #   6  — inventory items and stock movements
 #   7  — employees (people columns), time entries, payroll runs
 #   8  — mileage log, budgets
-SCHEMA_VERSION = 8
+#   9  — recurring items, audit log + triggers, period lock, created/updated_by
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -151,6 +153,9 @@ _NEW_COLUMNS = [
     ("accounts",     "role",             "TEXT DEFAULT ''"),
     ("categories",   "tax_line",         "TEXT DEFAULT ''"),
     ("categories",   "deduct_pct",       "REAL DEFAULT 100"),
+    # v9 — audit trail
+    ("transactions", "created_by",       "TEXT DEFAULT ''"),
+    ("transactions", "updated_by",       "TEXT DEFAULT ''"),
 ] + PEOPLE_COLUMNS
 
 # Optional transaction columns: written only when the caller's dict has the key,
@@ -206,7 +211,7 @@ class _ClosingConnection(sqlite3.Connection):
 
 
 class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryMixin,
-               PayrollMixin, TaxMixin):
+               PayrollMixin, TaxMixin, AdminMixin):
     def __init__(self, db_path: str, book_type: str | None = None):
         """
         Open (creating/migrating as needed) the database at db_path.
@@ -215,6 +220,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         """
         self.db_path = db_path
         self.last_migration_backup = ""
+        self.session_user = ""
         self._init_schema(book_type)
 
     # ── internal ──────────────────────────────────────────────────────────────
@@ -239,7 +245,9 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             conn.executescript(INVENTORY_SCHEMA)
             conn.executescript(PAYROLL_SCHEMA)
             conn.executescript(TAX_SCHEMA)
+            conn.executescript(ADMIN_SCHEMA)
         self._migrate()
+        self._install_triggers()
         if is_new and book_type in (BOOK_PERSONAL, BOOK_BUSINESS):
             self.set_setting("book_type", book_type)
         if self.is_business():
@@ -445,6 +453,10 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                     "updated_at=? WHERE id=?",
                     [int(data[k]) if k == "reimbursable" else (data.get(k) or "")
                      for k in extras] + [self._now(), data["id"]])
+            if self.session_user:
+                c.execute("UPDATE transactions SET updated_by=?, "
+                          "created_by=COALESCE(NULLIF(created_by,''),?) WHERE id=?",
+                          (self.session_user, self.session_user, data["id"]))
         return data
 
     def bulk_save_transactions(self, rows: list[dict]) -> list[dict]:
@@ -702,6 +714,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         database name, etc.). Categories are part of the app's setup, not the
         per-import data, so they survive a reset.
         """
+        self.set_lock_date("")      # a reset deliberately clears locked periods too
         with self._conn() as c:
             c.execute("DELETE FROM transactions")
             c.execute("DELETE FROM accounts")

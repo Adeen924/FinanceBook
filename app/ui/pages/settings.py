@@ -34,6 +34,7 @@ class SettingsPage(QWidget):
         lay.addWidget(self._build_book_type_section())
         lay.addWidget(self._build_backup_section())
         lay.addWidget(self._build_ai_section())
+        lay.addWidget(self._build_control_section())
         lay.addWidget(self._build_reset_section())
         lay.addWidget(self._build_about_section())
         lay.addStretch()
@@ -383,6 +384,89 @@ class SettingsPage(QWidget):
         set_ai_api_key("")
         self._refresh_ai()
 
+    # ── Period lock & audit trail ────────────────────────────────────────────
+
+    def _build_control_section(self) -> QGroupBox:
+        from ui.widgets import DateField
+        grp = QGroupBox("Period Lock & Audit Trail")
+        lay = QVBoxLayout(grp)
+        lay.setSpacing(10)
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Your name (recorded with every change):"))
+        self._user_name = QLineEdit()
+        name_row.addWidget(self._user_name, 1)
+        save_name = QPushButton("Save")
+        save_name.setObjectName("Secondary")
+        save_name.clicked.connect(self._save_user_name)
+        name_row.addWidget(save_name)
+        lay.addLayout(name_row)
+
+        self._lock_lbl = QLabel("")
+        self._lock_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self._lock_lbl.setWordWrap(True)
+        lay.addWidget(self._lock_lbl)
+        lock_row = QHBoxLayout()
+        lock_row.addWidget(QLabel("Lock everything dated on or before"))
+        self._lock_date = DateField()
+        lock_row.addWidget(self._lock_date)
+        lock_btn = QPushButton("Lock")
+        lock_btn.clicked.connect(self._set_lock)
+        lock_row.addWidget(lock_btn)
+        unlock_btn = QPushButton("Unlock")
+        unlock_btn.setObjectName("Secondary")
+        unlock_btn.clicked.connect(self._clear_lock)
+        lock_row.addWidget(unlock_btn)
+        lock_row.addStretch()
+        audit_btn = QPushButton("View Audit Log…")
+        audit_btn.setObjectName("Secondary")
+        audit_btn.clicked.connect(self._show_audit)
+        lock_row.addWidget(audit_btn)
+        lay.addLayout(lock_row)
+        hint = QLabel("Close a month or year after you've reconciled or filed it, so nothing in it "
+                      "can be changed by accident. Every add, edit and delete is logged with who "
+                      "made it and when.")
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        return grp
+
+    def _refresh_control(self):
+        from db_config import current_user_name
+        from ui.widgets import fmt_date
+        from PyQt6.QtCore import QDate
+        self._user_name.setText(current_user_name())
+        ld = self.db.lock_date()
+        self._lock_lbl.setText(f"<b>Books locked through {fmt_date(ld)}.</b>" if ld
+                               else "No period is locked.")
+        if ld:
+            self._lock_date.setDate(QDate.fromString(ld, "yyyy-MM-dd"))
+
+    def _save_user_name(self):
+        from db_config import set_value, current_user_name
+        set_value("user_name", self._user_name.text().strip())
+        self.db.set_session_user(current_user_name())
+        QMessageBox.information(self, "Saved", "Your name will be recorded with your changes.")
+
+    def _set_lock(self):
+        from ui.widgets import fmt_date
+        d = self._lock_date.date().toString("yyyy-MM-dd")
+        if QMessageBox.question(
+                self, "Lock Period",
+                f"Lock all transactions dated on or before {fmt_date(d)}? They can't be added, "
+                "edited or deleted until you unlock.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) == QMessageBox.StandardButton.Yes:
+            self.db.set_lock_date(d)
+            self._refresh_control()
+
+    def _clear_lock(self):
+        self.db.set_lock_date("")
+        self._refresh_control()
+
+    def _show_audit(self):
+        from ui.dialogs.audit_dialog import AuditDialog
+        AuditDialog(self.db, self).exec()
+
     # ── Reset section ─────────────────────────────────────────────────────────
 
     def _build_reset_section(self) -> QGroupBox:
@@ -481,3 +565,4 @@ class SettingsPage(QWidget):
         self._refresh_book_type()
         self._refresh_backups()
         self._refresh_ai()
+        self._refresh_control()

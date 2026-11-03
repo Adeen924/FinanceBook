@@ -26,6 +26,7 @@ NAV_SECTIONS = [
         ("Import",           "import",       False),
         ("Reconcile",        "reconcile",    False),
         ("Loans",            "loans",        False),
+        ("Recurring",        "calendar",     False),
         ("Rules",            "rules",        False),
         ("Categories",       "categories",   False),
     ]),
@@ -69,6 +70,7 @@ def _page_constructors() -> dict:
     from ui.pages.inventory    import InventoryPage
     from ui.pages.payroll      import PayrollPage
     from ui.pages.taxes        import TaxesPage
+    from ui.pages.recurring    import RecurringPage
     return {
         "Dashboard": DashboardPage, "Accounts": AccountsPage, "Loans": LoansPage,
         "Transactions": TransactionsPage, "Transfers": TransfersPage,
@@ -78,7 +80,7 @@ def _page_constructors() -> dict:
         "Receipts": ReceiptsPage, "Assets": AssetsPage,
         "Invoices & Bills": InvoicesPage, "Contacts": ContactsPage,
         "Inventory": InventoryPage, "People & Payroll": PayrollPage,
-        "Taxes": TaxesPage,
+        "Taxes": TaxesPage, "Recurring": RecurringPage,
     }
 
 
@@ -372,6 +374,13 @@ class MainWindow(QMainWindow):
             self._stack.removeWidget(w)
             w.deleteLater()
         new_db.auto_backup_if_due()
+        from db_config import current_user_name
+        new_db.set_session_user(current_user_name())
+        try:
+            from datetime import date as _date
+            new_db.process_recurring(_date.today().isoformat())
+        except Exception:
+            pass
         self._populate_db_combo()
         self._current_page = ""
         self._build_nav()
