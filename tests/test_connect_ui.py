@@ -431,24 +431,27 @@ class MissingDatabaseStartupTests(UiCase):
         import main
         path = self.new_db(os.path.join("OneDrive", "finances.db"))
         with self._click("Retry"):
-            self.assertEqual(main._resolve_missing_database(path), (path, None, None))
+            self.assertEqual(main._resolve_missing_database(path), (path, None, None, None))
 
     def test_choose_another(self):
         import main
         other = self.new_db("other.db")
         with self._click("Choose Another Database…"), self.pick(other):
             self.assertEqual(main._resolve_missing_database(os.path.join(self.dir, "gone.db")),
-                             (os.path.abspath(other), None, None))
+                             (os.path.abspath(other), None, None, None))
 
     def test_create_new(self):
         import main
         accept = lambda d: (setattr(d, "database_name", "Fresh"),
                             setattr(d, "database_location", self.dir),
                             setattr(d, "book_type", "business"),
+                            setattr(d, "preset", "simple"),
                             QDialog.DialogCode.Accepted)[-1]
         with self._click("Create New…"), mock.patch.object(DatabaseSetupDialog, "exec", accept):
-            path, name, book = main._resolve_missing_database(os.path.join(self.dir, "x", "gone.db"))
-        self.assertEqual((os.path.dirname(path), name, book), (self.dir, "Fresh", "business"))
+            path, name, book, preset = main._resolve_missing_database(
+                os.path.join(self.dir, "x", "gone.db"))
+        self.assertEqual((os.path.dirname(path), name, book, preset),
+                         (self.dir, "Fresh", "business", "simple"))
 
 
 class UpdateInteractionTests(UiCase):

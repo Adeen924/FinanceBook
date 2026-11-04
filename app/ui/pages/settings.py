@@ -2,9 +2,9 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QFormLayout, QMessageBox,
-    QScrollArea, QFrame, QLineEdit, QCheckBox, QSpinBox, QFileDialog,
+    QScrollArea, QFrame, QLineEdit, QCheckBox, QSpinBox, QFileDialog, QComboBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from ui.widgets import PageTitle
 from ui.styles  import SUCCESS, DANGER, WARNING
 from updater    import read_local_version
@@ -21,6 +21,7 @@ class SettingsPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll = scroll
 
         inner = QWidget()
         lay   = QVBoxLayout(inner)
@@ -32,6 +33,7 @@ class SettingsPage(QWidget):
         lay.addWidget(self._build_qb_section())
         lay.addWidget(self._build_database_section())
         lay.addWidget(self._build_book_type_section())
+        lay.addWidget(self._build_features_section())
         lay.addWidget(self._build_backup_section())
         lay.addWidget(self._build_receipt_files_section())
         lay.addWidget(self._build_ai_section())
@@ -190,6 +192,174 @@ class SettingsPage(QWidget):
         mw = getattr(self, "_main_window", None)
         if mw is not None and hasattr(mw, "refresh_navigation"):
             mw.refresh_navigation()
+
+    # ── Sidebar & Features (Business books) ───────────────────────────────────
+
+    def _build_features_section(self) -> QGroupBox:
+        from utils import nav_config as NC
+        grp = QGroupBox("Sidebar && Features")
+        self._features_grp = grp
+        lay = QVBoxLayout(grp)
+        lay.setSpacing(10)
+        info = QLabel(
+            "Choose which business features appear in the sidebar. Hiding one never "
+            "deletes anything: its data stays in your books and in every report (balance "
+            "sheet, profit &amp; loss, cost of goods sold, depreciation, payroll and sales "
+            "tax owed). The choice is saved in this database, so it follows the database "
+            "to your other computer (for example through OneDrive).")
+        info.setWordWrap(True)
+        info.setTextFormat(Qt.TextFormat.RichText)
+        info.setObjectName("InfoBox")
+        lay.addWidget(info)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Business size:"))
+        self._preset_combo = QComboBox()
+        for p in NC.PRESETS:
+            self._preset_combo.addItem(p.label, p.key)
+            self._preset_combo.setItemData(self._preset_combo.count() - 1, p.description,
+                                           Qt.ItemDataRole.ToolTipRole)
+        self._preset_combo.addItem("Custom", "custom")
+        self._preset_combo.activated.connect(self._on_preset)
+        row.addWidget(self._preset_combo)
+        self._preset_desc = QLabel("")
+        self._preset_desc.setObjectName("Muted")
+        self._preset_desc.setWordWrap(True)
+        row.addWidget(self._preset_desc, 1)
+        lay.addLayout(row)
+
+        self._module_checks = {}
+        self._module_notes = {}
+        for m in NC.MODULES:
+            chk = QCheckBox(m.label.replace("&", "&&"))
+            chk.toggled.connect(lambda on, k=m.key: self._on_module_toggled(k, on))
+            lay.addWidget(chk)
+            note = QLabel(m.description)
+            note.setObjectName("Muted")
+            note.setWordWrap(True)
+            note.setTextFormat(Qt.TextFormat.RichText)
+            note.setContentsMargins(28, 0, 0, 4)
+            lay.addWidget(note)
+            self._module_checks[m.key] = chk
+            self._module_notes[m.key] = note
+
+        locked = QLabel(
+            "🔒 Always shown: Dashboard, Accounts, Transactions (with Import, Reconcile, "
+            "Transfers and Recurring tabs), Contacts, Reports, Categories &amp; Rules and "
+            "Settings.")
+        locked.setObjectName("Muted")
+        locked.setWordWrap(True)
+        locked.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(locked)
+        self._features_ro_note = QLabel(
+            "This database is open read-only, so features can't be changed here.")
+        self._features_ro_note.setObjectName("Muted")
+        self._features_ro_note.setWordWrap(True)
+        lay.addWidget(self._features_ro_note)
+        return grp
+
+    @staticmethod
+    def _plural(n: int, one: str, many: str) -> str:
+        return f"{n} {one if n == 1 else many}"
+
+    def _module_data(self) -> dict:
+        """How much each module already holds, as text ('' when empty)."""
+        db, P = self.db, self._plural
+        counts = {
+            "receipts": lambda: P(len(db.get_receipts()), "receipt", "receipts"),
+            "invoices": lambda: P(len(db.get_invoices()) + len(db.get_bills()),
+                                  "invoice or bill", "invoices and bills"),
+            "inventory": lambda: P(len(db.get_items(active_only=False)), "item", "items"),
+            "assets": lambda: P(len(db.get_assets()), "asset", "assets"),
+            "payroll": lambda: P(len(db.get_employees(active_only=False)),
+                                 "person", "people"),
+            "taxes": lambda: P(len(db.get_mileage()), "mileage trip", "mileage trips"),
+            "loans": lambda: P(len(db.get_loans()), "loan", "loans"),
+        }
+        out = {}
+        for key, fn in counts.items():
+            try:
+                text = fn()
+            except Exception:
+                text = ""
+            out[key] = "" if text.startswith("0 ") else text
+        return out
+
+    def _refresh_features(self):
+        from utils import nav_config as NC
+        business = self.db.is_business()
+        self._features_grp.setVisible(business)
+        if not business:
+            return
+        enabled = NC.enabled_modules(self.db)
+        data = self._module_data()
+        ro = self.db.read_only
+        tip = ("This database is open read-only (it's in use on another computer), so "
+               "features can't be changed here." if ro else "")
+        preset = NC.preset_for(enabled)
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.setCurrentIndex(max(self._preset_combo.findData(preset), 0))
+        self._preset_combo.blockSignals(False)
+        self._preset_combo.setEnabled(not ro)
+        self._preset_combo.setToolTip(tip)
+        self._preset_desc.setText(
+            NC.PRESETS_BY_KEY[preset].description if preset in NC.PRESETS_BY_KEY
+            else "Your own mix of features.")
+        for m in NC.MODULES:
+            on = m.key in enabled
+            chk = self._module_checks[m.key]
+            chk.blockSignals(True)
+            chk.setChecked(on)
+            chk.blockSignals(False)
+            chk.setEnabled(not ro)
+            chk.setToolTip(tip)
+            has = data.get(m.key, "")
+            if has and not on:
+                extra = (f"<br><span style=\"color:{WARNING};\">{m.label.replace('&', '&amp;')} "
+                         f"is hidden but has {has} — hiding doesn't delete anything, and "
+                         "reports still include them.</span>")
+            elif has:
+                extra = f" &nbsp;<i>Has {has}.</i>"
+            else:
+                extra = ""
+            self._module_notes[m.key].setText(m.description.replace("&", "&amp;") + extra)
+        self._features_ro_note.setVisible(ro)
+
+    def _apply_modules(self, enabled):
+        from utils import nav_config as NC
+        if self.db.read_only:
+            self._refresh_features()
+            return
+        mw = getattr(self, "_main_window", None)
+        if mw is not None and hasattr(mw, "set_modules"):
+            mw.set_modules(enabled)     # rebuilds the sidebar, then refreshes this page
+        else:
+            NC.save_modules(self.db, enabled)
+        self._refresh_features()
+
+    def _on_module_toggled(self, key: str, on: bool):
+        from utils import nav_config as NC
+        enabled = set(NC.enabled_modules(self.db))
+        enabled = enabled | {key} if on else enabled - {key}
+        self._apply_modules(enabled)
+
+    def _on_preset(self, _index: int = 0):
+        from utils import nav_config as NC
+        key = self._preset_combo.currentData()
+        if key not in NC.PRESETS_BY_KEY:
+            self._refresh_features()       # "Custom" only names a mix; nothing to apply
+            return
+        self._apply_modules(NC.preset_modules(key))
+
+    def show_features_section(self):
+        """Scroll Sidebar & Features into view (from the sidebar's Add features link)."""
+        def scroll():
+            try:
+                self._scroll.verticalScrollBar().setValue(max(self._features_grp.y() - 12, 0))
+            except RuntimeError:
+                pass        # the page was closed before the deferred call ran
+        scroll()
+        QTimer.singleShot(0, scroll)        # again once a just-built page has its layout
 
     # ── Backups ───────────────────────────────────────────────────────────────
 
@@ -669,6 +839,7 @@ class SettingsPage(QWidget):
         self._db_name_edit.setText(
             self.db.get_setting("database_name", ""))
         self._refresh_book_type()
+        self._refresh_features()
         self._refresh_backups()
         self._refresh_receipt_files()
         self._refresh_ai()

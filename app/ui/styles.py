@@ -341,6 +341,29 @@ QFrame#SegmentGroup {{
     border-radius: 10px;
 }}
 
+/* Hub tabs (business sidebar items that group pages): an underlined text row,
+   so it reads as a different level from a page's own pill-shaped QTabBar. */
+QFrame#HubBar {{
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid rgba(47, 107, 255, 0.14);
+}}
+QPushButton#HubTab {{
+    background: transparent;
+    color: {MUTED};
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 8px 2px 8px 2px;
+    margin-right: 20px;
+    font-size: 13px;
+    font-weight: 600;
+}}
+QPushButton#HubTab:hover, QPushButton#HubTab:pressed {{ color: {TEXT}; background: transparent; }}
+QPushButton#HubTab:checked {{ color: {PRIMARY}; border-bottom: 2px solid {PRIMARY}; }}
+QPushButton#HubTab:focus {{ color: {TEXT}; }}
+QPushButton#HubTab:checked:focus {{ color: {PRIMARY}; }}
+
 QPushButton::menu-indicator {{
     image: {url("chevron_down")};
     subcontrol-origin: padding;

@@ -72,8 +72,8 @@ def _resolve_missing_database(db_path: str):
     The active database's file isn't there at startup — usually a OneDrive
     folder that hasn't synced yet. Never quietly create an empty database
     where an existing one was expected: let the user retry, pick another, or
-    deliberately create a new one. Returns (path, new_name, book_type) — the
-    name/type are set only for a new database — or None to quit.
+    deliberately create a new one. Returns (path, new_name, book_type, preset) —
+    the name/type/preset are set only for a new database — or None to quit.
     """
     from PyQt6.QtWidgets import QMessageBox, QDialog
     while True:
@@ -91,12 +91,12 @@ def _resolve_missing_database(db_path: str):
         clicked = box.clickedButton()
         if clicked is retry:
             if os.path.exists(db_path):
-                return db_path, None, None
+                return db_path, None, None, None
         elif clicked is choose:
             from ui.connect_dialog import choose_existing_database
             path = choose_existing_database(None)
             if path:
-                return path, None, None
+                return path, None, None, None
         elif clicked is create:
             from ui.database_dialog import DatabaseSetupDialog
             dialog = DatabaseSetupDialog(
@@ -106,7 +106,7 @@ def _resolve_missing_database(db_path: str):
                 accept_label="Create", show_book_type=True)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 return (_new_database_path(dialog.database_location),
-                        dialog.database_name, dialog.book_type)
+                        dialog.database_name, dialog.book_type, dialog.preset)
         else:
             return None
 
@@ -180,6 +180,7 @@ def main():
 
     new_db_name = None
     new_book_type = None
+    new_preset = None
     connected = False
     if first_run:
         from ui.database_dialog import DatabaseSetupDialog
@@ -208,12 +209,13 @@ def main():
         else:
             new_db_name = dialog.database_name
             new_book_type = dialog.book_type
+            new_preset = dialog.preset
             db_path = _new_database_path(dialog.database_location)
     elif not os.path.exists(db_path):
         resolved = _resolve_missing_database(db_path)
         if resolved is None:
             sys.exit(0)
-        db_path, new_db_name, new_book_type = resolved
+        db_path, new_db_name, new_book_type, new_preset = resolved
         connected = new_db_name is None
 
     from sheets.backup import read_user_version
@@ -236,6 +238,9 @@ def main():
 
     if new_db_name is not None:
         db.set_setting("database_name", new_db_name)
+        if new_book_type == "business" and new_preset:
+            from utils import nav_config
+            nav_config.save_modules(db, nav_config.preset_modules(new_preset))
         register_database(db_path, make_active=True)
     elif connected:
         register_database(db_path, make_active=True)

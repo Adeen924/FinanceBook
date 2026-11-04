@@ -7,7 +7,7 @@ from the sidebar. On first run it also offers to connect an existing database
 import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                               QLineEdit, QPushButton, QFileDialog, QFrame,
-                              QRadioButton, QButtonGroup)
+                              QRadioButton, QButtonGroup, QGridLayout)
 
 
 class DatabaseSetupDialog(QDialog):
@@ -19,10 +19,13 @@ class DatabaseSetupDialog(QDialog):
         self._show_book_type = show_book_type
         self._show_connect = show_connect
         self.book_type = "personal"
+        # Business only: which sidebar features start on (utils.nav_config presets).
+        from utils.nav_config import DEFAULT_NEW_PRESET
+        self.preset = DEFAULT_NEW_PRESET
         # Set when the user connects an existing database instead of creating one.
         self.connected_path = ""
         self.setWindowTitle(window_title)
-        self.setMinimumWidth(600)
+        self.setMinimumWidth(640)
         # Populated on accept; left as the defaults if the user cancels.
         self.database_name = default_name
         self.database_location = default_location
@@ -112,6 +115,9 @@ class DatabaseSetupDialog(QDialog):
             group.addButton(self._business_rb)
             lay.addWidget(self._personal_rb)
             lay.addWidget(self._business_rb)
+            lay.addWidget(self._build_preset_box())
+            self._business_rb.toggled.connect(self._on_book_type)
+            self._on_book_type()
             hint = QLabel("You can switch later in Settings → Book Type.")
             hint.setObjectName("Muted")
             lay.addWidget(hint)
@@ -128,6 +134,44 @@ class DatabaseSetupDialog(QDialog):
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(ok_btn)
         lay.addLayout(btn_row)
+
+    def _build_preset_box(self) -> QFrame:
+        from utils.nav_config import PRESETS
+        box = QFrame()
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(26, 0, 0, 0)
+        bl.setSpacing(4)
+        q = QLabel("How complex is your business?")
+        q.setStyleSheet("font-weight:bold;")
+        bl.addWidget(q)
+        group = QButtonGroup(box)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(2)
+        self._preset_rbs = {}
+        for r, p in enumerate(PRESETS):
+            rb = QRadioButton(p.label)
+            # Fusion sizes radios without the QSS indicator and spacing, which then clip.
+            rb.setMinimumHeight(26)
+            rb.setMinimumWidth(rb.sizeHint().width() + 12)
+            rb.setChecked(p.key == self.preset)
+            group.addButton(rb)
+            grid.addWidget(rb, r, 0)
+            desc = QLabel(p.description)
+            desc.setObjectName("Muted")
+            grid.addWidget(desc, r, 1)
+            self._preset_rbs[p.key] = rb
+        grid.setColumnStretch(1, 1)
+        bl.addLayout(grid)
+        note = QLabel("Only the sidebar changes. Adjust anytime in Settings → Sidebar & Features.")
+        note.setObjectName("Muted")
+        bl.addWidget(note)
+        self._preset_box = box
+        return box
+
+    def _on_book_type(self, *_):
+        self._preset_box.setVisible(self._business_rb.isChecked())
+        self.adjustSize()
 
     def _browse(self):
         start = self._loc_edit.text() or os.path.expanduser("~")
@@ -151,4 +195,5 @@ class DatabaseSetupDialog(QDialog):
         self.database_location = location
         if self._show_book_type and self._business_rb.isChecked():
             self.book_type = "business"
+            self.preset = next(k for k, rb in self._preset_rbs.items() if rb.isChecked())
         self.accept()
