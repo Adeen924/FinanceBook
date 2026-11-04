@@ -360,6 +360,36 @@ The loan dialog displays and accepts it as a percentage (`6.5 %`) and divides by
 
 ---
 
+## Business sidebar: hubs & optional modules (v1.13, no schema change)
+
+- `utils/nav_config.py` (Qt-free) decides what the sidebar shows:
+  `visible_sections(book_type, enabled)`, `locate(name, …)`, the `MODULES`
+  (receipts, invoices, owner, taxes, assets, loans, inventory, payroll), the
+  `PRESETS` (Simple ⊂ Standard ⊂ Full) and `receipt_line_kinds()`.
+- Preference: `settings` key `nav_modules`, JSON
+  `{"version":1,"preset":…,"enabled":[…],"known":[…]}`. Missing/empty/corrupt →
+  every module on. Names this version doesn't know are ignored but preserved on
+  save; modules missing from `known` (added in a later release) default on.
+  Personal books ignore the key and show exactly the pre-1.13 list.
+- Page names are still the stable IDs (`_nav_to("Import")`, `mw.page("Reconcile")`,
+  tour `nav=`, dashboard links). In a Business book some pages live inside a
+  `HubPage` (main_window.py): a row of `HubTab` buttons over a stack of the real
+  page widgets. `mw.page(name)` returns the page itself; `mw.current_page_widget()`
+  is the page on screen (use it instead of `_stack.currentWidget()`, which may be
+  a hub). Hub ids: Accounts (+Loans), Transactions (+Import, Reconcile, Transfers,
+  Recurring), Invoices & Bills (+Contacts), Categories & Rules.
+- Contacts is never hidden (transaction Vendor/customer field, inventory vendors,
+  1099 flags, By Vendor report): a tab of Invoices & Bills, or its own item when
+  the Invoices module is off.
+- `_nav_to(hidden page)` asks "Turn On X?" (`offer_module`); `mw.set_modules()`
+  saves and calls `refresh_navigation()`, which keeps the current page (moving it
+  into or out of a hub) and deletes every other cached page and hub.
+- Hiding a module is navigation-only: reports, COGS, depreciation, payroll
+  liabilities, A/R and A/P still include its data. Receipt lines already saved as
+  Inventory / Fixed asset keep that type when the module is off.
+- New pages: add to `_page_constructors()` and to `nav_config` (`_PERSONAL`,
+  `visible_sections`, `ALL_PAGES`, and `MODULES` if optional).
+
 ## Known issues / things to watch
 
 - **Button clipping in tables**: All inline action buttons (Edit/Delete/Reconcile)
@@ -387,9 +417,9 @@ The loan dialog displays and accepts it as a percentage (`6.5 %`) and divides by
 - Action buttons in table cells must override padding via `setStyleSheet()`
 - No comments unless the WHY is non-obvious
 - `db.get_*` methods return list/dict with booleans as "0"/"1" strings
-- New pages: add to `NAV_ITEMS`, `_page_constructors()`, and `hiddenimports` in `FinanceBook.spec`.
-  **NOTE: `LoansPage` and `LoanDialog` were added in the loans feature but `FinanceBook.spec`
-  `hiddenimports` has not been updated yet — do this before the next build.**
+- New pages: add to `_page_constructors()` and `utils/nav_config.py` (see the v1.13
+  section). App modules load from `app/` at runtime, so they are not listed in
+  `FinanceBook.spec` (only third-party libraries are).
 
 ---
 
