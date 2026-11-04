@@ -227,6 +227,16 @@ The lock is best-effort across computers (sync delay); see the README.
   existing purchase moves in place (same ids) and deletes leftovers. "Save Changes"
   on a booked receipt re-syncs stock without touching money. book_receipt passes
   split outflows as negative (split_transaction only flips expense categories).
+- Watched receipts folder (v1.12, no schema change): setting per computer and per
+  database in app_settings.json (`db_config.get/set/clear_receipt_folder`, keyed by
+  the normcase'd absolute DB path). `utils/receipt_inbox.py` (Qt-free): `scan_folder`
+  stat-only listing, matches by original_name + size of FinanceBook's copy, hashes
+  only same-size candidates (cache by path/size/mtime), never opens online-only
+  placeholders (st_file_attributes recall/offline bits), skips FinanceBook's own
+  folders; `receipt_state()`; `import_and_parse()` (offline parsers only, per-file
+  failures, cancel between files); `read_with_ai()` only after two confirmations in
+  the page. ReceiptsPage: ScanWorker/BatchWorker in module-level `_RUNNING` (a page
+  can be destroyed mid-scan); slots must never raise (PyQt6 aborts the app).
 - Categories: `Database.get_categories_for_book()` is what pickers use; it hides
   personal-default categories (matched to `default_categories.py`, no tax line)
   in business books unless used, kept, or setting `show_personal_categories`.

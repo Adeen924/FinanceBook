@@ -126,6 +126,37 @@ def set_value(name: str, value: str):
     _save(cfg)
 
 
+# ── watched receipts folder (per computer, per database) ─────────────────────
+# Kept here, not in the database: each computer has its own path to the folder.
+
+def _db_key(db_path: str) -> str:
+    return os.path.normcase(os.path.abspath(db_path))
+
+
+def get_receipt_folder(db_path: str) -> dict:
+    """{"path": str, "subfolders": bool} for this database on this computer ('' = none)."""
+    entry = _load().get("receipt_folders", {}).get(_db_key(db_path)) or {}
+    return {"path": entry.get("path", "") if isinstance(entry.get("path"), str) else "",
+            "subfolders": bool(entry.get("subfolders", False))}
+
+
+def set_receipt_folder(db_path: str, folder: str, subfolders: bool = False):
+    cfg = _load()
+    folders = cfg.get("receipt_folders") or {}
+    folders[_db_key(db_path)] = {"path": os.path.abspath(folder), "subfolders": bool(subfolders)}
+    cfg["receipt_folders"] = folders
+    cfg["last_receipt_folder_dir"] = os.path.abspath(folder)
+    _save(cfg)
+
+
+def clear_receipt_folder(db_path: str):
+    cfg = _load()
+    folders = cfg.get("receipt_folders") or {}
+    if folders.pop(_db_key(db_path), None) is not None:
+        cfg["receipt_folders"] = folders
+        _save(cfg)
+
+
 # ── AI receipt reading (opt-in) ──────────────────────────────────────────────
 
 def ai_settings() -> dict:

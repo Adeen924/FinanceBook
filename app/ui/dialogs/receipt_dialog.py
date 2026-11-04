@@ -56,13 +56,15 @@ def kinds_for(db) -> list[tuple[str, str]]:
 
 
 class ReceiptReviewDialog(QDialog):
-    def __init__(self, db, receipt: dict, parent=None, parsed: dict | None = None):
+    def __init__(self, db, receipt: dict, parent=None, parsed: dict | None = None,
+                 queue_label: str = ""):
         super().__init__(parent)
         self.db = db
         self.receipt = dict(receipt)
         self._worker = None
         self.booked = False
-        self.setWindowTitle("Review Receipt")
+        self.setWindowTitle(f"Review Receipt — {queue_label}" if queue_label
+                            else "Review Receipt")
         self.resize(1480, 800)
         self.setMinimumSize(1040, 620)
         self._pack_notes: list[str] = []
@@ -93,6 +95,12 @@ class ReceiptReviewDialog(QDialog):
         if notes:
             self._show_note(notes)
         self._update_check()
+        if db.read_only:
+            tip = ("This database is open read-only because it's in use on another computer, "
+                   "so nothing can be saved here.")
+            for b in (self.draft_btn, self.book_btn, self.ai_btn):
+                b.setEnabled(False)
+                b.setToolTip(tip)
 
     # ── layout ───────────────────────────────────────────────────────────────
 
@@ -288,8 +296,8 @@ class ReceiptReviewDialog(QDialog):
         btns.addStretch()
         cancel = SecondaryButton("Cancel")
         cancel.clicked.connect(self.reject)
-        draft = SecondaryButton("Save Changes" if self.receipt.get("status") == "booked"
-                                else "Save Draft")
+        draft = self.draft_btn = SecondaryButton(
+            "Save Changes" if self.receipt.get("status") == "booked" else "Save Draft")
         if self.receipt.get("status") == "booked":
             draft.setToolTip("Saves the lines (e.g. corrected units) and updates the stock this "
                              "receipt received. Use Save to Books to change the booked amounts.")

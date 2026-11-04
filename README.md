@@ -12,6 +12,40 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New: watched receipts folder (v1.12)
+
+Point the Receipts page at the folder where you keep downloaded receipts.
+
+- **See what's waiting.** "Receipts folder: … [Choose…] [Rescan] [Clear]" (plus
+  *Include subfolders*), and a status line such as "47 files in folder · 41
+  imported · 6 new · 9 imported but not reviewed · 32 saved to books". Click a
+  count to filter the list. The folder is checked again whenever you open the
+  Receipts page or come back to the app (or press Rescan).
+- **Nothing happens without a click.** A banner offers **Parse N new** (copies
+  the new files into FinanceBook and reads them), **Review** and **Not now**. A
+  progress window shows each file and can be cancelled; one unreadable file
+  never stops the rest, and you get a summary ("Imported 6 · already on file 1 ·
+  couldn't read 1"). A renamed copy of a receipt you already have is recognised
+  and never imported twice.
+- **AI only when you say so.** Batch parsing uses FinanceBook's own readers
+  (PDF text and Windows OCR). Files that would need Read with AI are listed;
+  they're only sent to Anthropic if AI reading is on in Settings and you confirm
+  sending those specific files.
+- **Review queue.** Review opens the oldest receipt that still needs review
+  ("Review Receipt — 3 of 9") and offers the next one after you save. The list
+  has a filter: All / Needs review / Needs parsing / Saved.
+- **Your folder is never changed.** FinanceBook only reads it — it never moves,
+  renames, edits or deletes anything there.
+- **OneDrive / Google Drive "online-only" files** aren't downloaded just to be
+  counted. The status line says how many are online-only; they download when
+  you import them.
+- **Set on each computer.** The folder is remembered per computer (your two
+  laptops can use different paths), not in the shared database — so a second
+  computer shows "Choose Folder…" until you pick the folder there too. No
+  database upgrade in this release.
+- A database opened read-only (in use on another computer) still shows the
+  counts, but importing, parsing and saving are switched off there.
+
 ## New: pack sizes on receipts (v1.11)
 
 > **This release upgrades the database format again.** Update FinanceBook on every

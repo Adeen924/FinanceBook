@@ -189,6 +189,11 @@ class ReceiptsMixin:
             r = c.execute("SELECT * FROM receipts WHERE id=?", (rid,)).fetchone()
         return _row(r) if r else None
 
+    def receipt_ids_with_items(self) -> set:
+        """Receipts that have line items saved (a draft or a booked receipt)."""
+        with self._conn() as c:
+            return {r[0] for r in c.execute("SELECT DISTINCT receipt_id FROM receipt_items")}
+
     def save_receipt(self, data: dict) -> dict:
         cols = (("vendor", "receipt_date", "currency") + _RECEIPT_MONEY +
                 ("status", "parse_method", "raw_text", "transaction_id", "split_group_id", "notes"))
