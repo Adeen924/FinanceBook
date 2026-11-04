@@ -1,7 +1,7 @@
 """Receipt review: the receipt beside an editable table of its line items."""
 import os
 
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
+from PyQt6.QtWidgets import (QDialog, QSpinBox, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
                              QLineEdit, QComboBox, QDoubleSpinBox, QPushButton,
                              QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
                              QScrollArea, QTextEdit, QWidget, QCheckBox, QMessageBox,
@@ -14,6 +14,8 @@ from ui.styles import WARNING, SUCCESS, MUTED
 from utils.money import D, cents, money_sum
 from utils.receipt_booking import landed_costs, receipt_total, per_unit_cost, total_units
 from parsers import receipt as R
+from sheets.receipts_store import (paid_from_key, receipt_txn_account_locked,
+                                   RECEIPT_DEFAULT_PAID_FROM)
 
 (COL_DESC, COL_QTY, COL_UNIT, COL_TOTAL, COL_UPP, COL_UNITS, COL_UCOST, COL_CAT, COL_CLASS,
  COL_CHARGED, COL_BIZ, COL_KIND, COL_ITEM) = range(13)
@@ -22,6 +24,28 @@ HEADERS = ["Description", "Qty", "Unit $", "Line $", "Units per\npack", "Total\n
            "Inventory item"]
 SUGGESTED_BG = QColor("#FFF4D6")      # a pack size read from the description
 INVALID_BG = QColor("#FDE2E1")
+MAX_UNITS_PER_PACK = 100_000
+
+
+class PackSpin(QSpinBox):
+    """Units per pack: a real input box (arrows, whole numbers ≥ 1), so it reads
+    as editable next to the computed Total units / Cost per unit cells."""
+
+    def __init__(self, value: int, suggestion: dict | None = None):
+        super().__init__()
+        self.setRange(1, MAX_UNITS_PER_PACK)
+        self.setValue(max(1, min(int(value), MAX_UNITS_PER_PACK)))
+        self.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.setKeyboardTracking(True)
+        self.suggestion = suggestion
+        self.mark("")
+
+    def mark(self, state: str, tip: str = ""):
+        """'' normal, 'suggested' (read from the title) or 'invalid'."""
+        bg = {"suggested": SUGGESTED_BG, "invalid": INVALID_BG}.get(state)
+        self.setStyleSheet(f"QSpinBox {{ background: {bg.name()}; }}" if bg else "")
+        self.setToolTip(tip or "How many stock units one of this line's qty holds — e.g. 6 "
+                               "for a “6 Pack”. Type a number or use the arrows.")
 KINDS = [("expense", "Expense")]   # later phases add Fixed asset / Inventory
 NEW_ITEM = "__new__"
 # Header amounts besides the subtotal/total, in form order: (key, label).
@@ -78,6 +102,9 @@ class ReceiptReviewDialog(QDialog):
         self._people = db.get_people() if db.is_business() else []
         self._stock_items = db.get_items() if db.is_business() else []
         self._base_txn = self._attached_txn()
+        tid = receipt.get("transaction_id") or ""
+        self._booked_txn = db.get_transaction(tid) if (
+            tid and receipt.get("status") == "booked") else None
         self._build()
         if items:
             self._load_header(self.receipt)
@@ -172,17 +199,18 @@ class ReceiptReviewDialog(QDialog):
         self.acct_combo = QComboBox()
         for a in self.db.get_accounts():
             self.acct_combo.addItem(a["name"], a["id"])
-        default_acct = (self._base_txn or {}).get("account_id") or \
-            self.db.get_setting("default_funding_account")
-        if not default_acct and self.db.is_business():
-            default_acct = (self.db.get_account_by_role(
-                "due_to_owner" if self.db.get_setting("owner_paid_default_treatment") == "reimburse"
-                else "owner_capital") or {}).get("id", "")
-        ix = self.acct_combo.findData(default_acct)
+        ix = self.acct_combo.findData(self._initial_paid_from())
         if ix >= 0:
             self.acct_combo.setCurrentIndex(ix)
         form.addRow("Paid from", self.acct_combo)
-        if self._base_txn:
+        if self._booked_txn and receipt_txn_account_locked(self._booked_txn):
+            self.acct_combo.setEnabled(False)
+            note = QLabel("Booked against an imported or reconciled bank transaction, so it "
+                          "stays in that account.")
+            note.setObjectName("Muted")
+            note.setWordWrap(True)
+            form.addRow("", note)
+        elif self._base_txn:
             self.acct_combo.setEnabled(False)
             amt = abs(float(self._base_txn.get("amount") or 0))
             note = QLabel(f"Splits the attached transaction ({self._base_txn.get('date', '')}, "
@@ -254,7 +282,7 @@ class ReceiptReviewDialog(QDialog):
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(COL_DESC, QHeaderView.ResizeMode.Stretch)
         hh.setMinimumSectionSize(56)
-        for col, w in ((COL_QTY, 56), (COL_UNIT, 76), (COL_TOTAL, 84), (COL_UPP, 76),
+        for col, w in ((COL_QTY, 56), (COL_UNIT, 76), (COL_TOTAL, 84), (COL_UPP, 100),
                        (COL_UNITS, 64), (COL_UCOST, 88), (COL_CAT, 200), (COL_CLASS, 120),
                        (COL_CHARGED, 120), (COL_BIZ, 70), (COL_KIND, 96), (COL_ITEM, 190)):
             # Never narrower than the header text (fractional DPI scaling, see main.py).
@@ -341,6 +369,34 @@ class ReceiptReviewDialog(QDialog):
         combo.setProperty("prev", combo.currentData() or "")
         combo.activated.connect(lambda _=0, c=combo: self._on_item_chosen(c))
         return combo
+
+    def _initial_paid_from(self) -> str:
+        """
+        What "Paid from" shows: the attached bank line's account; for a booked
+        receipt, the account it's actually booked in; for a draft, what was
+        chosen last time; for a new receipt, the account used on the last
+        receipt, then the general default.
+        """
+        if self._base_txn and self._base_txn.get("account_id"):
+            return self._base_txn["account_id"]
+        if self._booked_txn and self._booked_txn.get("account_id"):
+            return self._booked_txn["account_id"]
+        for key in (paid_from_key(self.receipt.get("id", "")), RECEIPT_DEFAULT_PAID_FROM,
+                    "default_funding_account"):
+            acct = self.db.get_setting(key)
+            if acct and self.db.get_account(acct):
+                return acct
+        if self.db.is_business():
+            return (self.db.get_account_by_role(
+                "due_to_owner" if self.db.get_setting("owner_paid_default_treatment") == "reimburse"
+                else "owner_capital") or {}).get("id", "")
+        return ""
+
+    def _remember_paid_from(self):
+        acct = self.acct_combo.currentData() or ""
+        if acct and not self.db.read_only and self.acct_combo.isEnabled():
+            self.db.set_setting(paid_from_key(self.receipt["id"]), acct)
+            self.db.set_setting(RECEIPT_DEFAULT_PAID_FROM, acct)
 
     def _attached_txn(self):
         tid = self.receipt.get("transaction_id") or ""
@@ -464,22 +520,40 @@ class ReceiptReviewDialog(QDialog):
         suggested = upp in (None, "") and bool(sug) and not sug.get("ambiguous")
         if upp in (None, ""):
             upp = sug["units"] if suggested else 1
-        cell = QTableWidgetItem(str(upp))
-        cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        cell.setData(Qt.ItemDataRole.UserRole, sug)
+        try:
+            upp = int(upp)
+        except (TypeError, ValueError):
+            upp = 1
+        spin = PackSpin(upp, sug)
         if sug:
-            cell.setBackground(QBrush(SUGGESTED_BG))
-            cell.setToolTip(
-                f"Suggested from “{sug['text']}” in the description — check it."
-                if suggested else
-                f"The description says “{sug['text']}”, but it's ambiguous, so units per "
-                f"pack was left at {upp}. Set it to {sug['units']} if that's right.")
-        self.table.setItem(r, COL_UPP, cell)
+            spin.mark("suggested",
+                      f"Suggested from “{sug['text']}” in the description — check it."
+                      if suggested else
+                      f"The description says “{sug['text']}”, but it's ambiguous, so units per "
+                      f"pack was left at {upp}. Set it to {sug['units']} if that's right.")
+        # Both: the arrows only emit valueChanged, and while the text isn't a valid
+        # number (e.g. emptied) only the line edit's textChanged fires.
+        spin.valueChanged.connect(lambda _=0, w=spin: self._on_upp_changed(w))
+        spin.lineEdit().textChanged.connect(lambda _="", w=spin: self._on_upp_changed(w))
+        spin.editingFinished.connect(lambda w=spin: self._offer_item_pack_default(
+            self._row_of(w, COL_UPP)))
+        self.table.setCellWidget(r, COL_UPP, spin)
         for col in (COL_UNITS, COL_UCOST):
             ro = QTableWidgetItem("")
             ro.setFlags(ro.flags() & ~Qt.ItemFlag.ItemIsEditable)
             ro.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            ro.setForeground(QBrush(QColor(MUTED)))       # computed, not typed in
             self.table.setItem(r, col, ro)
+
+    def _on_upp_changed(self, spin: "PackSpin"):
+        spin.suggestion = None          # typed in or changed: no longer just a suggestion
+        spin.mark("")
+        self._update_check()
+
+    def set_units_per_pack(self, r: int, value: int):
+        spin = self.table.cellWidget(r, COL_UPP)
+        if spin:
+            spin.setValue(int(value))
 
     @staticmethod
     def _pack_suggestion_notes(rows) -> list[str]:
@@ -497,13 +571,18 @@ class ReceiptReviewDialog(QDialog):
                          f"ambiguous — set Units per pack to {sug['units']} if that's right.")
         return notes
 
+    def _upp_text(self, r: int) -> str:
+        spin = self.table.cellWidget(r, COL_UPP)
+        return spin.cleanText().strip() if spin else ""
+
     def _upp(self, r: int) -> int | None:
-        """The row's units per pack, or None if it isn't a whole number ≥ 1."""
-        txt = self._text(r, COL_UPP)
+        """The row's units per pack, or None if it isn't a whole number ≥ 1 (the box
+        only allows those, but it can be emptied while typing)."""
+        txt = self._upp_text(r)
         if not (txt.isascii() and txt.isdigit()):
             return None
         n = int(txt)
-        return n if n >= 1 else None
+        return n if 1 <= n <= MAX_UNITS_PER_PACK else None
 
     def _invalid_upp_rows(self) -> list[str]:
         bad = []
@@ -512,7 +591,7 @@ class ReceiptReviewDialog(QDialog):
                 continue
             if self._upp(r) is None:
                 bad.append(f"{self._text(r, COL_DESC) or f'line {r + 1}'} "
-                           f"(“{self._text(r, COL_UPP)}”)")
+                           f"(“{self._upp_text(r)}”)")
         return bad
 
     def _refresh_unit_columns(self):
@@ -531,21 +610,16 @@ class ReceiptReviewDialog(QDialog):
         self.table.blockSignals(True)
         try:
             for r, row in enumerate(rows):
-                upp_cell, units_cell, cost_cell = (self.table.item(r, c)
-                                                   for c in (COL_UPP, COL_UNITS, COL_UCOST))
-                if not (upp_cell and units_cell and cost_cell):
+                spin = self.table.cellWidget(r, COL_UPP)
+                units_cell, cost_cell = self.table.item(r, COL_UNITS), self.table.item(r, COL_UCOST)
+                if not (spin and units_cell and cost_cell):
                     continue
                 upp = self._upp(r)
                 if upp is None:
-                    upp_cell.setBackground(QBrush(INVALID_BG))
-                    upp_cell.setToolTip("Units per pack must be a whole number, 1 or more.")
+                    spin.mark("invalid", "Units per pack must be a whole number, 1 or more.")
                     units_cell.setText("—")
                     cost_cell.setText("—")
                     continue
-                sug = upp_cell.data(Qt.ItemDataRole.UserRole)
-                if not sug:
-                    upp_cell.setBackground(QBrush())
-                    upp_cell.setToolTip("")
                 units = total_units(self._text(r, COL_QTY) or 1, upp)
                 inventory = row["kind"] == "inventory" and row["business"]
                 cost = landed[r] if inventory else row["line_total"]
@@ -620,7 +694,7 @@ class ReceiptReviewDialog(QDialog):
             pack = int(item.get("pack_size") or 1)
             if r >= 0 and pack > 1:
                 # The item's usual pack size; the line can still be changed.
-                self.table.item(r, COL_UPP).setText(str(pack))
+                self.set_units_per_pack(r, pack)
             self._update_check()
             return
         r = self._row_of(combo, COL_ITEM)
@@ -657,11 +731,6 @@ class ReceiptReviewDialog(QDialog):
             self.table.blockSignals(True)
             self.table.item(r, COL_TOTAL).setText(f"{cents(qty * unit):.2f}")
             self.table.blockSignals(False)
-        if c == COL_UPP:
-            self.table.blockSignals(True)
-            item.setData(Qt.ItemDataRole.UserRole, None)    # typed in: no longer a suggestion
-            self.table.blockSignals(False)
-            self._offer_item_pack_default(r)
         self._update_check()
 
     def _offer_item_pack_default(self, r: int):
@@ -801,6 +870,7 @@ class ReceiptReviewDialog(QDialog):
             h["status"] = status
         self.db.save_receipt(h)
         self.db.replace_receipt_items(self.receipt["id"], self.items())
+        self._remember_paid_from()
 
     def _check_units(self) -> bool:
         bad = self._invalid_upp_rows()
@@ -868,7 +938,11 @@ class ReceiptReviewDialog(QDialog):
         base = self._base_txn
         if self.receipt.get("status") == "booked" and self.receipt.get("transaction_id"):
             base = self.db.get_transaction(self.receipt["transaction_id"])
-        acct_id = (base or {}).get("account_id") or self.acct_combo.currentData()
+        # The receipt's own booked transaction follows "Paid from"; an attached or
+        # imported bank line keeps its account (book_receipt enforces the same).
+        locked = self._base_txn is not None or receipt_txn_account_locked(base)
+        acct_id = ((base or {}).get("account_id") if locked else None) or \
+            self.acct_combo.currentData()
         if not acct_id:
             QMessageBox.warning(self, "Choose an Account", "Pick the account it was paid from.")
             return

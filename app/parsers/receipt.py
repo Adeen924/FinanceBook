@@ -569,7 +569,7 @@ def _item_from_line(label: str, amt: Decimal) -> dict:
 _MEASURE = (r"(?:\s*[x×]\s*\d|\s*(?:ft|feet|foot|in|inch|inches|mm|cm|m|meters?|oz|lbs?|g|kg|"
             r"gb|tb|ml|l|v|w|mah|gauge|awg)\b|\s*(?:''|\"|'|”|’))")
 _PACK_PATTERNS = [
-    re.compile(r"\b(\d{1,4})\s*-?\s*(?:pack|pk)\b", re.I),
+    re.compile(r"\b(\d{1,5})\s*-?\s*(?:pack|pk|pcs|pc|pieces|piece)\b", re.I),
     re.compile(r"\bpack\s+of\s+(\d{1,4})\b(?!" + _MEASURE + ")", re.I),
     re.compile(r"\bset\s+of\s+(\d{1,4})\b(?!" + _MEASURE + ")", re.I),
     re.compile(r"\b(\d{1,4})\s*-?\s*(?:count|ct)\b", re.I),

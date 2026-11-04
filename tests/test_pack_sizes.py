@@ -27,6 +27,13 @@ class SuggestionTests(unittest.TestCase):
             "USB cable 6-Pack": (6, False), "Set of 4 bowls": (4, False),
             "Paper towels 12-count": (12, False), "Wipes 80 ct": (80, False),
             "Pens, 10 pk": (10, False),
+            # Wording from real Amazon titles:
+            "Kindroufly 562 Pieces Black M2.5 x 4/6 /8/10 /12/16 /20mm Button Head Socket "
+            "Cap Screws Nuts Washers Assortment Kit": (562, False),
+            "HANGLIFE Heat-Set Threaded Inserts, M2.5 Brass Metric Knurled Nuts (100 Pieces)":
+                (100, False),
+            "Check Valve Core, 10pcs, DN10, Pom Plastic, Micro One-Way Valve": (10, False),
+            "LED holders, 5 pc set": (5, False),
         }
         for title, (units, ambiguous) in cases.items():
             s = R.suggest_pack_size(title)
