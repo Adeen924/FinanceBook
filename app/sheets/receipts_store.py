@@ -109,6 +109,19 @@ def _row(r) -> dict:
     return d
 
 
+def receipt_txn_account_locked(txn: dict | None) -> bool:
+    """A transaction from a bank import, or reconciled, can't move to another account."""
+    return bool(txn) and (bool(txn.get("import_hash")) or str(txn.get("reconciled", "0")) == "1")
+
+
+def paid_from_key(rid: str) -> str:
+    """Settings key remembering a draft receipt's "Paid from" account (no schema change)."""
+    return f"receipt_paid_from:{rid}"
+
+
+RECEIPT_DEFAULT_PAID_FROM = "receipt_default_paid_from"
+
+
 class ReceiptsMixin:
     # ── files ────────────────────────────────────────────────────────────────
 
@@ -213,6 +226,7 @@ class ReceiptsMixin:
             c.execute("DELETE FROM receipt_items WHERE receipt_id=?", (rid,))
             c.execute("DELETE FROM attachments WHERE receipt_id=?", (rid,))
             c.execute("DELETE FROM receipts WHERE id=?", (rid,))
+            c.execute("DELETE FROM settings WHERE key=?", (paid_from_key(rid),))
         if r and delete_file:
             path = self.receipt_abs_path(r)
             # Only a copy FinanceBook made — never a file elsewhere on disk.
@@ -421,11 +435,19 @@ class ReceiptsMixin:
         from utils.receipt_booking import plan_receipt_lines
         from sheets.client import BUSINESS_ACCOUNTS
 
-        if base_txn is None:
+        rc = self.get_receipt(rid) or {}
+        if base_txn is None and rc.get("status") == "booked" and rc.get("transaction_id"):
             # Booking a receipt again replaces its transaction, never adds a second.
-            rc = self.get_receipt(rid) or {}
-            if rc.get("status") == "booked" and rc.get("transaction_id"):
-                base_txn = self.get_transaction(rc["transaction_id"])
+            base_txn = self.get_transaction(rc["transaction_id"])
+        own = bool(base_txn) and rc.get("status") == "booked" and \
+            base_txn.get("id") == rc.get("transaction_id")
+        if base_txn and base_txn.get("account_id"):
+            if own and not receipt_txn_account_locked(base_txn):
+                # Re-booking the receipt's own transaction: "Paid from" may change.
+                base_txn = dict(base_txn, account_id=account_id)
+            else:
+                # An attached / imported bank line stays in its bank account.
+                account_id = base_txn["account_id"]
         # Fixed-asset lines are capitalised: filed under the balance-sheet
         # category, then depreciated from the asset register.
         if any(i.get("kind") == "asset" for i in items):

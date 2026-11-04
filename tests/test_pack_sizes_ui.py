@@ -16,6 +16,7 @@ from sheets.client import Database
 try:
     from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog
     from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
     _app = QApplication.instance() or QApplication([])
 except Exception as e:      # pragma: no cover — no Qt available
     raise unittest.SkipTest(f"PyQt6 not available: {e}")
@@ -64,10 +65,23 @@ class PackSizeDialogTests(unittest.TestCase):
 
     @staticmethod
     def cell(dlg, r, c) -> str:
+        if c == RD.COL_UPP:
+            return dlg.table.cellWidget(r, c).cleanText()
         return dlg.table.item(r, c).text()
 
     def set_cell(self, dlg, r, c, text):
-        dlg.table.item(r, c).setText(text)        # fires itemChanged like an edit
+        if c != RD.COL_UPP:
+            dlg.table.item(r, c).setText(text)    # fires itemChanged like an edit
+            return
+        # Units per pack is a number box: select it, type like a user, press Enter.
+        spin = dlg.table.cellWidget(r, c)
+        edit = spin.lineEdit()
+        edit.setFocus()
+        edit.selectAll()
+        QTest.keyClick(edit, Qt.Key.Key_Delete)
+        if text:
+            QTest.keyClicks(edit, text)
+            QTest.keyClick(edit, Qt.Key.Key_Return)
 
     def make_inventory(self, dlg, r=0, item=None):
         kind = dlg.table.cellWidget(r, RD.COL_KIND)
@@ -78,9 +92,10 @@ class PackSizeDialogTests(unittest.TestCase):
 
     def test_suggestion_shown_and_live_columns(self):
         dlg = self.open(amazon())
-        upp = dlg.table.item(0, RD.COL_UPP)
-        self.assertEqual(upp.text(), "6")
-        self.assertEqual(upp.background().color(), RD.SUGGESTED_BG)
+        upp = dlg.table.cellWidget(0, RD.COL_UPP)
+        self.assertIsInstance(upp, RD.PackSpin)                       # a real input box
+        self.assertEqual(upp.value(), 6)
+        self.assertIn(RD.SUGGESTED_BG.name(), upp.styleSheet())
         self.assertIn("6 Pack", upp.toolTip())
         self.assertFalse(dlg.parse_note.isHidden())
         self.assertIn("Units per pack filled in from the description", dlg.parse_note.text())
@@ -107,17 +122,25 @@ class PackSizeDialogTests(unittest.TestCase):
         p["line_items"][0]["description"] = "USB cables 3 Pack of 10 ft"
         p["line_items"][0]["pack_suggestion"] = R.suggest_pack_size("USB cables 3 Pack of 10 ft")
         dlg = self.open(p)
-        upp = dlg.table.item(0, RD.COL_UPP)
-        self.assertEqual(upp.text(), "1")
+        upp = dlg.table.cellWidget(0, RD.COL_UPP)
+        self.assertEqual(upp.value(), 1)
         self.assertIn("ambiguous", upp.toolTip())
         self.assertIn("set Units per pack to 3", dlg.parse_note.text())
 
     def test_validation(self):
         dlg = self.open(amazon())
-        for bad in ("0", "-2", "1.5", "", "x", "²"):
+        spin = dlg.table.cellWidget(0, RD.COL_UPP)
+        for bad in ("0", "-2", "1.5", "", "x", "²", "999999"):
             self.set_cell(dlg, 0, RD.COL_UPP, bad)
+            typed = self.cell(dlg, 0, RD.COL_UPP)
+            if dlg._upp(0) is not None:
+                # The box refused the characters: what's left is a whole number ≥ 1.
+                self.assertTrue(typed.isdigit() and 1 <= int(typed) <= RD.MAX_UNITS_PER_PACK,
+                                (bad, typed))
+                continue
+            # Left empty / "0": flagged, and nothing can be saved.
             self.assertEqual(self.cell(dlg, 0, RD.COL_UNITS), "—", bad)
-            self.assertEqual(dlg.table.item(0, RD.COL_UPP).background().color(), RD.INVALID_BG)
+            self.assertIn(RD.INVALID_BG.name(), spin.styleSheet())
             self.assertIn("Units per pack must be a whole number", dlg.check_lbl.text())
             self.msgs.clear()
             dlg._book()
@@ -125,8 +148,26 @@ class PackSizeDialogTests(unittest.TestCase):
             self.assertEqual(self.msgs[-1][:2], ("warning", "Units per Pack"))
             dlg._save_draft()
             self.assertEqual(self.db.get_receipt_items(self.rc["id"]), [])
+        self.set_cell(dlg, 0, RD.COL_UPP, "")
+        self.assertIsNone(dlg._upp(0))                     # blank is always caught
         self.set_cell(dlg, 0, RD.COL_UPP, "6")
+        self.assertEqual(spin.value(), 6)
         self.assertTrue(dlg.check_lbl.text().startswith("✓"), dlg.check_lbl.text())
+
+    def test_arrows_and_typing_like_a_user(self):
+        dlg = self.open(amazon())
+        dlg.show()
+        spin = dlg.table.cellWidget(0, RD.COL_UPP)
+        self.assertTrue(spin.isEnabled() and not spin.isReadOnly())
+        spin.stepUp()                                      # the ▲ arrow
+        self.assertEqual((self.cell(dlg, 0, RD.COL_UPP), self.cell(dlg, 0, RD.COL_UNITS)),
+                         ("7", "7"))
+        self.set_cell(dlg, 0, RD.COL_UPP, "562")
+        self.assertEqual((self.cell(dlg, 0, RD.COL_UNITS), self.cell(dlg, 0, RD.COL_UCOST)),
+                         ("562", "$0.010658"))             # 5.99 / 562
+        self.assertNotIn(RD.SUGGESTED_BG.name(), spin.styleSheet())   # now the user's value
+        # The computed columns look different from the input.
+        self.assertFalse(dlg.table.item(0, RD.COL_UNITS).flags() & Qt.ItemFlag.ItemIsEditable)
 
     def test_draft_restore_book_correct_and_rebook(self):
         dlg = self.open(amazon())
