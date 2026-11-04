@@ -109,7 +109,8 @@ class BookingTests(unittest.TestCase):
     def test_parse_check_plan_book_in_both_modes(self):
         for fixture, vendor_total in (("digikey_invoice.txt", -50.28),
                                       ("jlcpcb_invoice_ocr.txt", -89.78),
-                                      ("amazon_multi_shipment.txt", -64.76)):
+                                      # full cost; $10 of it was paid by gift card
+                                      ("amazon_multi_shipment.txt", -74.76)):
             for mode in ("proportional", "separate"):
                 p = self.parsed(fixture)
                 self.assertEqual(R.check_totals(p), [], fixture)

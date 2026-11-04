@@ -56,9 +56,11 @@ class AmazonTests(unittest.TestCase):
     def test_multi_item_multi_shipment_free_shipping_coupon_gift_card(self):
         r = R.parse_receipt_text(fixture("amazon_multi_shipment.txt"))
         self.assertEqual(r["date"], "2026-10-18")
-        # Shipping nets the free-shipping credit; coupon + gift card are discounts.
-        self.assertEqual(money(r), M(subtotal="64.97", shipping="5.99", discount="13.00",
-                                     tax="6.80", total="64.76"))
+        # Shipping nets the free-shipping credit; the coupon is a discount. The
+        # $10 gift card is a way of paying, so the total is what it all cost.
+        self.assertEqual(money(r), M(subtotal="64.97", shipping="5.99", discount="3.00",
+                                     tax="6.80", total="74.76"))
+        self.assertIn("$10.00 of this order was paid with an Amazon gift card", r["reader_notes"][0])
         got = items(r)
         self.assertEqual([(q, u, t) for _, q, u, t, _ in got],
                          [(Decimal(2), Decimal("9.99"), Decimal("19.98")),
@@ -69,6 +71,46 @@ class AmazonTests(unittest.TestCase):
         self.assertTrue(got[1][0].endswith("Silent Clicks, 2.4GHz, Black"))
         self.assertEqual(got[2][0], "Stainless Steel Water Bottle 32 oz")
         self.assertEqual(r["warnings"], [])
+
+    def test_return_window_line_is_not_the_item(self):
+        r = R.parse_receipt_text(fixture("amazon_return_window.txt"))
+        self.assertEqual(r["date"], "2026-09-28")
+        self.assertEqual(money(r), M(subtotal="19.99", tax="1.55", total="21.54"))
+        self.assertEqual(items(r), [(
+            "SCD40 Gas Sensor Module Detects CO2 CO2 Carbon Dioxide Temperature and Humidity "
+            "Gas Sensor Module I2C Communication 2.4-5.5 V for Air Quality Monitoring (SCD40)",
+            Decimal(1), Decimal("19.99"), Decimal("19.99"), "")])
+        self.assertEqual(r["warnings"], [])
+        for detail in ("Return window closed on October 29, 2026",
+                       "Eligible for Return through November 12, 2026",
+                       "This item is non-returnable"):
+            text = fixture("amazon_return_window.txt").replace(
+                "Return window closed on October 29, 2026", detail)
+            self.assertEqual(R.parse_receipt_text(text)["line_items"][0]["description"][:5],
+                             "SCD40", detail)
+
+    def test_gift_card_order_books_full_cost(self):
+        r = R.parse_receipt_text(fixture("amazon_gift_card.txt"))
+        # The payment column ("Amazon Gift Card / $24.74 balance applied") is not
+        # part of the summary, and Grand Total $0.00 is only what the card paid.
+        self.assertEqual(money(r), M(subtotal="22.96", tax="1.78", total="24.74"))
+        self.assertEqual([(d[:20], t) for d, _, _, t, _ in items(r)],
+                         [("20 Sets Mini Micro J", Decimal("6.99")),
+                          ("ZSDZFYLLK 10 Sets Js", Decimal("7.99")),
+                          ("Fugedox 3157 tail/br", Decimal("7.98"))])
+        self.assertEqual([i["pack_suggestion"]["units"] if i["pack_suggestion"] else None
+                          for i in r["line_items"]], [20, 10, None])
+        self.assertEqual(len(r["reader_notes"]), 1)
+        self.assertIn("$24.74 of this order was paid with an Amazon gift card", r["reader_notes"][0])
+        self.assertEqual(r["warnings"], [])
+
+    def test_item_without_price_line_doesnt_swallow_the_next(self):
+        text = fixture("amazon_return_window.txt").replace(
+            "Return window closed on October 29, 2026\n$19.99\n",
+            "Return window closed on October 29, 2026\nSecond Gadget, Blue\n"
+            "Sold by: Other Shop\n$19.99\n")
+        self.assertEqual([i["description"] for i in R.parse_receipt_text(text)["line_items"]],
+                         ["Second Gadget, Blue"])
 
     def test_legacy_invoice_layout(self):
         r = R.parse_receipt_text(fixture("amazon_legacy_invoice.txt"))
@@ -209,8 +251,11 @@ class CheckTotalsTests(unittest.TestCase):
     def test_every_sample_balances_exactly(self):
         for name, method in (("amazon_order_details.txt", "text"),
                              ("amazon_multi_shipment.txt", "text"),
+                             ("amazon_return_window.txt", "text"),
+                             ("amazon_gift_card.txt", "text"),
                              ("digikey_invoice.txt", "text"), ("jlcpcb_invoice_ocr.txt", "ocr")):
             r = R.parse_receipt_text(fixture(name), method)
+            self.assertTrue(r["line_items"], name)
             item_sum = sum(i["line_total"] for i in r["line_items"])
             self.assertEqual(item_sum, r["subtotal"], name)
             self.assertEqual(item_sum + r["shipping"] + r["duties"] + r["tax"] + r["tip"]

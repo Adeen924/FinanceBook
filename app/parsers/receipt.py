@@ -58,7 +58,7 @@ MSG_NO_TOTALS = ("No totals were found in this file. Check the text on the left,
 def empty_result(method: str = "manual") -> dict:
     res = {"vendor": "", "date": "", "currency": "USD", "line_items": [],
            "order_number": "", "method": method, "raw_text": "", "date_note": "",
-           "warnings": []}
+           "reader_notes": [], "warnings": []}
     for k in MONEY_FIELDS:
         res[k] = ZERO
     return res
@@ -569,13 +569,13 @@ def _item_from_line(label: str, amt: Decimal) -> dict:
 _MEASURE = (r"(?:\s*[x×]\s*\d|\s*(?:ft|feet|foot|in|inch|inches|mm|cm|m|meters?|oz|lbs?|g|kg|"
             r"gb|tb|ml|l|v|w|mah|gauge|awg)\b|\s*(?:''|\"|'|”|’))")
 _PACK_PATTERNS = [
-    re.compile(r"\b(\d{1,5})\s*-?\s*(?:pack|pk|pcs|pc|pieces|piece)\b", re.I),
+    re.compile(r"\b(\d{1,5})\s*-?\s*(?:pack|pk|pcs|pc|pieces|piece|sets)\b", re.I),
     re.compile(r"\bpack\s+of\s+(\d{1,4})\b(?!" + _MEASURE + ")", re.I),
     re.compile(r"\bset\s+of\s+(\d{1,4})\b(?!" + _MEASURE + ")", re.I),
     re.compile(r"\b(\d{1,4})\s*-?\s*(?:count|ct)\b", re.I),
 ]
 # "3 Pack of 10 ft cables": 3 packs of a 10-count? or one 3-pack of 10 ft cables?
-_PACK_OF_NUMBER = re.compile(r"\b\d{1,4}\s*-?\s*pack\s+of\s+\d+(?!\s*[x×]\s*\d)", re.I)
+_PACK_OF_NUMBER = re.compile(r"\b\d{1,4}\s*-?\s*(?:pack|sets?)\s+of\s+\d+(?!\s*[x×]\s*\d)", re.I)
 
 
 def suggest_pack_size(description: str) -> dict | None:

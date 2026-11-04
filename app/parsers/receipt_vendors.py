@@ -52,12 +52,17 @@ _AMZ_LABELS = [
                                  r"free\s+.*\bshipping", re.I)),
     ("duties", re.compile(r"import\s+fees?|customs", re.I)),
     ("shipping", re.compile(r"shipping|handling|delivery", re.I)),
-    ("discount", re.compile(r"coupon|promotion|discount|savings|subscribe\s*&\s*save|"
-                            r"gift\s+card|reward|credit", re.I)),
+    # Paid with a gift card / points: the purchase still cost the full amount.
+    ("paid_other", re.compile(r"gift\s+card\s+(amount|balance)|reward\s+points|"
+                              r"points\s+(applied|redeemed)|amazon\s+pay\s+balance", re.I)),
+    ("discount", re.compile(r"coupon|promotion|discount|savings|subscribe\s*&\s*save", re.I)),
     ("tax", re.compile(r"\btax\b", re.I)),
     ("total_strong", re.compile(r"grand\s+total|order\s+total", re.I)),
     ("total", re.compile(r"^total\b", re.I)),
 ]
+_AMZ_PAYMENT = re.compile(r"balance applied|••••|\*{4}|^amazon gift card$|^gift card$|"
+                          r"\b(visa|mastercard|american express|amex|discover|debit)\b|"
+                          r"ending in|view related", re.I)
 _AMZ_STOP = re.compile(r"^(back to top|conditions of use|©|\(c\)|https?://|your account|"
                        r"need help|amazon\.com, inc)", re.I)
 _AMZ_NOISE = re.compile(
@@ -65,7 +70,9 @@ _AMZ_NOISE = re.compile(
     r"buy it again|view your item|track package|write a product review|get product support|"
     r"leave seller feedback|ask product question|problem with order|share gift receipt|"
     r"archive order|cancel items?|gift options|customi[sz]ations?|view related|"
-    r"payment method|ship to|shipping address|order summary)\b", re.I)
+    r"payment method|ship to|shipping address|order summary|return window|"
+    r"return eligible|eligible for (a )?(return|refund|replacement)|non-returnable|"
+    r"not returnable|returns? (are|is) (not )?accepted|refund issued|replacement)\b", re.I)
 _AMZ_STATUS = re.compile(
     r"^(arriving|delivered|shipped|not yet shipped|package was|out for delivery|"
     r"your package|refunded|returned|expected|now arriving|delivery estimate|"
@@ -105,6 +112,15 @@ def parse_amazon(text: str, method: str = "text") -> dict:
         _scan_summary(lines, _AMZ_LABELS, summary)
         items = _amazon_items(lines)
     _amazon_fix_qty(items, summary)
+    paid_other = abs(summary.found.pop("paid_other", Decimal(0)))
+    if paid_other:
+        for key in ("total_strong", "total"):
+            if key in summary.found:
+                summary.found[key] += paid_other
+        res["reader_notes"].append(
+            f"${paid_other:,.2f} of this order was paid with an Amazon gift card or rewards, "
+            "so the total includes it. Under Paid from, choose where that gift card came from "
+            "(for example Due to Owner if you bought it yourself).")
     return finish(res, summary, items)
 
 
@@ -116,10 +132,11 @@ def _amazon_summary(block, summary: Summary):
     """
     labels, amounts, pairs = [], [], []
     for ln in block:
-        cells = [c for c in _CELLS.split(ln) if c.strip()]
+        cells = [c.strip() for c in _CELLS.split(ln) if c.strip()
+                 and not _AMZ_PAYMENT.search(c.strip())]
         line_labels = [classify(c, _AMZ_LABELS) for c in cells if not amounts_in(c)
                        and classify(c, _AMZ_LABELS)]
-        line_amounts = [a for _, _, a in amounts_in(ln)]
+        line_amounts = [a for c in cells for _, _, a in amounts_in(c)]
         labels += line_labels
         amounts += line_amounts
         if len(line_labels) == 1 and len(line_amounts) == 1:
@@ -133,7 +150,11 @@ def _amazon_summary(block, summary: Summary):
 
 def _amazon_items(lines) -> list[dict]:
     items, title, qty = [], [], None
+    # After "Sold by:" the title is complete; later lines (return window, …)
+    # are details. They only become a new title if another "Sold by:" follows
+    # before a price, i.e. the previous item had no price line.
     title_closed = False
+    pending: list = []
     for ln in lines:
         s = _CELLS.split(ln.strip())[0].strip()
         if _AMZ_STOP.match(s):
@@ -156,17 +177,20 @@ def _amazon_items(lines) -> list[dict]:
         if _PRICE_LINE.match(s):
             if title:
                 items.append(_amazon_item(title, qty or 1, amounts_in(s)[-1][2]))
-            title, qty, title_closed = [], None, False
+            title, qty, title_closed, pending = [], None, False, []
             continue
         if _AMZ_STATUS.match(s):
-            title, qty, title_closed = [], None, False
+            title, qty, title_closed, pending = [], None, False, []
             continue
         if _AMZ_NOISE.match(s):
-            if title:
+            if title_closed and pending and re.match(r"^sold by", s, re.I):
+                title, pending = pending, []           # a new item began
+            elif title:
                 title_closed = True
             continue
         if title_closed:
-            title, title_closed = [], False
+            pending.append(s)
+            continue
         title.append(s)
     return items
 
