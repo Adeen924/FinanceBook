@@ -196,6 +196,12 @@ QLabel#Chip {{
     font-size: 11px;
     font-weight: 600;
 }}
+QFrame#InboxBanner {{
+    background: rgba(47, 107, 255, 0.07);
+    border: 1px solid rgba(47, 107, 255, 0.18);
+    border-radius: 12px;
+}}
+QFrame#InboxBanner QLabel {{ color: {TEXT_SOFT}; background: transparent; }}
 QFrame#ReadOnlyBanner {{
     background: rgba(245, 158, 11, 0.14);
     border: 1px solid rgba(245, 158, 11, 0.35);
