@@ -63,6 +63,8 @@ class SuggestionTests(unittest.TestCase):
         self.assertEqual((s["units"], s["ambiguous"]), (3, True))
         self.assertTrue(R.suggest_pack_size("2 Pack 12 ct refills")["ambiguous"])
         self.assertFalse(R.suggest_pack_size("Pack of 2, 10 ft")["ambiguous"])
+        self.assertEqual(R.suggest_pack_size("20 Sets Mini Micro JST-XH Connector")["units"], 20)
+        self.assertTrue(R.suggest_pack_size("2 sets of 3 brushes")["ambiguous"])
 
 
 class UnitCostTests(unittest.TestCase):

@@ -118,6 +118,8 @@ class ReceiptReviewDialog(QDialog):
             (parsed or {}).get("method") == "manual" else []
         if (parsed or {}).get("date_note") and not items:
             notes.insert(0, parsed["date_note"])
+        if not items:
+            notes += list((parsed or {}).get("reader_notes") or [])
         notes += self._pack_notes
         if notes:
             self._show_note(notes)
@@ -1046,7 +1048,8 @@ class ReceiptReviewDialog(QDialog):
 
     def _ai_done(self, res: dict):
         self._apply_parsed(res)
-        notes = ([res["date_note"]] if res.get("date_note") else []) + self._pack_notes
+        notes = (([res["date_note"]] if res.get("date_note") else []) +
+                 list(res.get("reader_notes") or []) + self._pack_notes)
         if notes:
             self._show_note(notes)
         self._update_check()
