@@ -441,9 +441,8 @@ class DashboardPage(QWidget):
         mw = getattr(self, "_main_window", None)
         if mw is None:
             return
-        idx = mw._page_index(page_name)
-        if idx is not None:
-            mw._nav_to(idx)
+        # _nav_to offers to turn the page's module on if it's hidden.
+        mw._nav_to(page_name)
 
     def _open_account(self, account_id: str):
         mw = getattr(self, "_main_window", None)

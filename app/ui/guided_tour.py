@@ -8,7 +8,9 @@ Settings → Show Welcome Guide.
 
 Each step: nav (page name to switch to, or None to stay), target (callable
 receiving (main_window, current_page) → the widget to highlight, or None to
-center the callout), title, body.
+center the callout), title, body (text, or a callable receiving the main window
+for wording that depends on the book). Steps whose page isn't in the sidebar —
+a Personal book, or a Business module that's turned off — are skipped.
 """
 from PyQt6.QtWidgets import (QWidget, QLabel, QPushButton, QVBoxLayout,
                              QHBoxLayout, QFrame)
@@ -24,8 +26,13 @@ STEPS = [
 
     dict(nav="Dashboard", target=lambda mw, p: getattr(mw, "_sidebar", None),
          title="The sidebar",
-         body="Every page lives here. Click any item to jump to it. "
-              "<b>Settings</b> (at the bottom) holds the import wizard and this guide."),
+         body=lambda mw: (
+             "Every page lives here. Click any item to jump to it; related pages share "
+             "an item and appear as <b>tabs</b> across the top (Transactions has Import, "
+             "Reconcile, Transfers and Recurring). <b>Settings</b> (at the bottom) holds "
+             "the import wizard and this guide." if mw.db.is_business() else
+             "Every page lives here. Click any item to jump to it. "
+             "<b>Settings</b> (at the bottom) holds the import wizard and this guide.")),
 
     dict(nav="Accounts", target=lambda mw, p: getattr(p, "_add_btn", None),
          title="Step 1 — Add your accounts",
@@ -42,7 +49,8 @@ STEPS = [
 
     dict(nav="Import", target=lambda mw, p: getattr(p, "_acct_combo", None),
          title="Step 2 — Import from your bank",
-         body="1) Choose the account here. &nbsp; 2) <b>Browse</b> for your "
+         body=lambda mw: ("Import is a tab under <b>Transactions</b>. " if mw.db.is_business()
+                          else "") + "1) Choose the account here. &nbsp; 2) <b>Browse</b> for your "
               "OFX / QFX / CSV / Excel file. &nbsp; 3) Click <b>Parse File</b>, "
               "review, then <b>Import All</b>."),
 
@@ -60,7 +68,8 @@ STEPS = [
 
     dict(nav="Recurring", target=lambda mw, p: getattr(p, "_add_btn", None),
          title="Rent, subscriptions & other repeats",
-         body="Set up anything that repeats. FinanceBook can add it automatically when it's "
+         body=lambda mw: ("On the <b>Recurring</b> tab under Transactions: s" if mw.db.is_business()
+                          else "S") + "et up anything that repeats. FinanceBook can add it automatically when it's "
               "due, or remind you on the Dashboard so you can post it with one click."),
 
     dict(nav="Owner Investment", target=lambda mw, p: getattr(p, "_expense_btn", None),
@@ -80,7 +89,7 @@ STEPS = [
 
     dict(nav="Assets", target=lambda mw, p: getattr(p, "_add_btn", None),
          when=lambda mw: mw.db.is_business(),
-         title="Equipment, vehicles & prepaids",
+         title="Fixed assets: equipment, vehicles & prepaids",
          body="Add machines and other long-lived purchases here. FinanceBook spreads "
               "their cost as <b>depreciation</b> (straight-line, declining balance, units, "
               "Section 179 or MACRS) — no bank entries needed — and shows their book value "
@@ -91,7 +100,8 @@ STEPS = [
          title="Invoices, bills & who owes what",
          body="Create numbered invoices (export them as PDF), enter bills from vendors, "
               "and record payments — each payment becomes a transaction automatically. "
-              "The <b>A/R</b> and <b>A/P Aging</b> tabs show what's overdue."),
+              "The <b>A/R</b> and <b>A/P Aging</b> tabs show what's overdue, and the <b>Contacts</b> "
+              "tab keeps your customers and vendors."),
 
     dict(nav="Inventory", target=lambda mw, p: getattr(p, "_add_btn", None),
          when=lambda mw: mw.db.is_business(),
@@ -122,6 +132,13 @@ STEPS = [
               "contributions, draws and profit — and what the company owes you "
               "under Liabilities."),
 
+    dict(nav="Dashboard", target=lambda mw, p: mw.reveal_add_features(),
+         when=lambda mw: mw.db.is_business(),
+         title="Need more (or less)?",
+         body="Click <b>＋ Add features…</b> to turn business features such as Inventory, "
+              "Payroll or Loans on or off. Hiding one never deletes anything — reports still "
+              "include its data."),
+
     dict(nav="Settings", target=lambda mw, p: getattr(p, "_book_btn", None),
          when=lambda mw: not mw.db.is_business(),
          title="Running a business?",
@@ -141,8 +158,10 @@ class GuidedTour:
         self.mw = main_window
         self.i = 0
         # Steps with a "when" predicate only show when it holds (e.g. the
-        # Business pages only in a Business book).
-        self.steps = [s for s in STEPS if s.get("when", lambda mw: True)(main_window)]
+        # Business pages only in a Business book); steps for pages that aren't in
+        # the sidebar (a module turned off) are skipped.
+        self.steps = [s for s in STEPS if s.get("when", lambda mw: True)(main_window)
+                      and (not s.get("nav") or main_window._page_index(s["nav"]) is not None)]
         self.overlay: _Overlay | None = None
 
     # ── lifecycle ───────────────────────────────────────────────────────────────
@@ -193,8 +212,10 @@ class GuidedTour:
         QTimer.singleShot(30, self._apply_step)
 
     def _apply_step(self):
+        if self.overlay is None:
+            return      # finished (Skip) before the deferred call ran
         step = self.steps[self.i]
-        page = self.mw._stack.currentWidget()
+        page = self.mw.current_page_widget() or self.mw._stack.currentWidget()
         target = None
         getter = step.get("target")
         if getter is not None:
@@ -208,7 +229,7 @@ class GuidedTour:
         self.overlay.set_step(
             target=target,
             title=step["title"],
-            body=step["body"],
+            body=step["body"](self.mw) if callable(step["body"]) else step["body"],
             index=self.i,
             total=len(self.steps),
         )

@@ -5,7 +5,7 @@ import time
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                               QLabel, QStackedWidget, QMessageBox, QPushButton,
-                              QSizePolicy, QComboBox, QDialog, QFrame)
+                              QSizePolicy, QComboBox, QDialog, QFrame, QButtonGroup)
 from PyQt6.QtCore import Qt, QTimer, QSize, QPointF, QRectF
 from PyQt6.QtGui import QPainter, QPixmap, QColor, QLinearGradient, QRadialGradient
 
@@ -14,40 +14,9 @@ from ui import styles as S
 from ui.styles import MUTED
 
 
-# Sidebar groups: (header, [(page name, icon, business_only)]). Business-only
-# pages appear only when the active database is a Business book.
-NAV_SECTIONS = [
-    ("OVERVIEW", [
-        ("Dashboard",        "dashboard",    False),
-    ]),
-    ("MONEY", [
-        ("Accounts",         "accounts",     False),
-        ("Transactions",     "transactions", False),
-        ("Transfers",        "transfers",    False),
-        ("Import",           "import",       False),
-        ("Reconcile",        "reconcile",    False),
-        ("Loans",            "loans",        False),
-        ("Recurring",        "calendar",     False),
-        ("Rules",            "rules",        False),
-        ("Categories",       "categories",   False),
-    ]),
-    ("BUSINESS", [
-        ("Owner Investment", "owner",        True),
-        ("Receipts",         "receipt",      True),
-        ("Assets",           "asset",        True),
-        ("Invoices & Bills", "invoice",      True),
-        ("Inventory",        "inventory",    True),
-        ("Contacts",         "contacts",     True),
-        ("People & Payroll", "people",       True),
-        ("Taxes",            "taxes",        True),
-    ]),
-    ("REPORTS", [
-        ("Reports",          "reports",      False),
-    ]),
-]
-
-# Flat list of (page name, icon), for anything that wants every page.
-NAV_ITEMS = [(name, icon) for _, items in NAV_SECTIONS for name, icon, _b in items]
+# What the sidebar shows (and how Business pages group into tabbed hubs) is
+# decided in utils.nav_config; page names stay the stable IDs used everywhere.
+from utils import nav_config as NC
 
 
 def _page_constructors() -> dict:
@@ -143,6 +112,59 @@ def _clear_scroll_backgrounds(widget: QWidget):
             sa.widget().setAutoFillBackground(False)
 
 
+class HubPage(QWidget):
+    """A Business sidebar item that groups several pages: a row of tabs above a
+    stack holding the real page widgets, which are created lazily by the main
+    window (so mw.page("Import") is still the ImportPage itself)."""
+    def __init__(self, item, on_tab, parent=None):
+        super().__init__(parent)
+        self.item = item
+        self._buttons: dict[str, QPushButton] = {}
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        bar = QFrame()
+        bar.setObjectName("HubBar")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(28, 10, 28, 0)
+        row.setSpacing(0)
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        for page, label in item.tabs:
+            b = QPushButton(label.replace("&", "&&"))
+            b.setObjectName("HubTab")
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, p=page: on_tab(p))
+            group.addButton(b)
+            row.addWidget(b)
+            self._buttons[page] = b
+        row.addStretch()
+        lay.addWidget(bar)
+        self._stack = QStackedWidget()
+        lay.addWidget(self._stack, 1)
+
+    def tab_labels(self) -> list[str]:
+        return [b.text().replace("&&", "&") for b in self._buttons.values()]
+
+    def current_tab(self) -> str:
+        return next((p for p, b in self._buttons.items() if b.isChecked()), "")
+
+    def holds(self, widget) -> bool:
+        return self._stack.indexOf(widget) >= 0
+
+    def show_page(self, name: str, widget: QWidget):
+        if not self.holds(widget):
+            self._stack.addWidget(widget)
+        self._stack.setCurrentWidget(widget)
+        self._buttons[name].setChecked(True)
+
+    def release(self, widget: QWidget):
+        """Take a page out without deleting it (it moves to a rebuilt hub)."""
+        self._stack.removeWidget(widget)
+        widget.setParent(None)
+
+
 def _read_db_name(path: str) -> str:
     """Read a database's stored name read-only — listing a database in the
     dropdown must never migrate (or back up) it."""
@@ -168,6 +190,8 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
 
         self._page_cache: dict[str, QWidget] = {}
+        self._hub_cache: dict[str, HubPage] = {}
+        self._modules = NC.ALL_MODULES
         self._nav_buttons: dict[str, NavButton] = {}
         self._current_page = ""
         self._hb_busy = False
@@ -175,6 +199,10 @@ class MainWindow(QMainWindow):
         self._heartbeat = QTimer(self)
         self._heartbeat.setInterval(db_lock.HEARTBEAT_SECONDS * 1000)
         self._heartbeat.timeout.connect(self._on_heartbeat)
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(
+            lambda: self._status_label.setText(f"● {os.path.basename(self.db.db_path)}"))
         self._build()
         self._update_lock_state()
         self._nav_to("Dashboard")
@@ -377,53 +405,105 @@ class MainWindow(QMainWindow):
         self.release_database()
         super().closeEvent(event)
 
-    def _visible_sections(self):
-        business = self.db.is_business()
-        for header, items in NAV_SECTIONS:
-            shown = [(n, i) for n, i, biz in items if business or not biz]
-            if shown:
-                yield header, shown
-
     def _build_nav(self):
-        """(Re)build the grouped page list for the current database's book type."""
+        """(Re)build the grouped page list for the current database's book type
+        and, for a Business book, its enabled modules."""
+        self._modules = NC.enabled_modules(self.db)
+        business = self.db.is_business()
         holder = QWidget()
         holder.setAutoFillBackground(False)
         lay = QVBoxLayout(holder)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(1)
         self._nav_buttons = {}
-        for header, items in self._visible_sections():
+        for header, items in NC.visible_sections(self.db.book_type(), self._modules):
+            if not items:
+                continue
             lbl = QLabel(header)
             lbl.setObjectName("SidebarGroup")
             lay.addWidget(lbl)
-            for name, icon in items:
-                btn = NavButton(name, icon, holder)
+            for item in items:
+                # "&&": a lone & would be read as a keyboard mnemonic and vanish.
+                btn = NavButton(item.label.replace("&", "&&"), item.icon, holder)
                 btn.setMinimumHeight(36)
-                btn.clicked.connect(lambda checked, n=name: self._nav_to(n))
+                btn.clicked.connect(lambda checked, n=item.id: self._nav_to(n))
                 lay.addWidget(btn)
-                self._nav_buttons[name] = btn
+                self._nav_buttons[item.id] = btn
+        self._add_features_btn = None
+        if business:
+            lay.addSpacing(4)
+            add = QPushButton("＋  Add features…")
+            add.setObjectName("SidebarLink")
+            add.setCursor(Qt.CursorShape.PointingHandCursor)
+            add.setToolTip("Turn business features on or off (Settings → Sidebar & Features)")
+            add.clicked.connect(self.open_feature_settings)
+            lay.addWidget(add)
+            self._add_features_btn = add
         lay.addStretch()
         old = self._nav_scroll.takeWidget()
         if old is not None:
             old.deleteLater()
         self._nav_scroll.setWidget(holder)
         self._nav_buttons["Settings"] = self._settings_btn
-        self._book_badge.setText("BUSINESS BOOK" if self.db.is_business() else "PERSONAL BOOK")
+        self._book_badge.setText("BUSINESS BOOK" if business else "PERSONAL BOOK")
+        self._mark_active()
+
+    def _mark_active(self):
+        hit = self._locate(self._current_page) if self._current_page else None
+        active = (hit[0].id if hit and hit[0] is not None else self._current_page)
         for n, b in self._nav_buttons.items():
-            b.set_active(n == self._current_page)
+            b.set_active(n == active)
 
     def refresh_navigation(self):
-        """Call after the book type changes: rebuild the sidebar and drop cached
-        pages so they pick up business/personal differences."""
+        """Call after the book type or the enabled modules change: rebuild the
+        sidebar and drop cached pages so they pick up the differences. The page
+        on screen is kept (moved into its new hub, if it has one)."""
         current = self._current_page
         self._build_nav()
-        for name in list(self._page_cache):
-            if name != current:
-                w = self._page_cache.pop(name)
-                self._stack.removeWidget(w)
-                w.deleteLater()
-        if current not in self._nav_buttons:
+        self._drop_pages(keep=current, keep_hub=False)
+        if current and self._locate(current) is not None:
+            self._nav_to(current)
+        else:
+            self._drop_pages()
             self._nav_to("Dashboard")
+
+    def set_modules(self, enabled):
+        """Save which optional Business modules show, then rebuild the sidebar."""
+        NC.save_modules(self.db, enabled)
+        self.refresh_navigation()
+
+    def offer_module(self, key: str) -> bool:
+        """Something asked for a page whose module is off: offer to turn it on.
+        Returns True if it is now on."""
+        m = NC.MODULES_BY_KEY[key]
+        if self.db.read_only:
+            QMessageBox.information(
+                self, f"{m.label} Is Turned Off",
+                f"{m.label} is turned off for this book, and the database is open read-only, "
+                "so it can't be turned on from here.")
+            return False
+        if QMessageBox.question(
+                self, f"Turn On {m.label}?",
+                f"{m.label} is turned off for this book.\n\nTurn on {m.label}? It's added "
+                "back to the sidebar. Its data was never removed. You can turn it off again "
+                "in Settings → Sidebar & Features.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) != QMessageBox.StandardButton.Yes:
+            return False
+        self.set_modules(self._modules | {key})
+        return True
+
+    def reveal_add_features(self):
+        """The '＋ Add features…' link, scrolled into view (for the tour)."""
+        if self._add_features_btn is not None:
+            self._nav_scroll.ensureWidgetVisible(self._add_features_btn)
+        return self._add_features_btn
+
+    def open_feature_settings(self):
+        self._nav_to("Settings")
+        page = self._page_cache.get("Settings")
+        if page is not None and hasattr(page, "show_features_section"):
+            page.show_features_section()
 
     # ── database selector ─────────────────────────────────────────────────────
 
@@ -532,6 +612,8 @@ class MainWindow(QMainWindow):
             self._populate_db_combo()
             return
         self.db.set_setting("database_name", name)
+        if dialog.book_type == "business":
+            self.set_modules(NC.preset_modules(dialog.preset))
         self._populate_db_combo()
 
     def delete_current_database(self) -> bool:
@@ -618,10 +700,7 @@ class MainWindow(QMainWindow):
         self._lock = lock
         from db_config import register_database
         register_database(os.path.abspath(new_db.db_path), make_active=True)
-        for i in list(self._page_cache):
-            w = self._page_cache.pop(i)
-            self._stack.removeWidget(w)
-            w.deleteLater()
+        self._drop_pages()
         # These three do nothing on a read-only database.
         new_db.auto_backup_if_due()
         from db_config import current_user_name
@@ -649,24 +728,64 @@ class MainWindow(QMainWindow):
         # jump to its transactions).
         page._main_window = self
         _clear_scroll_backgrounds(page)
-        self._stack.addWidget(page)
         self._page_cache[name] = page
         return page
 
+    def _hub(self, item) -> HubPage:
+        hub = self._hub_cache.get(item.id)
+        if hub is None:
+            hub = HubPage(item, self._nav_to)
+            self._stack.addWidget(hub)
+            self._hub_cache[item.id] = hub
+        return hub
+
+    def _discard(self, w: QWidget):
+        self._stack.removeWidget(w)
+        for hub in self._hub_cache.values():
+            if hub.holds(w):
+                hub.release(w)
+        w.deleteLater()
+
+    def _drop_pages(self, keep: str = "", keep_hub: bool = True):
+        """Delete cached pages (and hubs) except `keep`. With keep_hub=False the
+        kept page is lifted out of its hub so a rebuilt hub can adopt it."""
+        kept = self._page_cache.get(keep)
+        kept_hub = None
+        for hub in self._hub_cache.values():
+            if kept is not None and hub.holds(kept):
+                if keep_hub:
+                    kept_hub = hub
+                else:
+                    hub.release(kept)
+        for name in list(self._page_cache):
+            if name != keep:
+                self._discard(self._page_cache.pop(name))
+        for hid in list(self._hub_cache):
+            if self._hub_cache[hid] is not kept_hub:
+                hub = self._hub_cache.pop(hid)
+                self._stack.removeWidget(hub)
+                hub.deleteLater()
+
+    def _locate(self, name: str):
+        return NC.locate(name, self.db.book_type(), self._modules)
+
     def _page_index(self, name: str):
-        """Key for a page by its sidebar name ('Settings' included), or None if
-        that page isn't available in this book type. Pass it to _nav_to()."""
-        if name == "Settings" or name in self._nav_buttons:
-            return name
-        return None
+        """Key for a page (or sidebar item) by name, 'Settings' included, or None
+        if it isn't shown in this book. Pass it to _nav_to()."""
+        return name if self._locate(name) is not None else None
 
     def page(self, name: str):
-        """Navigate to a page by name and return it (None if unavailable)."""
-        key = self._page_index(name)
-        if key is None:
+        """Navigate to a page by name and return it (None if unavailable). Pages
+        inside a hub are returned themselves, not the hub."""
+        hit = self._locate(name)
+        if hit is None:
             return None
-        self._nav_to(key)
-        return self._page_cache.get(key)
+        self._nav_to(name)
+        return self._page_cache.get(hit[1])
+
+    def current_page_widget(self):
+        """The page on screen (inside its hub, if it has one)."""
+        return self._page_cache.get(self._current_page)
 
     def start_tour(self):
         """Launch the interactive guided tour (coach marks over real buttons)."""
@@ -676,40 +795,54 @@ class MainWindow(QMainWindow):
 
     def open_account_transactions(self, account_id: str):
         """Jump to the Transactions page filtered to one account (recent first)."""
-        idx = self._page_index("Transactions")
-        if idx is None:
-            return
-        self._nav_to(idx)
-        page = self._page_cache.get(idx)
+        page = self.page("Transactions")
         if page and hasattr(page, "show_account"):
             page.show_account(account_id)
 
     def _nav_to(self, name: str):
-        if name not in _page_constructors():
-            name = "Dashboard"
+        hit = self._locate(name)
+        if hit is None:
+            module = NC.module_for_page(name)
+            if module and self.db.is_business():
+                # A link to a module that's turned off: ask rather than fail silently.
+                if not self.offer_module(module):
+                    return
+                hit = self._locate(name)
+            elif name in _page_constructors():
+                hit = (None, name)      # e.g. a Business page asked for in a Personal book
+            else:
+                hit = self._locate("Dashboard")
+            if hit is None:
+                return
+        item, name = hit
         self._current_page = name
-        for n, btn in self._nav_buttons.items():
-            btn.set_active(n == name)
+        self._mark_active()
         page = self._load_page(name)
-        self._stack.setCurrentWidget(page)
+        if item is not None and item.is_hub:
+            self._stack.removeWidget(page)
+            hub = self._hub(item)
+            hub.show_page(name, page)
+            self._stack.setCurrentWidget(hub)
+        else:
+            for hub in self._hub_cache.values():
+                if hub.holds(page):
+                    hub.release(page)
+            if self._stack.indexOf(page) < 0:
+                self._stack.addWidget(page)
+            self._stack.setCurrentWidget(page)
         if hasattr(page, "refresh"):
             page.refresh()
 
     def _reload(self):
         try:
             self.db.reload()
-            current = self._stack.currentWidget()
+            current = self.current_page_widget()
             if hasattr(current, "refresh"):
                 current.refresh()
-            current_idx = next(
-                (i for i, w in self._page_cache.items() if w is current), None)
-            for i in list(self._page_cache):
-                if i != current_idx:
-                    w = self._page_cache.pop(i)
-                    self._stack.removeWidget(w)
-                    w.deleteLater()
+            self._drop_pages(keep=self._current_page)
             self._status_label.setText("● Refreshed")
-            QTimer.singleShot(3000,
-                lambda: self._status_label.setText(f"● {os.path.basename(self.db.db_path)}"))
+            # A timer owned by the window: a free-standing singleShot would still fire
+            # (and touch a deleted label) if the window closed within 3 seconds.
+            self._status_timer.start(3000)
         except Exception as e:
             QMessageBox.warning(self, "Reload Failed", str(e))

@@ -12,6 +12,41 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New: a tidier sidebar for business books (v1.13)
+
+Business books used to show 20 sidebar items. Related pages now share one item
+and appear as **tabs** across the top of the page, and the business features
+you don't use can be hidden.
+
+- **Grouped pages.** *Accounts* has a **Loans** tab; *Transactions* has
+  **Import**, **Reconcile**, **Transfers** and **Recurring** tabs; *Invoices &
+  Bills* has a **Contacts** tab (customers and vendors); *Categories & Rules* is
+  one item with two tabs.
+- **Pick how complex your business is.** When you create a Business database,
+  choose **Simple** (freelancer / sole proprietor: Receipts, Invoices & Bills,
+  Owner Investment, Taxes), **Standard** (adds Fixed Assets and Loans — the
+  default) or **Full** (adds Inventory and People & Payroll too).
+- **Turn features on or off anytime** in **Settings → Sidebar & Features**, or
+  click **＋ Add features…** at the bottom of the sidebar. Each feature says if
+  it already holds data.
+- **Hiding never deletes anything.** A hidden feature's data stays in your books
+  and in every report — balance sheet, profit & loss, cost of goods sold,
+  depreciation, payroll and sales tax owed. If a link (for example a Dashboard
+  card) points at a hidden feature, FinanceBook offers to turn it back on.
+- **Contacts are always available**: they live under Invoices & Bills, or get
+  their own sidebar item if you turn invoicing off.
+- **Follows the database.** The choice is saved inside the database, so a
+  database shared between two computers (for example in OneDrive) shows the same
+  sidebar on both. Databases created before v1.13 keep every feature on.
+- **Personal books are unchanged.**
+
+| Business sidebar | Items (plus Settings) |
+|---|---|
+| Before v1.13 | 20 |
+| Full | 12 |
+| Standard | 10 |
+| Simple | 9 |
+
 ## New: watched receipts folder (v1.12)
 
 Point the Receipts page at the folder where you keep downloaded receipts.

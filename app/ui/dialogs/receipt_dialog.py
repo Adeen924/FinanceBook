@@ -46,7 +46,7 @@ class PackSpin(QSpinBox):
         self.setStyleSheet(f"QSpinBox {{ background: {bg.name()}; }}" if bg else "")
         self.setToolTip(tip or "How many stock units one of this line's qty holds — e.g. 6 "
                                "for a “6 Pack”. Type a number or use the arrows.")
-KINDS = [("expense", "Expense")]   # later phases add Fixed asset / Inventory
+KINDS = [("expense", "Expense")]   # kinds_for adds Fixed asset / Inventory
 NEW_ITEM = "__new__"
 # Header amounts besides the subtotal/total, in form order: (key, label).
 EXTRA_FIELDS = (("shipping", "Shipping / handling"), ("discount", "Discount"),
@@ -70,13 +70,12 @@ class _AIWorker(QThread):
             self.failed.emit(f"Couldn't read the receipt ({type(e).__name__}).")
 
 
-def kinds_for(db) -> list[tuple[str, str]]:
-    """Line-item types available in this book."""
-    kinds = list(KINDS)
-    if db.is_business():
-        kinds.append(("asset", "Fixed asset"))
-        kinds.append(("inventory", "Inventory"))
-    return kinds
+def kinds_for(db, keep=()) -> list[tuple[str, str]]:
+    """Line-item types available in this book: Fixed asset / Inventory need a
+    Business book with that module turned on. Kinds in `keep` (already used on
+    the receipt) stay, so hiding a module never changes a saved line."""
+    from utils import nav_config as NC
+    return NC.receipt_line_kinds(db.book_type(), NC.enabled_modules(db), keep)
 
 
 class ReceiptReviewDialog(QDialog):
@@ -101,6 +100,7 @@ class ReceiptReviewDialog(QDialog):
         self._classes = db.get_classes()
         self._people = db.get_people() if db.is_business() else []
         self._stock_items = db.get_items() if db.is_business() else []
+        self._kinds = kinds_for(db, keep={i.get("kind") for i in items})
         self._base_txn = self._attached_txn()
         tid = receipt.get("transaction_id") or ""
         self._booked_txn = db.get_transaction(tid) if (
@@ -296,6 +296,8 @@ class ReceiptReviewDialog(QDialog):
         if not self.db.is_business():
             for col in (COL_CHARGED, COL_BIZ, COL_ITEM):
                 self.table.setColumnHidden(col, True)
+        elif "inventory" not in dict(self._kinds):
+            self.table.setColumnHidden(COL_ITEM, True)     # Inventory module is off
         rl.addWidget(self.table, 1)
 
         tools = QHBoxLayout()
@@ -505,7 +507,7 @@ class ReceiptReviewDialog(QDialog):
         biz.toggled.connect(lambda on, h=holder: self._on_biz_toggled(h, on))
         self.table.setCellWidget(r, COL_BIZ, holder)
         kind = QComboBox()
-        for key, label in kinds_for(self.db):
+        for key, label in self._kinds:
             kind.addItem(label, key)
         kind.setCurrentIndex(max(kind.findData(it.get("kind", "expense")), 0))
         kind.currentIndexChanged.connect(lambda _=0, k=kind: self._on_kind_changed(k))
