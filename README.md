@@ -12,6 +12,42 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New: one Accounts list, smarter rules (v1.14)
+
+> **This version upgrades your database.** Update FinanceBook on every computer
+> that opens the same database file; older versions can't open it afterwards.
+
+- **Categories are now part of Accounts.** The **Accounts** page is a single
+  chart of accounts, like QuickBooks: Bank, Credit Card, Gift Card, Investment,
+  Fixed Assets, Other Assets, Loan / Liability and Equity accounts, then your
+  Income, Other Income, Expense and Other Expense accounts (what used to be
+  categories), with sub-accounts indented under their parent. Balance-sheet
+  accounts show their balance. **+ New Account** asks for the type first.
+  Classes have their own **Classes** tab on the same page. Nothing about your
+  data changes — reports, taxes, receipts and invoices work as before.
+- **One "Account" field on every transaction.** The old *Category* box is now
+  **Account**, and it lists your bank, card and loan accounts too. Pick one of
+  them to record a transfer — the matching entry is created in the other
+  account, or, if you already imported it from that bank, the two are linked
+  instead of doubled. The separate "This is a transfer" checkbox is gone. Split
+  lines and the right-click **Set Account** menu work the same way.
+- **Other Income and Other Expense** account types (for interest earned, gains,
+  penalties…). They count toward net income but appear in their own section
+  below *Net Operating Income* on the Profit & Loss and in its exports.
+- **Fixed Assets and Other Assets** account types for things you own and track
+  by hand. (Equipment you add on the *Fixed Assets* page is already on the
+  balance sheet — don't also move it into one of these accounts.)
+- **Rules with several conditions.** A rule can now match **All** or **Any** of
+  a list of conditions — payee, memo, amount, date, **money in / money out** and
+  **which bank account** — just like QuickBooks bank rules (for example *Payee
+  contains COSTCO AND Amount > 50*). Every rule must set an account, and a rule
+  that sets one of your own accounts records the matches as transfers. Your
+  existing rules carry over automatically. Double-click a rule to edit it.
+- **Faster date typing.** Type `11/5` (or `11-5`) and press Tab: FinanceBook
+  fills in this year. Two-digit years work too (`11/5/26`).
+- **The register stays put.** After you edit, split or re-file a transaction,
+  it stays selected where it was instead of jumping to the bottom of the list.
+
 ## New: a tidier sidebar for business books (v1.13)
 
 Business books used to show 20 sidebar items. Related pages now share one item
@@ -21,7 +57,8 @@ you don't use can be hidden.
 - **Grouped pages.** *Accounts* has a **Loans** tab; *Transactions* has
   **Import**, **Reconcile**, **Transfers** and **Recurring** tabs; *Invoices &
   Bills* has a **Contacts** tab (customers and vendors); *Categories & Rules* is
-  one item with two tabs.
+  one item with two tabs. (Since v1.14 categories live on the Accounts page and
+  this item is just *Rules*.)
 - **Pick how complex your business is.** When you create a Business database,
   choose **Simple** (freelancer / sole proprietor: Receipts, Invoices & Bills,
   Owner Investment, Taxes), **Standard** (adds Fixed Assets and Loans — the
@@ -148,7 +185,7 @@ Point the Receipts page at the folder where you keep downloaded receipts.
   book keeps all its personal categories (nothing is deleted, reports still show
   everything), but category lists now show the business (Schedule C) categories.
   Personal ones you've used stay visible; tick **Show personal categories** on
-  the Categories page to see the rest. Personal receipt lines (Business unticked)
+  the Accounts page to see the rest. Personal receipt lines (Business unticked)
   can still use any category.
 
 ## New: one database on two computers (v1.9)
@@ -285,10 +322,11 @@ from the in-app banner.
 - **Import from your bank** — drop in the files your bank exports
   (`.qfx` / `.qbo`, `.ofx`, `.csv`, `.xlsx`, or QuickBooks `.iif`) and
   FinanceBook adds the transactions for you, skipping duplicates.
-- **Organize spending** — assign transactions to categories and subcategories so
-  you can see where the money actually goes.
-- **Automate the busywork** — set up rules that categorize recurring
-  transactions automatically as they come in, and recurring items (rent,
+- **Organize spending** — file each transaction under an income or expense
+  account (and sub-accounts) in one chart of accounts, so you can see where the
+  money actually goes.
+- **Automate the busywork** — set up bank rules (several conditions each) that
+  file recurring transactions automatically as they come in, and recurring items (rent,
   subscriptions) that post themselves or remind you.
 - **Keep an audit trail** — see who changed what and when, and lock closed
   periods.
