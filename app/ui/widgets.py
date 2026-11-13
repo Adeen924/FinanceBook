@@ -1,4 +1,5 @@
 """Shared reusable widgets."""
+import re
 from PyQt6.QtWidgets import (QPushButton, QLabel, QFrame, QTableWidget,
                               QTableWidgetItem, QHeaderView, QHBoxLayout,
                               QWidget, QSizePolicy, QLineEdit, QCalendarWidget,
@@ -270,6 +271,61 @@ class FilterComboBox(QComboBox):
                 return
         self.setCurrentIndex(-1)
         self.clearEditText()
+
+
+class AccountPicker(FilterComboBox):
+    """
+    The unified "Account" field: income / expense (and other) categories AND
+    balance-sheet accounts in one type-to-filter list, grouped under headers.
+    A category's value is its id; an account's is "acct:<id>" (see
+    utils.chart_of_accounts) — picking one makes the entry a transfer.
+
+    Categories come from db.get_categories_for_book (every category in a
+    personal book; a business book hides unused personal defaults unless
+    "Show personal categories" is on). The entry's own account is left out.
+    """
+    def __init__(self, db, exclude_account_id: str = "", keep_ids=(), parent=None,
+                 placeholder: str = "Type to search accounts…", include_accounts: bool = True):
+        super().__init__(parent, placeholder=placeholder)
+        self._db = db
+        self._keep_ids = list(keep_ids or ())
+        self._include_accounts = include_accounts
+        self._exclude = None
+        self.set_exclude_account(exclude_account_id)
+
+    def set_exclude_account(self, account_id: str):
+        """Rebuild the list without this account (the transaction's own one),
+        keeping the current choice when it is still offered."""
+        account_id = account_id or ""
+        if account_id == self._exclude:
+            return
+        self._exclude = account_id
+        current = self.current_data()
+        from utils import chart_of_accounts as COA
+        self.blockSignals(True)
+        self.clear()
+        accounts = self._db.get_accounts() if self._include_accounts else []
+        model = self.model()
+        for label, opts in COA.picker_entries(
+                self._db.get_categories_for_book(keep_ids=self._keep_ids),
+                accounts, exclude_account_id=account_id):
+            self.addItem(f"— {label} —", None)
+            item = model.item(self.count() - 1)
+            if item is not None:
+                item.setFlags(Qt.ItemFlag.NoItemFlags)
+            for text, value in opts:
+                self.addItem(text, value)
+        self.select_by_data(current)
+        self.blockSignals(False)
+
+    def current_data(self):
+        value = super().current_data()
+        return value or ""
+
+    def selection(self) -> tuple:
+        """('category', id) | ('account', id) | ('', '')."""
+        from utils.chart_of_accounts import split_value
+        return split_value(self.current_data())
 
 
 class NavButton(QPushButton):
@@ -909,6 +965,29 @@ class DonutChart(QWidget):
 
 # ── Date entry ───────────────────────────────────────────────────────────────
 
+_SHORT_DATE = re.compile(r"^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2}))?$")
+
+
+def parse_date_text(text: str, formats=("MM/dd/yyyy", "M/d/yyyy", "MM-dd-yyyy", "M-d-yyyy",
+                                         "yyyy-MM-dd", "yyyy/MM/dd", "yyyy.MM.dd"),
+                    today: QDate | None = None) -> QDate:
+    """Parse a typed date. Full dates use `formats`; "M/D" or "M-D" takes the
+    current year and "M/D/YY" the 2000s. Invalid QDate if nothing fits."""
+    text = (text or "").strip()
+    for fmt in formats:
+        d = QDate.fromString(text, fmt)
+        if d.isValid():
+            return d
+    m = _SHORT_DATE.match(text)
+    if m:
+        year = (2000 + int(m.group(3)) if m.group(3) is not None
+                else (today or QDate.currentDate()).year())
+        d = QDate(year, int(m.group(1)), int(m.group(2)))
+        if d.isValid():
+            return d
+    return QDate()
+
+
 class DateField(QWidget):
     """
     A plain free-text date box paired with a clearly visible calendar button.
@@ -984,13 +1063,10 @@ class DateField(QWidget):
                 btn.setIcon(line_icon(icon, "#ffffff", 18))
 
     def _parse(self, text: str) -> QDate:
-        """Best-effort parse of free-typed text into a QDate (invalid if none)."""
-        text = text.strip()
-        for fmt in self._PARSE_FORMATS:
-            d = QDate.fromString(text, fmt)
-            if d.isValid():
-                return d
-        return QDate()
+        """Best-effort parse of free-typed text into a QDate (invalid if none).
+        Month/day alone ("11/5", "11-5") means this year; a 2-digit year
+        ("11/5/26") means 2026 (00–99 → 2000–2099)."""
+        return parse_date_text(text, self._PARSE_FORMATS)
 
     def _on_text_edited(self, text: str):
         d = self._parse(text)

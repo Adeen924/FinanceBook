@@ -1,4 +1,4 @@
-"""Auto-categorization rules page."""
+"""Bank rules page: each rule's conditions and the account it sets."""
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QMessageBox, QHeaderView, QLabel)
 from PyQt6.QtCore import Qt
@@ -6,24 +6,6 @@ from ui.widgets import PageTitle, DataTable
 from ui.styles  import SUCCESS, DANGER
 
 ROW_H = 44
-
-_FIELD_LABEL = {
-    "payee":  "Payee / Name",
-    "memo":   "Memo",
-    "amount": "Amount",
-    "date":   "Date",
-}
-_OP_LABEL = {
-    "contains":    "contains",
-    "equals":      "equals",
-    "starts_with": "starts with",
-    "ends_with":   "ends with",
-    "gt":          ">",
-    "lt":          "<",
-    "between":     "between",
-    "day_of_month": "day of month",
-}
-
 
 class RulesPage(QWidget):
     def __init__(self, db, parent=None):
@@ -37,7 +19,7 @@ class RulesPage(QWidget):
         lay.setSpacing(16)
 
         hdr = QHBoxLayout()
-        hdr.addWidget(PageTitle("Auto-Categorization Rules"))
+        hdr.addWidget(PageTitle("Rules"))
         hdr.addStretch()
 
         apply_btn = QPushButton("Apply to All Transactions")
@@ -51,54 +33,66 @@ class RulesPage(QWidget):
         lay.addLayout(hdr)
 
         info = QLabel(
-            "Rules auto-categorize transactions on import. "
-            "Higher priority rules run first — first match wins. "
-            "Already-categorized transactions are never overwritten.")
+            "Rules set the account on transactions when you import them. A rule can "
+            "match All or Any of several conditions (payee, memo, amount, date, money "
+            "in / out, bank account). Higher priority rules run first — first match "
+            "wins. Transactions that already have an account are never changed. "
+            "Double-click a rule to edit it.")
         info.setObjectName("Muted")
         info.setWordWrap(True)
         lay.addWidget(info)
 
         self._table = DataTable(
-            ["Name", "Field", "Operator", "Value", "Category", "Priority", "Active", "Actions"])
+            ["Name", "Conditions", "Account", "Priority", "Active", "Actions"])
         self._table.setColumnWidth(0, 180)
-        self._table.setColumnWidth(1, 110)
-        self._table.setColumnWidth(2, 110)
-        self._table.setColumnWidth(3, 150)
-        self._table.setColumnWidth(4, 160)
-        self._table.setColumnWidth(5, 65)
-        self._table.setColumnWidth(6, 55)
         hdr_view = self._table.horizontalHeader()
-        hdr_view.setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(7, 170)
+        hdr_view.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._table.setColumnWidth(2, 200)
+        self._table.setColumnWidth(3, 65)
+        self._table.setColumnWidth(4, 55)
+        hdr_view.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(5, 170)
         self._table.verticalHeader().setDefaultSectionSize(ROW_H)
+        self._table.cellDoubleClicked.connect(self._edit_row)
+        self._rules = []
         lay.addWidget(self._table)
 
     def refresh(self):
+        from utils.rules import describe_rule
         rules = self.db.get_rules()
+        self._rules = rules
         cats  = {c["id"]: c["name"] for c in self.db.get_categories()}
+        accts = {a["id"]: a["name"] for a in self.db.get_accounts(active=None)}
 
         self._table.clear_rows()
         self._table.setRowCount(len(rules))
         for row, rule in enumerate(rules):
-            v  = rule.get("value", "")
-            v2 = rule.get("value2", "")
-            val_display = f"{v} – {v2}" if v2 else v
-
-            cat_name = cats.get(rule.get("category_id", ""), "—")
+            if rule.get("transfer_account_id"):
+                target = "⇄ " + accts.get(rule["transfer_account_id"], "(missing account)")
+            else:
+                target = cats.get(rule.get("category_id", ""), "")
             active   = str(rule.get("active", "1")) == "1"
+            text = describe_rule(rule, accts)
 
             self._table.set_item(row, 0, rule.get("name", ""), bold=True)
-            self._table.set_item(row, 1, _FIELD_LABEL.get(rule.get("field", ""), rule.get("field", "")))
-            self._table.set_item(row, 2, _OP_LABEL.get(rule.get("operator", ""), rule.get("operator", "")))
-            self._table.set_item(row, 3, val_display)
-            self._table.set_item(row, 4, cat_name)
-            self._table.set_item(row, 5, str(rule.get("priority", 0)),
+            item = self._table.set_item(row, 1, text)
+            item.setToolTip(text)
+            if target:
+                self._table.set_item(row, 2, target)
+            else:
+                self._table.set_item(row, 2, "⚠ No account — edit to choose one",
+                                     color=DANGER)
+            self._table.set_item(row, 3, str(rule.get("priority", 0)),
                                  align=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
-            self._table.set_item(row, 6, "Yes" if active else "No",
+            self._table.set_item(row, 4, "Yes" if active else "No",
                                  align=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
                                  color=SUCCESS if active else DANGER)
-            self._table.setCellWidget(row, 7, self._action_cell(rule))
+            self._table.setCellWidget(row, 5, self._action_cell(rule))
             self._table.setRowHeight(row, ROW_H)
+
+    def _edit_row(self, row: int, _col: int = 0):
+        if 0 <= row < len(self._rules):
+            self._edit(self._rules[row])
 
     def _action_cell(self, rule) -> QWidget:
         from PyQt6.QtWidgets import QHBoxLayout
@@ -145,8 +139,9 @@ class RulesPage(QWidget):
     def _apply_all(self):
         reply = QMessageBox.question(
             self, "Apply Rules to All Transactions",
-            "This will categorize all currently-uncategorized transactions using "
-            "your active rules.\n\nTransactions that already have a category will "
+            "This will set the account on every transaction that doesn't have one "
+            "yet, using your active rules (a rule that sets one of your own accounts "
+            "records a transfer).\n\nTransactions that already have an account will "
             "not be changed. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:

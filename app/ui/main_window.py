@@ -28,7 +28,6 @@ def _page_constructors() -> dict:
     from ui.pages.transfers    import TransfersPage
     from ui.pages.import_page  import ImportPage
     from ui.pages.rules        import RulesPage
-    from ui.pages.categories   import CategoriesPage
     from ui.pages.reconcile    import ReconcilePage
     from ui.pages.reports      import ReportsPage
     from ui.pages.settings     import SettingsPage
@@ -44,7 +43,7 @@ def _page_constructors() -> dict:
     return {
         "Dashboard": DashboardPage, "Accounts": AccountsPage, "Loans": LoansPage,
         "Transactions": TransactionsPage, "Transfers": TransfersPage,
-        "Import": ImportPage, "Rules": RulesPage, "Categories": CategoriesPage,
+        "Import": ImportPage, "Rules": RulesPage,
         "Reconcile": ReconcilePage, "Reports": ReportsPage,
         "Settings": SettingsPage, "Owner Investment": OwnerInvestmentPage,
         "Receipts": ReceiptsPage, "Assets": AssetsPage,

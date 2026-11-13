@@ -201,7 +201,6 @@ _PERSONAL = (
         _plain("Loans", "loans"),
         _plain("Recurring", "calendar"),
         _plain("Rules", "rules"),
-        _plain("Categories", "categories"),
     )),
     ("REPORTS", (_plain("Reports", "reports"),)),
 )
@@ -211,8 +210,16 @@ ALL_PAGES = (
     "Dashboard", "Accounts", "Loans", "Transactions", "Import", "Reconcile",
     "Transfers", "Recurring", "Receipts", "Invoices & Bills", "Contacts",
     "Inventory", "Assets", "People & Payroll", "Owner Investment", "Taxes",
-    "Reports", "Categories", "Rules", "Settings",
+    "Reports", "Rules", "Settings",
 )
+
+# Old page / sidebar names that still work: Categories became part of the
+# Accounts page (Chart of Accounts) in v1.14, and the Business "Categories &
+# Rules" hub became plain "Rules". Saved links, the tour and code may use them.
+PAGE_ALIASES = {
+    "Categories": "Accounts",
+    "Categories & Rules": "Rules",
+}
 
 
 def visible_sections(book_type: str, enabled=ALL_MODULES) -> list:
@@ -258,8 +265,7 @@ def visible_sections(book_type: str, enabled=ALL_MODULES) -> list:
         ("BUSINESS", business),
         ("REPORTS", [
             _plain("Reports", "reports"),
-            NavItem("Categories & Rules", "Categories & Rules", "categories", (
-                ("Categories", "Categories"), ("Rules", "Rules"))),
+            _plain("Rules", "rules"),
         ]),
     ]
 
@@ -274,6 +280,7 @@ def locate(name: str, book_type: str, enabled=ALL_MODULES):
     isn't shown in this book. Settings is always (None, "Settings")."""
     if name == "Settings":
         return None, "Settings"
+    name = PAGE_ALIASES.get(name, name)
     for it in visible_items(book_type, enabled):
         if name in it.pages:
             return it, name

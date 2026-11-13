@@ -7,7 +7,7 @@ import csv
 import os
 from datetime import date
 
-from utils.money import cents, fmt
+from utils.money import D, cents, fmt
 
 
 def _write(path, header, rows):
@@ -21,6 +21,24 @@ def _write(path, header, rows):
 
 def _money(v) -> str:
     return f"{cents(v):.2f}"
+
+
+def pnl_csv_rows(rows) -> list:
+    """P&L lines in report order: Income, Expense, then (when there is any) Net
+    operating income and the Other Income / Other Expense section, then Net
+    income. rows are utils.reports.pnl_rows() rows."""
+    from utils.reports import pivot, pnl_section_label, PNL_SECTION_ORDER
+    g = pivot(rows, lambda r: (pnl_section_label(r), r["group"]), lambda r: "total")
+    has_other = any(r.get("other") for r in rows)
+    out = []
+    for sec in PNL_SECTION_ORDER:
+        if sec == "Other Income" and has_other:
+            op = sum((r["amount"] for r in rows if not r.get("other")), D(0))
+            out.append(["", "Net operating income", _money(op)])
+        for k in sorted(k for k in g if k != "__total__" and k[0] == sec):
+            out.append([sec, k[1], _money(g[k]["total"])])
+    out.append(["", "Net income", _money(g.get("__total__", {}).get("__total__", 0))])
+    return out
 
 
 def export_year_end(db, year: int, folder: str) -> list[str]:
@@ -41,12 +59,8 @@ def export_year_end(db, year: int, folder: str) -> list[str]:
     acct_names = {a["id"]: a["name"] for a in accounts}
     rows = db.report_rows(start, end)
 
-    g = pivot(rows, lambda r: (r["section"], r["group"]), lambda r: "total")
-    files.append(_write(p(f"profit_and_loss_{year}.csv"), ["Section", "Category", "Amount"],
-                        [[k[0].title(), k[1], _money(v["total"])] for k, v in sorted(
-                            ((k, v) for k, v in g.items() if k != "__total__"),
-                            key=lambda kv: (kv[0][0] != "income", kv[0][1]))]
-                        + [["", "Net income", _money(g.get("__total__", {}).get("__total__", 0))]]))
+    files.append(_write(p(f"profit_and_loss_{year}.csv"), ["Section", "Account", "Amount"],
+                        pnl_csv_rows(rows)))
 
     months = months_between(start, end)
     gm = pivot(rows, lambda r: r["group"], lambda r: r["month"])

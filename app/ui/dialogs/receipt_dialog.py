@@ -354,7 +354,7 @@ class ReceiptReviewDialog(QDialog):
         cats = self._all_cats if personal else self._cats
         roots = [c for c in cats if not c.get("parent_id")]
         for cat in roots:
-            if cat.get("type") == "income":
+            if cat.get("type") in ("income", "other_income"):
                 continue
             combo.add_option(cat["name"], cat["id"])
             for sub in cats:

@@ -10,7 +10,7 @@ Report math shared by the Reports page and the year-end export. Pure.
 from datetime import date
 
 from utils.money import D, cents, ZERO
-from utils.ledger import pnl_bucket, account_class
+from utils.ledger import pnl_bucket, pnl_section, account_class, is_income_type
 
 CASH_TYPES = ("checking", "savings", "cash", "gift card", "investment", "other")
 
@@ -23,19 +23,22 @@ def _cat_path(cat_id, cats):
 
 def pnl_rows(txns, cats, computed_lines=()) -> list[dict]:
     """
-    [{date, month, section 'income'|'expense', group, category_id, amount, class_id,
-      contact_id, payee, paid_by, charged_to}] — transfers and non-P&L categories
-    dropped. computed_lines (depreciation, COGS…) are added on their period's last date.
+    [{date, month, section 'income'|'expense', other, group, category_id, amount,
+      class_id, contact_id, payee, paid_by, charged_to}] — transfers and non-P&L
+    categories dropped. other=True for "Other Income / Other Expense" categories
+    (section still says which side, so totals and net income are unchanged). computed_lines (depreciation, COGS…) are added on their period's last date.
     """
     out = []
     for t in txns:
         if str(t.get("is_transfer", "0")) == "1":
             continue
-        b = pnl_bucket(t, cats)
-        if b == "excluded":
+        sec = pnl_section(t, cats)
+        if sec == "excluded":
             continue
+        b = pnl_bucket(t, cats)
         cat, parent = _cat_path(t.get("category_id"), cats)
         out.append({"date": t.get("date", ""), "month": (t.get("date") or "")[:7], "section": b,
+                    "other": sec in ("other_income", "other_expense"),
                     "group": parent.get("name") or cat.get("name") or "Uncategorized",
                     "category_id": t.get("category_id", ""), "amount": D(t.get("amount")),
                     "class_id": t.get("class_id", ""), "contact_id": t.get("contact_id", ""),
@@ -43,7 +46,7 @@ def pnl_rows(txns, cats, computed_lines=()) -> list[dict]:
                     "charged_to": t.get("charged_to", "")})
     for ln in computed_lines:
         out.append({"date": ln.get("date", ""), "month": (ln.get("date") or "")[:7],
-                    "section": ln["section"], "group": ln["group"],
+                    "section": ln["section"], "other": False, "group": ln["group"],
                     "category_id": ln.get("category_id", ""), "amount": D(ln["amount"]),
                     "class_id": "", "contact_id": "", "payee": "(computed)", "paid_by": "",
                     "charged_to": "", "computed": ln.get("computed", "")})
@@ -175,6 +178,8 @@ def cash_flow(accounts, txns, cats, start: str, end: str) -> dict:
                 sec, label = "operating", "Taxes remitted / withheld"
             elif (other or {}).get("type") in ("credit card", "credit"):
                 sec, label = "operating", "Credit card payments"
+            elif (other or {}).get("type") == "fixed assets":
+                sec, label = "investing", "Fixed assets bought / sold"
             elif cls == "liability":
                 sec, label = "financing", "Loans"
             else:
@@ -200,6 +205,17 @@ def cash_flow(accounts, txns, cats, start: str, end: str) -> dict:
             "totals": totals, "net_change": net, "end": cents(begin + net)}
 
 
+def pnl_section_label(row) -> str:
+    """Report heading for a pnl_rows() row."""
+    if row.get("other"):
+        return "Other Income" if row["section"] == "income" else "Other Expense"
+    return "Income" if row["section"] == "income" else "Expense"
+
+
+# Order of P&L sections on screen and in exports.
+PNL_SECTION_ORDER = ("Income", "Expense", "Other Income", "Other Expense")
+
+
 def budget_vs_actual(rows, budgets: dict, cats, start: str, end: str) -> list[dict]:
     """
     budgets: {category_id: monthly amount (positive)}. Actuals are summed per
@@ -218,7 +234,7 @@ def budget_vs_actual(rows, budgets: dict, cats, start: str, end: str) -> list[di
             continue
         b = cents(D(budgets.get(cid)) * n_months)
         a = cents(actual.get(cid, ZERO))
-        income = cat.get("type") == "income"
+        income = is_income_type(cat.get("type"))
         variance = cents(a - b) if income else cents(b - a)   # + = good
         out.append({"category_id": cid, "name": cat.get("name", "Uncategorized"),
                     "income": income, "budget": b, "actual": a, "variance": variance,

@@ -33,7 +33,7 @@ from ui.dialogs import receipt_dialog as RD
 YES, NO, OK = (QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No,
                QMessageBox.StandardButton.Ok)
 PERSONAL_SIDEBAR = ["Dashboard", "Accounts", "Transactions", "Transfers", "Import", "Reconcile",
-                    "Loans", "Recurring", "Rules", "Categories", "Reports", "Settings"]
+                    "Loans", "Recurring", "Rules", "Reports", "Settings"]
 OLD_PAGE_NAMES = ["Dashboard", "Accounts", "Transactions", "Transfers", "Import", "Reconcile",
                   "Loans", "Recurring", "Rules", "Categories", "Owner Investment", "Receipts",
                   "Assets", "Invoices & Bills", "Inventory", "Contacts", "People & Payroll",
@@ -118,7 +118,9 @@ class SidebarTests(NavCase):
         self.assertEqual(w._hub_cache, {})
         # Business pages are still not offered in a Personal book.
         self.assertIsNone(w.page("Receipts"))
-        self.assertIsNone(w._page_index("Categories & Rules"))
+        # Old ids are aliases: Categories → Accounts, Categories & Rules → Rules.
+        self.assertIsInstance(w.page("Categories"), _page_constructors()["Accounts"])
+        self.assertIsInstance(w.page("Categories & Rules"), _page_constructors()["Rules"])
         self.assertEqual(self.msgs, [])
 
     def test_personal_ignores_stored_modules(self):
@@ -168,13 +170,13 @@ class NavigateTests(NavCase):
             with self.subTest(page=name):
                 w._nav_to(name)
                 page = w.current_page_widget()
-                self.assertIsInstance(page, ctors[name])
+                self.assertIsInstance(page, ctors[NC.PAGE_ALIASES.get(name, name)])
                 self.assertIs(w.page(name), page)
                 if item is not None and item.is_hub:
                     hub = w._stack.currentWidget()
                     self.assertIsInstance(hub, HubPage)
                     self.assertEqual(hub.item.id, item.id)
-                    self.assertEqual(hub.current_tab(), name)
+                    self.assertEqual(hub.current_tab(), NC.PAGE_ALIASES.get(name, name))
                     self.assertTrue(hub.holds(page))
                     self.assertTrue(page.isVisibleTo(hub))
                 else:
@@ -192,12 +194,14 @@ class NavigateTests(NavCase):
 
     def test_hub_ids_and_tab_clicks(self):
         w = self.window(self.make_db())
-        self.assertIsInstance(w.page("Categories & Rules"), _page_constructors()["Categories"])
-        hub = w._stack.currentWidget()
-        self.assertEqual(hub.tab_labels(), ["Categories", "Rules"])
-        hub._buttons["Rules"].click()
-        self.assertIsInstance(w.current_page_widget(), _page_constructors()["Rules"])
+        self.assertIsInstance(w.page("Categories & Rules"), _page_constructors()["Rules"])
         self.assertEqual(w._current_page, "Rules")
+        self.assertIsInstance(w.page("Categories"), _page_constructors()["Accounts"])
+        hub = w._stack.currentWidget()
+        self.assertEqual(hub.tab_labels(), ["Accounts", "Loans"])
+        hub._buttons["Loans"].click()
+        self.assertIsInstance(w.current_page_widget(), _page_constructors()["Loans"])
+        self.assertEqual(w._current_page, "Loans")
         w._nav_to("Transactions")
         self.assertEqual(w._stack.currentWidget().tab_labels(),
                          ["Transactions", "Import", "Reconcile", "Transfers", "Recurring"])
@@ -632,7 +636,7 @@ class MinimumSizeTests(NavCase):
         w = self.window(self.make_db())
         w.resize(1100, 700)
         w.show()
-        for item in ("Transactions", "Accounts", "Invoices & Bills", "Categories & Rules"):
+        for item in ("Transactions", "Accounts", "Invoices & Bills"):
             w._nav_to(item)
             _app.processEvents()
             hub = w._stack.currentWidget()

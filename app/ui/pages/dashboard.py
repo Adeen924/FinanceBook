@@ -9,7 +9,8 @@ from ui.widgets import (PageTitle, MutedLabel, DataTable, GlassCard, IconBubble,
 from ui import styles as S
 from ui.styles import SUCCESS, DANGER, WARNING, ACCENT, money
 
-from utils.ledger import LIABILITY_TYPES, EQUITY_TYPES, NON_PNL_CATEGORY_TYPES
+from utils.ledger import (LIABILITY_TYPES, EQUITY_TYPES, NON_PNL_CATEGORY_TYPES,
+                          is_income_type)
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 SLICE_COLORS = ["#2f6bff", "#5b9bff", "#8b7bff", "#22b8f0", "#9fbcff"]
@@ -30,7 +31,7 @@ def _pnl_bucket(t: dict, cats: dict) -> str:
     cat = cats.get(t.get("category_id", ""), {})
     amt = float(t.get("amount") or 0)
     ctype = cat.get("type", "expense")
-    if ctype == "income" or (not cat.get("id") and amt > 0):
+    if is_income_type(ctype) or (not cat.get("id") and amt > 0):
         return "income"
     if ctype in NON_PNL_CATEGORY_TYPES:   # debt principal, asset/inventory buys
         return "debt"
@@ -308,7 +309,7 @@ class DashboardPage(QWidget):
         lay.addLayout(_section_header("Recent transactions",
                                       "Last 30 days · transfers excluded", view_all))
 
-        self._table = DataTable(["Date", "Payee / Memo", "Category", "Amount"], flat=True)
+        self._table = DataTable(["Date", "Payee / Memo", "Account", "Amount"], flat=True)
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(1, hh.ResizeMode.Stretch)
         hh.setSectionResizeMode(2, hh.ResizeMode.Stretch)

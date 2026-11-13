@@ -12,6 +12,8 @@ from ui.widgets import PageTitle, SecondaryButton, DangerButton, MutedLabel
 CATEGORY_TYPES = [
     ("Expense", "expense"),
     ("Income", "income"),
+    ("Other Expense", "other_expense"),
+    ("Other Income", "other_income"),
     ("Debt Repayment", "debt_repayment"),
     ("Asset Purchase (Balance Sheet)", "asset"),
     ("Inventory Purchase (Balance Sheet)", "inventory"),
@@ -27,10 +29,11 @@ def type_label(t: str) -> str:
 class CategoryDialog(QDialog):
     """Create/edit a Category (top-level) or a Sub-category (child of a Category)."""
     def __init__(self, db, parent_id="", parent=None, edit_cat=None,
-                 require_parent=False, top_level=False):
+                 require_parent=False, top_level=False, category_type=""):
         super().__init__(parent)
         self.db = db
         self.edit_cat = edit_cat
+        self._preset_type = category_type
         self.require_parent = require_parent
         self.parent_combo = None
 
@@ -73,7 +76,7 @@ class CategoryDialog(QDialog):
         self.type_combo = QComboBox()
         for label, val in CATEGORY_TYPES:
             self.type_combo.addItem(label, val)
-        cur_type = (edit_cat or {}).get("type", "expense")
+        cur_type = (edit_cat or {}).get("type") or category_type or "expense"
         ix = self.type_combo.findData(cur_type)
         if ix >= 0:
             self.type_combo.setCurrentIndex(ix)
@@ -102,6 +105,11 @@ class CategoryDialog(QDialog):
             hint.setWordWrap(True)
             form.addRow("", hint)
 
+        # Other income goes on Schedule C line 6 unless the user picks a line.
+        if self.tax_combo is not None and not edit_cat:
+            self.type_combo.currentIndexChanged.connect(self._default_tax_line)
+            self._default_tax_line()
+
         # A sub-category shares its parent's income/expense nature.
         if require_parent and self.parent_combo is not None:
             self.parent_combo.currentIndexChanged.connect(lambda _: self._sync_type())
@@ -114,6 +122,10 @@ class CategoryDialog(QDialog):
         btns.accepted.connect(self._ok)
         btns.rejected.connect(self.reject)
         lay.addWidget(btns)
+
+    def _default_tax_line(self, *_):
+        if self.type_combo.currentData() == "other_income" and not self.tax_combo.currentData():
+            self.tax_combo.setCurrentIndex(max(self.tax_combo.findData("6"), 0))
 
     def _sync_type(self):
         pid = self.parent_combo.currentData()
@@ -201,266 +213,160 @@ class ClassDialog(QDialog):
         return data
 
 
-class CategoriesPage(QWidget):
+def flash_tree_item(owner, tree, target, anims: list):
+    """Briefly highlight a freshly-created row, then fade it back to normal."""
+    if target is None:
+        return
+    tree.scrollToItem(target)
+    # Don't leave it selected — the selection highlight is what made new rows
+    # hard to read. The fading highlight draws the eye instead.
+    tree.clearSelection()
+    tree.setCurrentItem(None)
+
+    cols = tree.columnCount()
+    anim = QVariantAnimation(owner)
+    anim.setStartValue(QColor("#fde68a"))   # warm amber
+    anim.setEndValue(QColor(253, 230, 138, 0))  # fades out over the glass table
+    anim.setDuration(2600)
+
+    def on_val(color):
+        try:
+            for c in range(cols):
+                target.setBackground(c, QBrush(color))
+        except RuntimeError:
+            anim.stop()                       # row was removed mid-fade
+
+    def on_done():
+        try:
+            for c in range(cols):
+                target.setData(c, Qt.ItemDataRole.BackgroundRole, None)
+        except RuntimeError:
+            pass
+        if anim in anims:
+            anims.remove(anim)
+
+    anim.valueChanged.connect(on_val)
+    anim.finished.connect(on_done)
+    anims.append(anim)
+    anim.start()
+
+
+class ClassesPanel(QWidget):
+    """
+    The "Classes" tab of the Accounts page. A class (property, project,
+    campaign…) belongs to a sub-category; this lists sub-categories with their
+    classes, plus any class whose sub-category is gone, so none are ever hidden.
+    """
     def __init__(self, db, parent=None):
         super().__init__(parent)
         self.db = db
-        self._anims = []          # keep highlight animations alive while running
-        self._build()
-
-    def _build(self):
+        self._anims = []
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 20, 28, 20)
+        lay.setContentsMargins(0, 8, 0, 0)
         lay.setSpacing(10)
 
-        lay.addWidget(PageTitle("Categories"))
-
         info = MutedLabel(
-            "Three tiers:  Category → Sub-category → Class.  A sub-category "
-            "belongs to a category; a class belongs to a sub-category.  "
-            "Double-click a row to edit it.")
+            "Classes tag transactions by property, project or campaign. Each class "
+            "belongs to a sub-category. Double-click a row to edit it.")
         info.setWordWrap(True)
         lay.addWidget(info)
 
-        # ── One button per tier ──
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        add_cat_btn = QPushButton("＋ Category")
-        add_cat_btn.clicked.connect(self._add_category)
-        add_sub_btn = SecondaryButton("＋ Sub-category")
-        add_sub_btn.clicked.connect(self._add_subcategory)
-        add_cls_btn = SecondaryButton("＋ Class")
-        add_cls_btn.clicked.connect(self._add_class)
+        row = QHBoxLayout()
+        self._add_btn = QPushButton("＋ Class")
+        self._add_btn.clicked.connect(self._add_class)
+        row.addWidget(self._add_btn)
+        row.addStretch()
         del_btn = DangerButton("Delete Selected")
         del_btn.clicked.connect(self._delete_selected)
-        btn_row.addWidget(add_cat_btn)
-        btn_row.addWidget(add_sub_btn)
-        btn_row.addWidget(add_cls_btn)
-        btn_row.addStretch()
-        if self.db.is_business():
-            # Personal categories (from before the book became a business
-            # book) are kept but hidden from pickers unless this is on.
-            self._show_personal = QCheckBox("Show personal categories")
-            self._show_personal.setToolTip(
-                "Personal categories stay in your books. Used ones are always shown; "
-                "tick this to offer the rest in every category list too.")
-            self._show_personal.setChecked(
-                self.db.get_setting("show_personal_categories") == "1")
-            self._show_personal.toggled.connect(self._toggle_personal)
-            btn_row.addWidget(self._show_personal)
-        btn_row.addWidget(del_btn)
-        lay.addLayout(btn_row)
+        row.addWidget(del_btn)
+        lay.addLayout(row)
 
-        # ── One table for the whole hierarchy ──
         self._tree = QTreeWidget()
-        self._tree.setHeaderLabels(["Name", "Kind", "Type", "Schedule C"]
-                                   if self.db.is_business() else ["Name", "Kind", "Type"])
-        self._tree.setColumnWidth(0, 360)
-        self._tree.setColumnWidth(1, 150)
+        self._tree.setHeaderLabels(["Name", "Kind"])
+        self._tree.setColumnWidth(0, 380)
         self._tree.setAlternatingRowColors(True)
         self._tree.itemDoubleClicked.connect(self._edit_item)
-        lay.addWidget(self._tree, 1)   # stretch factor fills the rest of the page
+        lay.addWidget(self._tree, 1)
 
     def refresh(self):
-        self._load()
-
-    def _toggle_personal(self, on: bool):
-        self.db.set_setting("show_personal_categories", "1" if on else "0")
-        self._load()
-
-    # ── loading ────────────────────────────────────────────────────────────────
-
-    def _load(self):
         self._tree.clear()
         cats = self.db.get_categories_for_book()
+        by_id = {c["id"]: c for c in cats}
         classes = self.db.get_classes()
-
-        classes_by_parent = {}
+        by_parent = {}
         for cl in classes:
-            classes_by_parent.setdefault(cl.get("parent_id", ""), []).append(cl)
-        sub_ids = {s["id"] for s in cats if s.get("parent_id")}
-
-        for cat in [c for c in cats if not c.get("parent_id")]:
-            cat_item = self._make_item(cat["name"], "Category",
-                                       type_label(cat.get("type", "")), "category", cat)
-            for sub in [s for s in cats if s.get("parent_id") == cat["id"]]:
-                sub_item = self._make_item(sub["name"], "Sub-category",
-                                           type_label(sub.get("type", "")), "category", sub)
-                for cl in classes_by_parent.get(sub["id"], []):
-                    sub_item.addChild(self._make_item(
-                        cl["name"], "Class", "—", "class", cl))
-                cat_item.addChild(sub_item)
-            self._tree.addTopLevelItem(cat_item)
-
-        # Classes whose parent isn't a current sub-category (e.g. legacy data) —
-        # surface them so they're never hidden and can be re-assigned or deleted.
+            by_parent.setdefault(cl.get("parent_id", ""), []).append(cl)
+        for sub in [c for c in cats if c.get("parent_id")]:
+            kids = by_parent.get(sub["id"], [])
+            if not kids:
+                continue
+            top = by_id.get(sub["parent_id"], {}).get("name", "?")
+            sub_item = QTreeWidgetItem([f"{top} → {sub['name']}", "Sub-category"])
+            sub_item.setData(0, Qt.ItemDataRole.UserRole, {"kind": "category", "data": sub})
+            for cl in kids:
+                sub_item.addChild(self._class_item(cl, "Class"))
+            self._tree.addTopLevelItem(sub_item)
+        sub_ids = {c["id"] for c in cats if c.get("parent_id")}
         for cl in [c for c in classes if c.get("parent_id", "") not in sub_ids]:
-            self._tree.addTopLevelItem(self._make_item(
-                cl["name"], "Class (unassigned)", "—", "class", cl))
-
+            self._tree.addTopLevelItem(self._class_item(cl, "Class (unassigned)"))
         self._tree.expandAll()
 
-    def _make_item(self, name, kind, type_str, kind_key, data) -> QTreeWidgetItem:
-        cols = [name, kind, type_str]
-        if self.db.is_business() and kind_key == "category":
-            line = data.get("tax_line") or ""
-            pct = float(data.get("deduct_pct") or 100)
-            cols.append((f"Line {line}" if line else "—")
-                        + (f"  ({pct:.0f}% deductible)" if pct < 100 else ""))
-        item = QTreeWidgetItem(cols)
-        item.setData(0, Qt.ItemDataRole.UserRole, {"kind": kind_key, "data": data})
+    def _class_item(self, cl, kind):
+        item = QTreeWidgetItem([cl["name"], kind])
+        item.setData(0, Qt.ItemDataRole.UserRole, {"kind": "class", "data": cl})
         return item
 
-    def _category_by_id(self, cid):
-        return next((c for c in self.db.get_categories() if c["id"] == cid), None)
-
-    # ── creating ────────────────────────────────────────────────────────────────
-
-    def _add_category(self):
-        dlg = CategoryDialog(self.db, parent=self, top_level=True)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            saved = self.db.save_category(dlg.get_data())
-            self._load()
-            self._flash("category", saved.get("id"))
-
-    def _add_subcategory(self):
-        if not [c for c in self.db.get_categories() if not c.get("parent_id")]:
-            QMessageBox.information(self, "Create a Category First",
-                "A sub-category needs a parent category.\n"
-                "Click “＋ Category” first.")
-            return
-        preset = ""
-        meta = self._selected_meta()
-        if meta and meta["kind"] == "category":
-            d = meta["data"]
-            preset = d.get("parent_id") or d["id"]
-        elif meta and meta["kind"] == "class":
-            sub = self._category_by_id(meta["data"].get("parent_id"))
-            preset = (sub or {}).get("parent_id", "")
-        dlg = CategoryDialog(self.db, parent_id=preset, parent=self, require_parent=True)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            saved = self.db.save_category(dlg.get_data())
-            self._load()
-            self._flash("category", saved.get("id"))
+    def _selected_meta(self):
+        item = self._tree.currentItem()
+        return item.data(0, Qt.ItemDataRole.UserRole) if item else None
 
     def _add_class(self):
         if not [c for c in self.db.get_categories() if c.get("parent_id")]:
             QMessageBox.information(self, "Create a Sub-category First",
                 "A class needs a parent sub-category.\n"
-                "Click “＋ Sub-category” first.")
+                "Add one on the Chart of Accounts tab first (＋ Sub-account).")
             return
         preset = ""
         meta = self._selected_meta()
-        if meta and meta["kind"] == "category" and meta["data"].get("parent_id"):
+        if meta and meta["kind"] == "category":
             preset = meta["data"]["id"]
         elif meta and meta["kind"] == "class":
             preset = meta["data"].get("parent_id", "")
         dlg = ClassDialog(self.db, parent=self, parent_subcat_id=preset)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             saved = self.db.save_class(dlg.get_data())
-            self._load()
-            self._flash("class", saved.get("id"))
-
-    # ── editing (double-click) ───────────────────────────────────────────────────
+            self.refresh()
+            self._flash(saved.get("id"))
 
     def _edit_item(self, item, _col):
         meta = item.data(0, Qt.ItemDataRole.UserRole)
-        if not meta:
+        if not meta or meta["kind"] != "class":
             return
-        if meta["kind"] == "category":
-            dlg = CategoryDialog(self.db, edit_cat=meta["data"], parent=self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self.db.save_category(dlg.get_data())
-                self._load()
-        else:
-            dlg = ClassDialog(self.db, edit_cls=meta["data"], parent=self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self.db.save_class(dlg.get_data())
-                self._load()
-
-    # ── deleting ──────────────────────────────────────────────────────────────────
+        dlg = ClassDialog(self.db, edit_cls=meta["data"], parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.db.save_class(dlg.get_data())
+            self.refresh()
 
     def _delete_selected(self):
         meta = self._selected_meta()
-        if not meta:
+        if not meta or meta["kind"] != "class":
             QMessageBox.information(self, "Nothing Selected",
-                "Click a row in the table first, then click Delete.")
+                "Click a class in the list first, then click Delete.")
             return
         d = meta["data"]
-        if meta["kind"] == "category":
-            reply = QMessageBox.question(self, "Delete",
-                f"Delete '{d['name']}'? Transactions assigned to it will become "
-                "uncategorized.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.Yes:
-                self.db.delete_category(d["id"])
-                self._load()
-        else:
-            reply = QMessageBox.question(self, "Delete Class",
-                f"Delete class '{d['name']}'?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.Yes:
-                self.db.delete_class(d["id"])
-                self._load()
+        reply = QMessageBox.question(self, "Delete Class",
+            f"Delete class '{d['name']}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.db.delete_class(d["id"])
+            self.refresh()
 
-    # ── helpers ────────────────────────────────────────────────────────────────────
-
-    def _selected_meta(self):
-        item = self._tree.currentItem()
-        return item.data(0, Qt.ItemDataRole.UserRole) if item else None
-
-    def _iter_items(self):
-        out = []
-        def walk(it):
-            out.append(it)
-            for i in range(it.childCount()):
-                walk(it.child(i))
-        for i in range(self._tree.topLevelItemCount()):
-            walk(self._tree.topLevelItem(i))
-        return out
-
-    def _flash(self, kind, item_id):
-        """Briefly highlight a freshly-created row, then fade it back to normal."""
-        if not item_id:
-            return
+    def _flash(self, class_id):
         target = None
-        for it in self._iter_items():
-            meta = it.data(0, Qt.ItemDataRole.UserRole)
-            if meta and meta["kind"] == kind and meta["data"].get("id") == item_id:
-                target = it
-                break
-        if target is None:
-            return
-
-        self._tree.scrollToItem(target)
-        # Don't leave it selected — the selection highlight is what made new rows
-        # hard to read. The fading highlight draws the eye instead.
-        self._tree.clearSelection()
-        self._tree.setCurrentItem(None)
-
-        cols = self._tree.columnCount()
-        anim = QVariantAnimation(self)
-        anim.setStartValue(QColor("#fde68a"))   # warm amber
-        anim.setEndValue(QColor(253, 230, 138, 0))  # fades out over the glass table
-        anim.setDuration(2600)
-
-        def on_val(color):
-            try:
-                for c in range(cols):
-                    target.setBackground(c, QBrush(color))
-            except RuntimeError:
-                anim.stop()                       # row was removed mid-fade
-
-        def on_done():
-            try:
-                for c in range(cols):
-                    target.setData(c, Qt.ItemDataRole.BackgroundRole, None)
-            except RuntimeError:
-                pass
-            if anim in self._anims:
-                self._anims.remove(anim)
-
-        anim.valueChanged.connect(on_val)
-        anim.finished.connect(on_done)
-        self._anims.append(anim)
-        anim.start()
+        for i in range(self._tree.topLevelItemCount()):
+            top = self._tree.topLevelItem(i)
+            for it in [top] + [top.child(j) for j in range(top.childCount())]:
+                meta = it.data(0, Qt.ItemDataRole.UserRole) or {}
+                if meta.get("kind") == "class" and meta["data"].get("id") == class_id:
+                    target = it
+        flash_tree_item(self, self._tree, target, self._anims)

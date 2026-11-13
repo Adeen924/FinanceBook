@@ -241,8 +241,8 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(backup.read_user_version(self.path), 10)
         db = Database(self.path)
         try:
-            self.assertEqual(SCHEMA_VERSION, 11)
-            self.assertEqual(backup.read_user_version(self.path), 11)
+            self.assertGreaterEqual(SCHEMA_VERSION, 11)
+            self.assertEqual(backup.read_user_version(self.path), SCHEMA_VERSION)
             self.assertTrue(os.path.exists(db.last_migration_backup))
             self.assertEqual(backup.read_user_version(db.last_migration_backup), 10)
             line = db.get_receipt_items(rid)[0]

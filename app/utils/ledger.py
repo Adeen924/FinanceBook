@@ -21,6 +21,20 @@ from utils.money import D, cents, ZERO
 
 LIABILITY_TYPES = ("credit", "credit card", "loan", "liability")
 EQUITY_TYPES = ("equity",)
+# Asset account types. Anything not a liability or equity type is treated as an
+# asset too (older databases may hold free-text types), but these are the ones
+# the app offers. "fixed assets" / "other assets" hold balances the user tracks
+# by hand (transfers in and out); they are separate from the Fixed Assets
+# module, whose purchases are booked to an "asset"-type category and appear on
+# the balance sheet as a computed line instead (see HANDOFF.md).
+ASSET_TYPES = ("checking", "savings", "cash", "gift card", "investment",
+               "fixed assets", "other assets", "other")
+
+# Category types that land on the P&L, and which side. "other_income" and
+# "other_expense" count toward net income but are reported in their own section
+# below operating income.
+INCOME_CATEGORY_TYPES = ("income", "other_income")
+OTHER_PNL_TYPES = ("other_income", "other_expense")
 
 # Category types that never appear on the P&L. "debt_repayment" moves principal,
 # "asset" capitalises a fixed-asset purchase (expensed later as depreciation),
@@ -45,7 +59,20 @@ def account_class(acct: dict) -> str:
         return "equity"
     if t in LIABILITY_TYPES:
         return "liability"
+    if t in ASSET_TYPES:
+        return "asset"
     return "asset"
+
+
+def is_income_type(ctype: str) -> bool:
+    """True for category types whose money comes in (income, other income)."""
+    return (ctype or "") in INCOME_CATEGORY_TYPES
+
+
+def category_sign(ctype: str) -> int:
+    """Sign an amount typed as a positive number takes for this category type:
+    -1 for spending (expense, other expense, debt repayment), +1 otherwise."""
+    return -1 if (ctype or "") in ("expense", "other_expense", "debt_repayment") else 1
 
 
 def pnl_bucket(txn: dict, cats: dict) -> str:
@@ -54,12 +81,23 @@ def pnl_bucket(txn: dict, cats: dict) -> str:
     Mirrors the P&L report: uncategorized money-in counts as income,
     uncategorized money-out as expense.
     """
+    section = pnl_section(txn, cats)
+    if section == "other_income":
+        return "income"
+    if section == "other_expense":
+        return "expense"
+    return section
+
+
+def pnl_section(txn: dict, cats: dict) -> str:
+    """Like pnl_bucket but keeps the "Other Income / Other Expense" section apart:
+    'income', 'expense', 'other_income', 'other_expense' or 'excluded'."""
     cat = cats.get(txn.get("category_id", "") or "", {}) or {}
     ctype = cat.get("type", "expense") if cat else ""
     if ctype in NON_PNL_CATEGORY_TYPES:
         return "excluded"
-    if ctype == "income":
-        return "income"
+    if ctype in ("income", "other_income", "other_expense"):
+        return ctype
     if not cat and D(txn.get("amount")) > 0:
         return "income"
     return "expense"

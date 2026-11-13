@@ -65,6 +65,9 @@ parsers/
                          (accounts, categories, transactions, warnings)
 
 utils/
+  chart_of_accounts.py   Qt-free: account groups/order, "New Account" types, the
+                         unified Account picker entries ("acct:<id>" = account)
+  rules.py               Qt-free: rule condition fields/operators, matching, text
   loan.py                Pure amortization math — no DB/UI imports.
                          calc_monthly_payment(), amortization_schedule(),
                          split_for_date(), remaining_balance()
@@ -76,13 +79,16 @@ ui/
                          lazy page loading, database switching
   pages/
     dashboard.py         Net worth, account cards, recent transactions
-    accounts.py          Account list — shows current balance only (no opening balance col)
+    accounts.py          "Accounts" = Chart of Accounts: accounts + categories in one
+                         list grouped by type (utils/chart_of_accounts.py), tabs
+                         Chart of Accounts / Inactive Accounts / Classes
     loans.py             Loan list + amortization schedule viewer
     transactions.py      Full transaction list with filters, quick-categorize
     transfers.py         Auto-detect & link transfers between own accounts
     import_page.py       File import (QFX/QBO/CSV/XLSX) with rule auto-apply
-    rules.py             Auto-categorization rules CRUD
-    categories.py        Category + class tree management
+    rules.py             Bank rules list (conditions text, double-click to edit)
+    categories.py        CategoryDialog, ClassDialog, ClassesPanel (no page of its own
+                         since v1.14 — the old "Categories" id is an alias of Accounts)
     reconcile.py         Bank statement reconciliation with live diff counter
     reports.py           P&L and Balance Sheet with CSV export
     settings.py          QuickBooks migration (IIF + Excel), DB rename,
@@ -92,7 +98,7 @@ ui/
     loan_dialog.py       Add/edit loan (principal, rate, term, first payment date,
                          interest category, linked account)
     transaction_dialog.py Add/edit transaction — includes Loan Payment section
-    rule_dialog.py       Add/edit auto-categorization rule
+    rule_dialog.py       Add/edit bank rule: All/Any of condition rows + Set Account
 ```
 
 ---
@@ -109,7 +115,8 @@ see "Connect existing database + lock file" below. Tables:
 | `categories` | Income/expense categories with parent_id for sub-categories |
 | `classes` | Orthogonal dimension (departments/projects) |
 | `reconciliations` | Reconciliation sessions per account |
-| `rules` | Auto-categorization rules (field + operator + value → category) |
+| `rules` | Bank rules: match_mode, action (`category_id` or `transfer_account_id`); first condition mirrored in field/operator/value/value2 |
+| `rule_conditions` | A rule's conditions (v1.14, schema 12) — see "Bank rules" |
 | `loans` | Amortizing loan definitions. Fields: `original_principal`, `annual_rate` (decimal, e.g. 0.065), `term_months`, `start_date` (first payment date), `payment_amount` (0 = auto-calc), `account_id` (linked liability account), `interest_category_id` |
 | `settings` | Key/value store — `database_name` is the main entry |
 
@@ -249,17 +256,32 @@ The lock is best-effort across computers (sync delay); see the README.
 
 ---
 
-## Auto-categorization rules
+## Bank rules (v1.14, schema 12)
 
 Rules run in priority order (higher number first). First match wins.
-Uncategorized transactions only — already-categorized ones are never overwritten.
+Transactions without an account only — already-categorized ones (and transfers)
+are never overwritten.
 
-Fields: `payee`, `memo`, `amount`, `date`
-Operators: `contains`, `equals`, `starts_with`, `ends_with`, `gt`, `lt`, `between`, `day_of_month`
+- A rule has 1+ conditions in `rule_conditions` (id, rule_id, field, operator,
+  value, value2, sort) and `rules.match_mode` 'all'|'any'. The rules row's own
+  field/operator/value/value2 columns are kept and mirror the FIRST condition
+  (old readers, and `save_rule()` callers that still pass a single condition —
+  e.g. the QuickBooks import — keep working).
+- Migration: `_migrate()` copies each rule's single condition into one
+  `rule_conditions` row for rules that have none (idempotent).
+- Fields → operators (`utils/rules.py`): `payee` / `memo` (contains, equals,
+  starts_with, ends_with), `amount` (equals, gt, lt, between — on the absolute
+  amount), `date` (equals, day_of_month), `direction` (is in|out),
+  `account` (is <account id>). `describe_rule()` makes the table text.
+- The action is mandatory: `category_id`, or `rules.transfer_account_id` for a
+  balance-sheet account. `_apply_category_rules` then sets `txn["_transfer_to"]`
+  (skipped when the txn is already in that account); `bulk_save_transactions()`
+  and `apply_rules_to_all()` turn it into a transfer with
+  `save_transfer_pair(keep_sign=True, match_existing=True)`.
 
 Rules are applied:
 1. Automatically during import (Import tab)
-2. On demand via "Apply to All Transactions" button (Rules tab)
+2. On demand via "Apply to All Transactions" button (Rules page)
 
 ---
 
@@ -268,6 +290,26 @@ Rules are applied:
 Transfers between own accounts are detected automatically (same absolute amount,
 opposite sign, ≤3 days apart, different accounts). Linked transfers set
 `is_transfer=1` on both sides and are excluded from P&L / Balance Sheet.
+
+Since v1.14 a transfer is usually made by picking a balance-sheet account in the
+unified **Account** picker (transaction dialog, split line, register's Set
+Account menu, or a rule):
+- `save_transfer_pair(src, dest, keep_sign=True)` keeps src's sign (positive =
+  money into src from dest); the default (keep_sign=False) still forces "out of
+  src" for the older callers (payroll, sales tax, owner dialogs).
+- `match_existing=True` links an unlinked entry already in dest (amount exactly
+  opposite, ≤ `TRANSFER_MATCH_DAYS` = 3 days, not a split line) instead of
+  creating a mirror (`find_transfer_match`).
+- Re-pointing to another account or re-filing under a category calls
+  `detach_transfer_partner`: a bank entry (import_hash or reconciled) is unlinked
+  and left uncategorized; a mirror FinanceBook made is deleted.
+- `bulk_save_transactions` lets an imported row adopt a FinanceBook-made mirror
+  (same account and amount, ≤3 days, no import_hash) instead of duplicating it.
+- Split lines may carry `transfer_to`; each destination gets its own mirror and
+  transfer_pair_id. `get_transfer_partner` prefers a row in another account (a
+  split's lines to the same destination share a pair id).
+- The register's Account column shows "⇄ <other account>" for transfers
+  (`transfer_partner_accounts`, one query).
 
 ---
 
@@ -389,6 +431,58 @@ The loan dialog displays and accepts it as a percentage (`6.5 %`) and divides by
   Inventory / Fixed asset keep that type when the module is off.
 - New pages: add to `_page_constructors()` and to `nav_config` (`_PERSONAL`,
   `visible_sections`, `ALL_PAGES`, and `MODULES` if optional).
+
+## Chart of Accounts, unified picker, new types (v1.14)
+
+- **Tables stay separate.** `accounts` = balance-sheet accounts; `categories` =
+  P&L and capitalising types. Only the UI is unified. `utils/chart_of_accounts.py`
+  holds the group order: Bank (checking/savings/cash), Credit Card (credit card,
+  credit), Gift Card, Investment, Fixed Assets, Other Assets (other assets,
+  other, unknown types), Loan / Liability (loan, liability), Equity | Income,
+  Other Income, Expense, Other Expense, Debt Repayment, Asset Purchase,
+  Inventory Purchase. `NEW_ACCOUNT_CHOICES` + `resolve_choice()` decide which
+  table "+ New Account" saves to (AccountDialog(account_type=…) or
+  CategoryDialog(category_type=…)).
+- **Page ids.** "Categories" was removed from `_page_constructors()`;
+  `nav_config.PAGE_ALIASES` maps "Categories" → "Accounts" and the old business
+  hub "Categories & Rules" → "Rules" (now a plain item). `locate()` resolves
+  aliases, so `_nav_to`/`mw.page()`/saved links keep working.
+- **Picker.** `ui.widgets.AccountPicker` (a FilterComboBox with disabled group
+  header rows) lists `get_categories_for_book()` — every category in a personal
+  book; a business book still hides UNUSED personal defaults unless "Show
+  personal categories" is on (kept deliberately; that checkbox is on the
+  Accounts page now) — then the balance-sheet accounts minus the entry's own.
+  Values: category id or `acct:<id>`; `.selection()` → (kind, id).
+- **Transaction dialog.** The "This is a transfer" checkbox and "Goes to
+  account" box are gone. A transfer opens from the row's own side: picker = the
+  other account, amount shown as −stored (positive = money out of this account).
+  Saving re-files: account → `save_transfer_pair(keep_sign, match_existing)`;
+  category on a former transfer → `detach_transfer_partner` first.
+- **Other Income / Other Expense** (`other_income`, `other_expense` category
+  types). `ledger.pnl_section()` returns them separately; `pnl_bucket()` still
+  maps them to income/expense, so net income and every existing total include
+  them. `reports.pnl_rows()` rows carry `other: bool`; `pnl_section_label()` /
+  `PNL_SECTION_ORDER` order exports; `reports_export.pnl_csv_rows()` adds "Net
+  operating income" only when other rows exist. Use `ledger.is_income_type()` /
+  `category_sign()` instead of comparing to "income". Schedule C maps by tax
+  line only; a new Other Income category defaults to line 6.
+- **Fixed Assets / Other Assets accounts** (`fixed assets`, `other assets` in
+  `ACCOUNT_TYPES` and `ledger.ASSET_TYPES`) are hand-tracked balance-sheet
+  assets: money moves in by transfer and the balance sheet lists the account's
+  balance. They are NOT the Fixed Assets module: module assets are bought with an
+  `asset`-type category (money out of the bank, off the P&L) and appear via
+  `balance_sheet_extras()` as "Fixed assets & prepaids (cost)" less accumulated
+  depreciation. The two never feed each other, so nothing is double-counted as
+  long as the same purchase isn't recorded both ways (the account dialog warns
+  about this). Cash flow puts transfers into a fixed-assets account under
+  investing.
+- **DateField** (`ui.widgets.parse_date_text`): "M/D" or "M-D" → this year,
+  "M/D/YY" → 20YY, on every DateField.
+- **Register selection.** `TransactionsPage._apply_filter(keep=txn)` re-selects
+  by id → split group → transfer pair (same account) → account+date+payee, and
+  scrolls it to the centre; without keep it scrolls to the bottom as before.
+- Tests: `test_chart_of_accounts.py`, `test_other_pnl_types.py`,
+  `test_rules_v14.py`, `test_transactions_screen.py`.
 
 ## Known issues / things to watch
 
