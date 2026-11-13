@@ -1,4 +1,5 @@
 """Shared reusable widgets."""
+import re
 from PyQt6.QtWidgets import (QPushButton, QLabel, QFrame, QTableWidget,
                               QTableWidgetItem, QHeaderView, QHBoxLayout,
                               QWidget, QSizePolicy, QLineEdit, QCalendarWidget,
@@ -964,6 +965,29 @@ class DonutChart(QWidget):
 
 # ── Date entry ───────────────────────────────────────────────────────────────
 
+_SHORT_DATE = re.compile(r"^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2}))?$")
+
+
+def parse_date_text(text: str, formats=("MM/dd/yyyy", "M/d/yyyy", "MM-dd-yyyy", "M-d-yyyy",
+                                         "yyyy-MM-dd", "yyyy/MM/dd", "yyyy.MM.dd"),
+                    today: QDate | None = None) -> QDate:
+    """Parse a typed date. Full dates use `formats`; "M/D" or "M-D" takes the
+    current year and "M/D/YY" the 2000s. Invalid QDate if nothing fits."""
+    text = (text or "").strip()
+    for fmt in formats:
+        d = QDate.fromString(text, fmt)
+        if d.isValid():
+            return d
+    m = _SHORT_DATE.match(text)
+    if m:
+        year = (2000 + int(m.group(3)) if m.group(3) is not None
+                else (today or QDate.currentDate()).year())
+        d = QDate(year, int(m.group(1)), int(m.group(2)))
+        if d.isValid():
+            return d
+    return QDate()
+
+
 class DateField(QWidget):
     """
     A plain free-text date box paired with a clearly visible calendar button.
@@ -1039,13 +1063,10 @@ class DateField(QWidget):
                 btn.setIcon(line_icon(icon, "#ffffff", 18))
 
     def _parse(self, text: str) -> QDate:
-        """Best-effort parse of free-typed text into a QDate (invalid if none)."""
-        text = text.strip()
-        for fmt in self._PARSE_FORMATS:
-            d = QDate.fromString(text, fmt)
-            if d.isValid():
-                return d
-        return QDate()
+        """Best-effort parse of free-typed text into a QDate (invalid if none).
+        Month/day alone ("11/5", "11-5") means this year; a 2-digit year
+        ("11/5/26") means 2026 (00–99 → 2000–2099)."""
+        return parse_date_text(text, self._PARSE_FORMATS)
 
     def _on_text_edited(self, text: str):
         d = self._parse(text)

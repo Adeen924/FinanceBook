@@ -156,7 +156,11 @@ class TransactionsPage(QWidget):
 
         self._apply_filter()
 
-    def _apply_filter(self):
+    def _apply_filter(self, *_args, keep=None):
+        """Reload the register. keep: a transaction (dict) to re-select and
+        scroll to afterwards — the one just edited / split / re-filed — found
+        by id, else its split group or transfer pair, else same account, date
+        and payee (a split or transfer may have replaced the row)."""
         acct_id = self._acct_filter.currentData() or None
         start = self._date_from.date().toString("yyyy-MM-dd")
         end   = self._date_to.date().toString("yyyy-MM-dd")
@@ -175,7 +179,7 @@ class TransactionsPage(QWidget):
                     or search in (t.get("notes","") or "").lower()]
 
         self._txns = txns
-        self._sort_and_render()
+        self._sort_and_render(keep=keep)
 
     # ── sorting ───────────────────────────────────────────────────────────────
 
@@ -237,9 +241,33 @@ class TransactionsPage(QWidget):
         fn = keyfns.get(self._sort_key, keyfns["date"])
         self._txns.sort(key=fn, reverse=not self._sort_asc)
 
-    def _sort_and_render(self):
+    def _find_row(self, keep) -> int:
+        if not keep:
+            return -1
+        tests = [lambda t: keep.get("id") and t.get("id") == keep["id"],
+                 lambda t: keep.get("split_group_id")
+                 and t.get("split_group_id") == keep["split_group_id"],
+                 lambda t: keep.get("transfer_pair_id")
+                 and t.get("transfer_pair_id") == keep["transfer_pair_id"]
+                 and t.get("account_id") == keep.get("account_id"),
+                 lambda t: (t.get("account_id"), t.get("date"), t.get("payee") or "")
+                 == (keep.get("account_id"), keep.get("date"), keep.get("payee") or "")]
+        for test in tests:
+            for row, t in enumerate(self._txns):
+                if test(t):
+                    return row
+        return -1
+
+    def _sort_and_render(self, keep=None):
         self._sort_txns()
         self._render_table()
+        row = self._find_row(keep)
+        if row >= 0:
+            # Stay on the transaction the user just worked on.
+            self._table.selectRow(row)
+            self._table.scrollTo(self._table.model().index(row, 0),
+                                 self._table.ScrollHint.PositionAtCenter)
+            return
         # In the default register view (Date ascending) the newest row is at the
         # bottom, so open scrolled there — matches how QuickBooks shows a
         # register. Any other sort reads top-down, so start at the top.
@@ -367,9 +395,10 @@ class TransactionsPage(QWidget):
         dlg = TransactionDialog(self.db, parent=self)
         if dlg.exec() == TransactionDialog.DialogCode.Accepted:
             # A split or transfer is already persisted by the dialog.
+            data = dlg.get_data()
             if not getattr(dlg, "handled", False):
-                self.db.save_transaction(dlg.get_data())
-            self._apply_filter()
+                data = self.db.save_transaction(data)
+            self._apply_filter(keep=data)
 
     def _edit_selected(self):
         row = self._table.currentRow()
@@ -383,9 +412,13 @@ class TransactionsPage(QWidget):
         if dlg.exec() == TransactionDialog.DialogCode.Accepted:
             # A split or transfer is already persisted by the dialog — don't
             # re-save the (now-replaced) original on top of it.
+            if getattr(dlg, "deleted", False):
+                self._apply_filter()
+                return
+            data = dlg.get_data()
             if not getattr(dlg, "handled", False):
-                self.db.save_transaction(dlg.get_data())
-            self._apply_filter()
+                data = self.db.save_transaction(data)
+            self._apply_filter(keep=data)
 
     def _split_txn(self, txn):
         if str(txn.get("is_transfer","0")) == "1":
@@ -400,8 +433,8 @@ class TransactionsPage(QWidget):
         from ui.dialogs.split_dialog import SplitDialog
         dlg = SplitDialog(self.db, txn, parent=self)
         if dlg.exec() == SplitDialog.DialogCode.Accepted:
-            self.db.split_transaction(txn, dlg.get_splits())
-            self._apply_filter()
+            lines = self.db.split_transaction(txn, dlg.get_splits())
+            self._apply_filter(keep=lines[0] if lines else txn)
 
     def _context_menu(self, pos):
         row = self._table.rowAt(pos.y())
@@ -477,7 +510,7 @@ class TransactionsPage(QWidget):
                                   "receipt_date": txn.get("date", ""),
                                   "total": abs(float(txn.get("amount") or 0))})
         self.db.attach_receipt(rc["id"], txn)
-        self._apply_filter()
+        self._apply_filter(keep=txn)
 
     def _add_as_asset(self, txn):
         from ui.dialogs.asset_dialog import AssetDialog
@@ -499,7 +532,7 @@ class TransactionsPage(QWidget):
             txn["category_id"] = self.db.fixed_asset_category_id(
                 data.get("asset_class") == "prepaid")
             self.db.save_transaction(txn)
-        self._apply_filter()
+        self._apply_filter(keep=txn)
 
     def _open_receipt(self, rc):
         import os
@@ -524,7 +557,7 @@ class TransactionsPage(QWidget):
         if not self.db.get_receipt_items(rc["id"]) and rc.get("file_path"):
             parsed = R.parse_file(self.db.receipt_abs_path(rc))
         ReceiptReviewDialog(self.db, rc, parent=self, parsed=parsed).exec()
-        self._apply_filter()
+        self._apply_filter(keep=txn)
 
     def _set_category(self, txn, value):
         """Quick re-file from the context menu. value is a category id, or
@@ -534,13 +567,13 @@ class TransactionsPage(QWidget):
         kind, target = split_value(value)
         txn = dict(txn)
         if kind == "account":
-            self.db.save_transfer_pair(txn, target, keep_sign=True, match_existing=True)
+            txn = self.db.save_transfer_pair(txn, target, keep_sign=True, match_existing=True)
         else:
             if str(txn.get("is_transfer", "0")) == "1" and not txn.get("split_group_id"):
                 self.db.clear_transfer(txn)
             txn["category_id"] = target
             self.db.save_transaction(txn)
-        self._apply_filter()
+        self._apply_filter(keep=txn)
 
     def _delete_txn(self, txn):
         gid = txn.get("split_group_id")
