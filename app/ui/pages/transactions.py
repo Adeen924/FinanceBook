@@ -17,7 +17,7 @@ class TransactionsPage(QWidget):
     # Fields the register can be sorted by (key → menu label). Balance and the
     # reconciled flag are intentionally not sortable.
     _SORT_FIELDS = [("date", "Date"), ("account", "Account"),
-                    ("payee", "Payee / Memo"), ("category", "Category")]
+                    ("payee", "Payee / Memo"), ("category", "Account")]
 
     def _build(self):
         # Sort state. Default to Date ascending so the newest transaction sits at
@@ -55,7 +55,8 @@ class TransactionsPage(QWidget):
 
         self._cat_filter = QComboBox()
         self._cat_filter.setMinimumWidth(160)
-        self._cat_filter.addItem("All Categories", "")
+        self._cat_filter.addItem("All Income / Expense Accounts", "")
+        self._cat_filter.setToolTip("Show only entries filed under one income or expense account")
         filt.addWidget(self._cat_filter)
 
         filt.addWidget(QLabel("From:"))
@@ -102,7 +103,7 @@ class TransactionsPage(QWidget):
 
         # ── Table ──
         self._table = DataTable(
-            ["Date", "Account", "Payee / Memo", "Category", "Amount", "Balance", "R", ""])
+            ["Date", "Bank / Card", "Payee / Memo", "Account", "Amount", "Balance", "R", ""])
         self._table.setColumnWidth(0, 100)
         self._table.setColumnWidth(1, 140)
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -140,7 +141,7 @@ class TransactionsPage(QWidget):
         self._cat_filter.blockSignals(True)
         cur_cat = self._cat_filter.currentData()
         self._cat_filter.clear()
-        self._cat_filter.addItem("All Categories", "")
+        self._cat_filter.addItem("All Income / Expense Accounts", "")
         roots = [c for c in cats if not c.get("parent_id")]
         for cat in roots:
             self._cat_filter.addItem(cat["name"], cat["id"])
@@ -272,9 +273,15 @@ class TransactionsPage(QWidget):
                 break
         self._apply_filter()
 
+    def _transfer_targets(self) -> dict:
+        """{transaction id: the other account's id} for every transfer row on
+        screen, so the Account column shows where the money went."""
+        return self.db.transfer_partner_accounts(self._txns)
+
     def _render_table(self):
         cats   = {c["id"]: c for c in self.db.get_categories()}
-        accts  = {a["id"]: a for a in self.db.get_accounts()}
+        accts  = {a["id"]: a for a in self.db.get_accounts(active=None)}
+        others = self._transfer_targets()
 
         self._table.clear_rows()
         self._table.setRowCount(len(self._txns))
@@ -292,6 +299,8 @@ class TransactionsPage(QWidget):
             cat = cats.get(t.get("category_id",""), {})
             parent = cats.get(cat.get("parent_id",""), {})
             cat_name = f"{parent['name']} → {cat['name']}" if parent else cat.get("name","")
+            if t.get("id") in others:
+                cat_name = "⇄ " + accts.get(others[t["id"]], {}).get("name", "another account")
             acct_name = accts.get(t.get("account_id",""), {}).get("name","—")
             payee = t.get("payee") or t.get("memo") or "—"
             amt = float(t.get("amount") or 0)
@@ -410,20 +419,18 @@ class TransactionsPage(QWidget):
         split_act.triggered.connect(lambda: self._split_txn(txn))
         menu.addAction(split_act)
 
-        # Quick category submenu
-        cat_menu = menu.addMenu("Set Category")
-        cats = self.db.get_categories_for_book()
-        roots = [c for c in cats if not c.get("parent_id")]
-        for cat in roots:
-            act = QAction(cat["name"], self)
-            act.triggered.connect(lambda _, c=cat: self._set_category(txn, c["id"]))
-            cat_menu.addAction(act)
-            subs = [s for s in cats if s.get("parent_id") == cat["id"]]
-            if subs:
-                for sub in subs:
-                    sub_act = QAction(f"    ↳ {sub['name']}", self)
-                    sub_act.triggered.connect(lambda _, s=sub: self._set_category(txn, s["id"]))
-                    cat_menu.addAction(sub_act)
+        # Quick "Set Account" submenu: one submenu per account group.
+        from utils.chart_of_accounts import picker_entries
+        cat_menu = menu.addMenu("Set Account")
+        accounts = [] if txn.get("split_group_id") else self.db.get_accounts()
+        for label, opts in picker_entries(
+                self.db.get_categories_for_book(keep_ids=[txn.get("category_id", "")]),
+                accounts, exclude_account_id=txn.get("account_id", "")):
+            sub_menu = cat_menu.addMenu(label)
+            for text, value in opts:
+                act = QAction(text, self)
+                act.triggered.connect(lambda _, v=value: self._set_category(txn, v))
+                sub_menu.addAction(act)
 
         if self.db.is_business() and str(txn.get("is_transfer", "0")) != "1":
             fa_act = QAction("Add as Fixed Asset…", self)
@@ -519,9 +526,20 @@ class TransactionsPage(QWidget):
         ReceiptReviewDialog(self.db, rc, parent=self, parsed=parsed).exec()
         self._apply_filter()
 
-    def _set_category(self, txn, cat_id):
-        txn["category_id"] = cat_id
-        self.db.save_transaction(txn)
+    def _set_category(self, txn, value):
+        """Quick re-file from the context menu. value is a category id, or
+        "acct:<id>" to make the entry a transfer to/from that account (linking
+        the other side if it was already imported)."""
+        from utils.chart_of_accounts import split_value
+        kind, target = split_value(value)
+        txn = dict(txn)
+        if kind == "account":
+            self.db.save_transfer_pair(txn, target, keep_sign=True, match_existing=True)
+        else:
+            if str(txn.get("is_transfer", "0")) == "1" and not txn.get("split_group_id"):
+                self.db.clear_transfer(txn)
+            txn["category_id"] = target
+            self.db.save_transaction(txn)
         self._apply_filter()
 
     def _delete_txn(self, txn):

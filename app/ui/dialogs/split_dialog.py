@@ -13,6 +13,10 @@ checkbox: checked lines MOVE to the destination account (e.g. principal paying
 down a loan); unchecked lines are recorded as a spending category in the source
 account (e.g. interest) and never reach the other account.
 
+Without a transfer_to_id, each line's Account picker lists income / expense
+accounts AND balance-sheet accounts: a line set to a balance-sheet account moves
+that part to (or from) it, like a transfer.
+
 Returns the split lines via get_splits(); the caller hands them to
 db.split_transaction(), which replaces the original transaction with one sibling
 per line (and creates the matching transfer entry for the moved portion).
@@ -22,11 +26,13 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QDialogButtonBox, QScrollArea, QWidget, QFrame,
                              QCheckBox)
 from PyQt6.QtCore import Qt
+from ui.widgets import AccountPicker
+from utils.chart_of_accounts import account_value, split_value
 
 
 class SplitDialog(QDialog):
     def __init__(self, db, transaction: dict, total_amount: float = None,
-                 transfer_to_id: str = "", parent=None):
+                 transfer_to_id: str = "", parent=None, first_target: str = ""):
         super().__init__(parent)
         self.db = db
         self.base = dict(transaction or {})
@@ -53,7 +59,7 @@ class SplitDialog(QDialog):
             # as positive magnitudes and remember which lines were transfers.
             raw_total = sum(float(m.get("amount") or 0) for m in members)
             self._total = round(abs(raw_total) if self._transfer_mode else raw_total, 2)
-            prefill = [(m.get("category_id", ""),
+            prefill = [(self._member_target(m),
                         abs(float(m.get("amount") or 0)) if self._transfer_mode
                         else float(m.get("amount") or 0),
                         m.get("memo", ""),
@@ -68,7 +74,8 @@ class SplitDialog(QDialog):
                 prefill = [(self.base.get("category_id", ""), self._total, "", True),
                            ("", 0.0, "", False)]
             else:
-                prefill = [(self.base.get("category_id", ""), self._total, "", False),
+                prefill = [(first_target or self.base.get("category_id", ""),
+                            self._total, "", False),
                            ("", 0.0, "", False)]
 
         self._build(prefill)
@@ -97,7 +104,9 @@ class SplitDialog(QDialog):
                 f"All parts must add up to the total.")
             hint.setTextFormat(Qt.TextFormat.RichText)
         else:
-            hint = QLabel("Assign each part to a category. The parts must add up to the total.")
+            hint = QLabel("Assign each part to an account. Pick one of your own accounts "
+                          "(bank, card, loan…) to move that part there as a transfer. "
+                          "The parts must add up to the total.")
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         lay.addWidget(hint)
@@ -105,7 +114,8 @@ class SplitDialog(QDialog):
         # Column headers
         head_row = QHBoxLayout()
         head_row.setContentsMargins(0, 0, 0, 0)
-        cols = [("Category", 220), ("Amount", 120), ("Memo (optional)", 0)]
+        cols = [("Category" if self._transfer_mode else "Account", 220),
+                ("Amount", 120), ("Memo (optional)", 0)]
         if self._transfer_mode:
             cols.append((f"→ {self._transfer_to_name}", 150))
         for text, w in cols:
@@ -159,7 +169,23 @@ class SplitDialog(QDialog):
         lay.addWidget(self._status)
         lay.addWidget(self._btns)
 
-    def _make_cat_combo(self, selected_id: str = "") -> QComboBox:
+    def _member_target(self, m: dict) -> str:
+        """Picker value for an existing split line: its category, or for a line
+        that moved to another account (new-style split), that account."""
+        if (not self._transfer_mode and str(m.get("is_transfer", "0")) == "1"
+                and m.get("transfer_pair_id")):
+            partner = self.db.get_transfer_partner(m)
+            if partner:
+                return account_value(partner.get("account_id", ""))
+        return m.get("category_id", "")
+
+    def _make_cat_combo(self, selected_id: str = ""):
+        if not self._transfer_mode:
+            combo = AccountPicker(self.db, exclude_account_id=self.base.get("account_id", ""),
+                                  keep_ids=[c for c in (selected_id,) if c],
+                                  placeholder="Uncategorized")
+            combo.select_by_data(selected_id)
+            return combo
         combo = QComboBox()
         combo.addItem("— Uncategorized —", "")
         roots = [c for c in self._cats if not c.get("parent_id")]
@@ -184,6 +210,8 @@ class SplitDialog(QDialog):
         cat = self._make_cat_combo(cat_id)
         cat.setFixedWidth(220)
         cat.currentIndexChanged.connect(self._recompute)
+        if isinstance(cat, AccountPicker):
+            cat.lineEdit().textChanged.connect(lambda _t: self._recompute())
         row.addWidget(cat)
 
         amt = QDoubleSpinBox()
@@ -254,6 +282,13 @@ class SplitDialog(QDialog):
     def _row_is_transfer(self, entry) -> bool:
         return bool(entry["transfer"]) and entry["transfer"].isChecked()
 
+    @staticmethod
+    def _value(entry) -> str:
+        cat = entry["cat"]
+        if isinstance(cat, AccountPicker):
+            return cat.current_data() or ""
+        return cat.currentData() or ""
+
     def _allocated(self) -> float:
         return round(sum(e["amount"].value() for e in self._rows), 2)
 
@@ -280,7 +315,7 @@ class SplitDialog(QDialog):
         # A line with an amount needs a category — UNLESS it's a transfer line,
         # which files under "Account Transfers" automatically.
         missing_cat = any(e["amount"].value() and not self._row_is_transfer(e)
-                          and not e["cat"].currentData()
+                          and not self._value(e)
                           for e in self._rows)
 
         if balanced and not missing_cat:
@@ -296,7 +331,7 @@ class SplitDialog(QDialog):
             parts = [f"Allocated: ${allocated:,.2f}",
                      f"Remaining: ${remaining:,.2f}"]
             if missing_cat:
-                parts.append("a non-transfer line with an amount has no category")
+                parts.append("a line with an amount has no account")
             self._status.setText(
                 "<span style='color:#b45309'>" + "  ·  ".join(parts) + "</span>")
         self._status.setTextFormat(Qt.TextFormat.RichText)
@@ -317,10 +352,14 @@ class SplitDialog(QDialog):
             amt = round(e["amount"].value(), 2)
             if abs(amt) < 0.005:
                 continue
-            out.append({
-                "category_id": e["cat"].currentData() or "",
+            kind, target = split_value(self._value(e))
+            line = {
+                "category_id": target if kind == "category" else "",
                 "amount":      str(amt),
                 "memo":        e["memo"].text().strip(),
                 "transfer":    self._row_is_transfer(e),
-            })
+            }
+            if kind == "account":
+                line["transfer_to"] = target
+            out.append(line)
         return out

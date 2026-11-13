@@ -6,15 +6,22 @@ from PyQt6.QtCore import Qt
 
 
 ACCOUNT_TYPES = ["checking", "savings", "credit card", "gift card", "loan", "investment",
-                 "cash", "liability", "equity", "other"]
+                 "cash", "fixed assets", "other assets", "liability", "equity", "other"]
+
+_FIXED_ASSETS_HINT = (
+    "For assets you track by hand (no depreciation): move money in with a transfer. "
+    "Equipment added in the Fixed Assets module is already on the balance sheet — "
+    "don't also transfer it here, or it is counted twice.")
 CURRENCIES    = ["USD", "EUR", "GBP", "CAD", "AUD", "JPY", "CHF", "CNY", "MXN"]
 
 
 class AccountDialog(QDialog):
     def __init__(self, account: dict = None, institutions: list = None,
-                 balance: float = 0.0, parent=None):
+                 balance: float = 0.0, parent=None, account_type: str = ""):
         super().__init__(parent)
         self.account = account or {}
+        if account_type and not self.account.get("id"):
+            self.account = dict(self.account, type=account_type)
         self.balance = float(balance or 0)
         self.setWindowTitle("Edit Account" if account else "Add Account")
         self.setMinimumWidth(420)
@@ -31,11 +38,21 @@ class AccountDialog(QDialog):
         form.addRow("Account Name *", self.name_edit)
 
         self.type_combo = QComboBox()
-        self.type_combo.addItems([t.title() for t in ACCOUNT_TYPES])
-        cur_type = self.account.get("type","checking")
-        idx = ACCOUNT_TYPES.index(cur_type) if cur_type in ACCOUNT_TYPES else 0
-        self.type_combo.setCurrentIndex(idx)
+        for t in ACCOUNT_TYPES:
+            self.type_combo.addItem(t.title(), t)
+        cur_type = self.account.get("type") or "checking"
+        if cur_type not in ACCOUNT_TYPES:
+            # A type this list doesn't offer (e.g. "credit" from an import) is
+            # kept as it is rather than silently becoming "checking".
+            self.type_combo.addItem(cur_type.title(), cur_type)
+        self.type_combo.setCurrentIndex(max(self.type_combo.findData(cur_type), 0))
         form.addRow("Account Type *", self.type_combo)
+        self._type_hint = QLabel(_FIXED_ASSETS_HINT)
+        self._type_hint.setObjectName("Muted")
+        self._type_hint.setWordWrap(True)
+        form.addRow("", self._type_hint)
+        self.type_combo.currentIndexChanged.connect(self._sync_type_hint)
+        self._sync_type_hint()
 
         self.institution_edit = QLineEdit(self.account.get("institution",""))
         self.institution_edit.setPlaceholderText("e.g. Bank of America")
@@ -94,6 +111,9 @@ class AccountDialog(QDialog):
         btns.rejected.connect(self.reject)
         lay.addWidget(btns)
 
+    def _sync_type_hint(self, *_):
+        self._type_hint.setVisible(self.type_combo.currentData() == "fixed assets")
+
     def _accept(self):
         if not self.name_edit.text().strip():
             self.name_edit.setFocus()
@@ -114,7 +134,7 @@ class AccountDialog(QDialog):
         data = dict(self.account)
         data.update({
             "name": self.name_edit.text().strip(),
-            "type": ACCOUNT_TYPES[self.type_combo.currentIndex()],
+            "type": self.type_combo.currentData() or "checking",
             "institution": self.institution_edit.text().strip(),
             "opening_balance": str(self.opening_spin.value()),
             "currency": self.currency_combo.currentText(),

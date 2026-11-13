@@ -546,12 +546,50 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         return data
 
     def bulk_save_transactions(self, rows: list[dict]) -> list[dict]:
+        """
+        Save imported rows. An imported row that is the bank's copy of a transfer
+        FinanceBook already recorded (a mirror it created: same account, same
+        amount, within a few days, no import hash yet) takes that mirror's place
+        instead of becoming a duplicate. Rows a rule sent to a balance-sheet
+        account ("_transfer_to") become transfers, linking the other side when
+        it was already imported.
+        """
         saved = []
         for data in rows:
+            dest = data.pop("_transfer_to", "")
+            adopted = self._adopt_mirror(data) if data.get("import_hash") else None
+            if adopted:
+                saved.append(adopted)
+                continue
             data["id"] = self._new_id()
             data["created_at"] = self._now()
-            saved.append(self.save_transaction(data))
+            row = self.save_transaction(data)
+            if dest and dest != row.get("account_id"):
+                row = self.save_transfer_pair(row, dest, keep_sign=True, match_existing=True)
+            saved.append(row)
         return saved
+
+    def _adopt_mirror(self, data: dict) -> dict | None:
+        from datetime import date as _date
+        try:
+            d0 = _date.fromisoformat(data.get("date", ""))
+        except (TypeError, ValueError):
+            return None
+        lo = (d0 - timedelta(days=self.TRANSFER_MATCH_DAYS)).isoformat()
+        hi = (d0 + timedelta(days=self.TRANSFER_MATCH_DAYS)).isoformat()
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM transactions WHERE account_id=? AND date BETWEEN ? AND ? "
+                "AND is_transfer=1 AND transfer_pair_id!='' AND import_hash='' "
+                "AND reconciled=0 AND COALESCE(split_group_id,'')='' "
+                "AND ABS(amount - ?) < 0.005 ORDER BY date LIMIT 1",
+                (data.get("account_id", ""), lo, hi,
+                 float(data.get("amount") or 0))).fetchone()
+            if not row:
+                return None
+            c.execute("UPDATE transactions SET import_hash=?, date=? WHERE id=?",
+                      (data["import_hash"], data.get("date", ""), row["id"]))
+        return self.get_transaction(row["id"])
 
     def delete_transaction(self, txn_id: str):
         with self._conn() as c:
@@ -566,9 +604,11 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         """
         pair = txn.get("transfer_pair_id") or ""
         gid  = txn.get("split_group_id") or ""
+        pairs = {pair} | {m.get("transfer_pair_id") for m in self.get_split_group(gid)}
+        pairs -= {"", None}
         with self._conn() as c:
-            if pair:
-                c.execute("DELETE FROM transactions WHERE transfer_pair_id=?", (pair,))
+            for p in pairs:
+                c.execute("DELETE FROM transactions WHERE transfer_pair_id=?", (p,))
             if gid:
                 c.execute("DELETE FROM transactions WHERE split_group_id=?", (gid,))
             if txn.get("id"):
@@ -598,8 +638,34 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             return None
         with self._conn() as c:
             return _to_dict(c.execute(
-                "SELECT * FROM transactions WHERE transfer_pair_id=? AND id!=? LIMIT 1",
-                (pid, txn.get("id", ""))).fetchone())
+                "SELECT * FROM transactions WHERE transfer_pair_id=? AND id!=? "
+                "ORDER BY CASE WHEN account_id=? THEN 1 ELSE 0 END LIMIT 1",
+                (pid, txn.get("id", ""), txn.get("account_id", ""))).fetchone())
+
+    def transfer_partner_accounts(self, txns) -> dict:
+        """{transaction id: the other side's account id} for the transfers in
+        txns, in one query (the register shows it in its Account column)."""
+        pairs = {t["transfer_pair_id"] for t in txns
+                 if str(t.get("is_transfer", "0")) == "1" and t.get("transfer_pair_id")}
+        if not pairs:
+            return {}
+        by_pair: dict = {}
+        with self._conn() as c:
+            pl = list(pairs)
+            for i in range(0, len(pl), 500):
+                chunk = pl[i:i + 500]
+                for r in c.execute(
+                        "SELECT id, account_id, transfer_pair_id FROM transactions "
+                        f"WHERE transfer_pair_id IN ({','.join('?' * len(chunk))})", chunk):
+                    by_pair.setdefault(r["transfer_pair_id"], []).append(
+                        (r["id"], r["account_id"]))
+        out = {}
+        for t in txns:
+            rows = by_pair.get(t.get("transfer_pair_id") or "", [])
+            others = [a for i, a in rows if i != t["id"] and a != t.get("account_id")]
+            if others:
+                out[t["id"]] = others[0]
+        return out
 
     def get_transfer_category_id(self) -> str:
         """
@@ -613,37 +679,135 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                 return c["id"]
         return self.save_category({"name": "Account Transfers", "type": "expense"})["id"]
 
-    def save_transfer_pair(self, source: dict, dest_account_id: str) -> dict:
+    TRANSFER_MATCH_DAYS = 3
+
+    def find_transfer_match(self, account_id: str, date_iso: str, amount: float,
+                            exclude_ids=()) -> dict | None:
+        """
+        An already-recorded (e.g. imported) entry in account_id that looks like
+        the other side of a transfer: amount exactly `amount`, within
+        TRANSFER_MATCH_DAYS of date_iso, not itself a transfer or split line.
+        The closest date wins. Used so picking an account on one side links the
+        bank's own entry instead of creating a duplicate.
+        """
+        from datetime import date as _date
+        try:
+            d0 = _date.fromisoformat(date_iso)
+        except (TypeError, ValueError):
+            return None
+        lo = (d0 - timedelta(days=self.TRANSFER_MATCH_DAYS)).isoformat()
+        hi = (d0 + timedelta(days=self.TRANSFER_MATCH_DAYS)).isoformat()
+        with self._conn() as c:
+            rows = _to_dicts(c.execute(
+                "SELECT * FROM transactions WHERE account_id=? AND date BETWEEN ? AND ? "
+                "AND is_transfer=0 AND COALESCE(split_group_id,'')='' "
+                "AND ABS(amount - ?) < 0.005", (account_id, lo, hi, amount)).fetchall())
+        excluded = set(exclude_ids)
+        rows = [r for r in rows if r["id"] not in excluded]
+        if not rows:
+            return None
+        rows.sort(key=lambda r: (abs((_date.fromisoformat(r["date"]) - d0).days),
+                                 r.get("created_at", "")))
+        return rows[0]
+
+    @staticmethod
+    def _is_bank_entry(txn: dict) -> bool:
+        """An entry that came from the bank (imported) or was reconciled — never
+        delete or move it when a transfer is undone; just unlink it."""
+        return bool(txn.get("import_hash")) or str(txn.get("reconciled", "0")) == "1"
+
+    def detach_transfer_partner(self, txn: dict):
+        """
+        Undo the other side of txn's transfer (before re-pointing or removing the
+        transfer): a bank entry is unlinked and left uncategorized; an entry
+        FinanceBook created as the mirror is deleted. txn itself is not saved.
+        """
+        partner = self.get_transfer_partner(txn)
+        if not partner:
+            return
+        with self._conn() as c:
+            if self._is_bank_entry(partner):
+                c.execute("UPDATE transactions SET is_transfer=0, transfer_pair_id='', "
+                          "category_id='' WHERE id=?", (partner["id"],))
+            else:
+                c.execute("DELETE FROM transactions WHERE id=?", (partner["id"],))
+
+    def clear_transfer(self, data: dict) -> dict:
+        """Turn a transfer back into an ordinary entry (e.g. it was given a
+        category): detach the other side and clear the flags on data (the caller
+        saves data)."""
+        if str(data.get("is_transfer", "0")) == "1" or data.get("transfer_pair_id"):
+            if data.get("transfer_pair_id") and not data.get("split_group_id"):
+                self.detach_transfer_partner(data)
+            data["is_transfer"] = "0"
+            data["transfer_pair_id"] = ""
+            if data.get("category_id") == self.get_transfer_category_id():
+                data["category_id"] = ""
+        return data
+
+    def save_transfer_pair(self, source: dict, dest_account_id: str,
+                           keep_sign: bool = False, match_existing: bool = False) -> dict:
         """
         Record a transfer from one entry: save `source` and auto-create (or update)
         the mirror transaction in dest_account_id, both flagged is_transfer and
         sharing a transfer_pair_id. The user only enters one side; the matching
         side is kept in sync here.
 
-        Direction is fixed regardless of the sign the user typed: money LEAVES the
-        source account (negative) and ARRIVES in the destination account
-        (positive). Both sides are filed under the "Account Transfers" category and
-        need no payee. Both have is_transfer=1, so they are excluded from P&L and
-        the dashboard (which already filter transfers out).
+        By default the direction is fixed regardless of the sign the user typed:
+        money LEAVES the source account (negative) and ARRIVES in the destination
+        account (positive). keep_sign=True keeps source's signed amount instead
+        (positive = money coming in from dest_account_id), and the mirror gets the
+        opposite sign. Both sides are filed under the "Account Transfers" category
+        and need no payee. Both have is_transfer=1, so they are excluded from P&L
+        and the dashboard (which already filter transfers out).
+
+        If the existing other side is in a different account, it is detached
+        first (a bank entry is unlinked, a FinanceBook-made mirror deleted).
+        match_existing=True links an unlinked entry already in dest_account_id
+        (same amount, opposite sign, within a few days) instead of creating a
+        duplicate mirror.
         """
         source = dict(source)
-        amt = abs(float(source.get("amount") or 0))
+        signed = float(source.get("amount") or 0)
+        amt = signed if keep_sign else -abs(signed)
         tcat = self.get_transfer_category_id()
+        mirror = self.get_transfer_partner(source) if source.get("transfer_pair_id") else None
+        if mirror and mirror.get("account_id") != dest_account_id:
+            self.detach_transfer_partner(source)
+            mirror = None
+            source["transfer_pair_id"] = ""
+        if mirror is None and match_existing:
+            match = self.find_transfer_match(dest_account_id, source.get("date", ""), -amt,
+                                             exclude_ids=[source.get("id", "")])
+            if match:
+                pair_id = source.get("transfer_pair_id") or self._new_id()
+                with self._conn() as c:
+                    c.execute("UPDATE transactions SET is_transfer=1, transfer_pair_id=?, "
+                              "category_id=? WHERE id=?", (pair_id, tcat, match["id"]))
+                source.update({"is_transfer": "1", "amount": str(amt), "category_id": tcat,
+                               "transfer_pair_id": pair_id})
+                return self.save_transaction(source)
         source["is_transfer"] = "1"
-        source["amount"] = str(-amt)          # money out of the source account
+        source["amount"] = str(amt)
         source["category_id"] = tcat
         pair_id = source.get("transfer_pair_id") or self._new_id()
         source["transfer_pair_id"] = pair_id
         saved = self.save_transaction(source)
 
-        mirror = self.get_transfer_partner(saved)
+        if mirror and self._is_bank_entry(mirror):
+            # The other side is the bank's own entry: keep its amount and date,
+            # just make sure it stays linked and filed as a transfer.
+            with self._conn() as c:
+                c.execute("UPDATE transactions SET is_transfer=1, transfer_pair_id=?, "
+                          "category_id=? WHERE id=?", (pair_id, tcat, mirror["id"]))
+            return saved
         self.save_transaction({
             "id":               mirror["id"] if mirror else "",
             "date":             saved.get("date", ""),
             "account_id":       dest_account_id,
             "payee":            saved.get("payee", ""),
             "memo":             saved.get("memo", ""),
-            "amount":           str(amt),       # money into the destination account
+            "amount":           str(-amt),      # the opposite side
             "category_id":      tcat,
             "class_id":         saved.get("class_id", ""),
             "is_transfer":      "1",
@@ -685,7 +849,8 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         with the given split lines.
 
         Each split line is a dict: {category_id, amount, memo (optional),
-        class_id (optional), transfer (optional bool)}. Shared fields (date,
+        class_id (optional), transfer (optional bool), transfer_to (optional
+        account id)}. Shared fields (date,
         account, payee, reconciled, notes) are inherited from base_txn. The
         original import_hash is preserved on the first line so re-importing the
         source file still de-duplicates.
@@ -699,17 +864,30 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         transfer. (For backward compatibility, a line with no "transfer" key in a
         transfer split is treated as a transfer.) Returns the saved source-side
         child transactions.
+
+        A line with its own transfer_to (picked in the unified Account picker)
+        moves that part to that account: it leaves the source account when the
+        transaction is money out, and arrives from it when it is money in (like
+        category lines, the line's own sign is ignored). Each destination gets
+        one mirror with its own transfer_pair_id.
         """
+        from utils.ledger import category_sign
         gid = base_txn.get("split_group_id") or self._new_id()
         has_dest = bool(transfer_to)
 
-        def _is_tr(s):
-            return has_dest and bool(s.get("transfer", True))
+        def _dest(s):
+            if s.get("transfer_to"):
+                return s["transfer_to"]
+            return transfer_to if has_dest and bool(s.get("transfer", True)) else ""
 
-        any_transfer_line = any(_is_tr(s) for s in splits)
+        any_transfer_line = any(_dest(s) for s in splits)
         tcat = self.get_transfer_category_id() if any_transfer_line else ""
-        pair_id = base_txn.get("transfer_pair_id") or (self._new_id() if any_transfer_line else "")
+        outflow = self._split_is_outflow(base_txn, splits)
         preserved_hash = base_txn.get("import_hash", "") or ""
+        old_members = self.get_split_group(base_txn.get("split_group_id") or "")
+        old_pairs = {m.get("transfer_pair_id") for m in old_members}
+        old_pairs.add(base_txn.get("transfer_pair_id", ""))
+        old_pairs -= {"", None}
         with self._conn() as c:
             if base_txn.get("split_group_id"):
                 for r in c.execute(
@@ -720,32 +898,45 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                 c.execute("DELETE FROM transactions WHERE split_group_id=?", (gid,))
             elif base_txn.get("id"):
                 c.execute("DELETE FROM transactions WHERE id=?", (base_txn["id"],))
-            # Remove any prior transfer mirror tied to this entry before rebuilding.
-            old_pair = base_txn.get("transfer_pair_id", "")
-            if old_pair:
-                c.execute("DELETE FROM transactions WHERE transfer_pair_id=?", (old_pair,))
+            # Remove any prior transfer mirror tied to this entry before rebuilding
+            # (a bank entry on the other side is unlinked, never deleted).
+            for old_pair in old_pairs:
+                for r in c.execute("SELECT * FROM transactions WHERE transfer_pair_id=?",
+                                   (old_pair,)).fetchall():
+                    if self._is_bank_entry(dict(r)):
+                        c.execute("UPDATE transactions SET is_transfer=0, transfer_pair_id='', "
+                                  "category_id='' WHERE id=?", (r["id"],))
+                    else:
+                        c.execute("DELETE FROM transactions WHERE id=?", (r["id"],))
 
         saved = []
-        moved_total = 0.0   # sum of the parts that move to the destination account
+        moved: dict = {}      # destination account -> signed amount it receives
+        pairs: dict = {}      # destination account -> transfer_pair_id
         for i, s in enumerate(splits):
             raw = float(s.get("amount") or 0)
-            line_is_transfer = _is_tr(s)
+            dest = _dest(s)
+            line_is_transfer = bool(dest)
             cat = s.get("category_id", "")
-            if has_dest:
-                # In a transfer split every line leaves the source account.
+            if dest and dest not in pairs:
+                keep = has_dest and dest == transfer_to and base_txn.get("transfer_pair_id")
+                pairs[dest] = keep or self._new_id()
+            if has_dest and not s.get("transfer_to"):
+                # Legacy transfer split: every line leaves the source account.
                 amt = -abs(raw)
                 if line_is_transfer:
-                    moved_total += abs(raw)
+                    moved[dest] = moved.get(dest, 0.0) + abs(raw)
                     cat = cat or tcat
+            elif dest:
+                amt = -abs(raw) if outflow else abs(raw)
+                moved[dest] = moved.get(dest, 0.0) - amt
+                cat = tcat
             else:
                 # Plain split: the category type sets the sign, just like a normal
                 # transaction (expense subtracts, income adds, uncategorized keeps
                 # whatever sign was entered so refunds still work).
                 ctype = self._category_type(cat)
-                if ctype == "income":
-                    amt = abs(raw)
-                elif ctype in ("expense", "debt_repayment"):
-                    amt = -abs(raw)
+                if ctype in ("income", "other_income") or category_sign(ctype) < 0:
+                    amt = abs(raw) * category_sign(ctype)
                 else:
                     amt = raw
             child = {
@@ -757,7 +948,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                 "category_id":   cat,
                 "class_id":      s.get("class_id") or base_txn.get("class_id", ""),
                 "is_transfer":   "1" if line_is_transfer else "0",
-                "transfer_pair_id": pair_id if line_is_transfer else "",
+                "transfer_pair_id": pairs.get(dest, "") if line_is_transfer else "",
                 "reconciled":    base_txn.get("reconciled", "0"),
                 "notes":         base_txn.get("notes", ""),
                 "import_hash":   preserved_hash if i == 0 else "",
@@ -772,27 +963,55 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                     child[k] = base_txn[k]
             saved.append(self.save_transaction(child))
 
-        # One mirror in the destination for the portion that actually moved.
-        if any_transfer_line and moved_total > 0.005:
+        # One mirror per destination for the portion that actually moved there.
+        for dest, total in moved.items():
+            if abs(total) < 0.005:
+                continue
             self.save_transaction({
                 "date":             base_txn.get("date", ""),
-                "account_id":       transfer_to,
+                "account_id":       dest,
                 "payee":            base_txn.get("payee", ""),
                 "memo":             base_txn.get("memo", ""),
-                "amount":           str(round(moved_total, 2)),   # money arriving
+                "amount":           str(round(total, 2)),
                 "category_id":      tcat,
                 "class_id":         base_txn.get("class_id", ""),
                 "is_transfer":      "1",
-                "transfer_pair_id": pair_id,
+                "transfer_pair_id": pairs[dest],
                 "reconciled":       "0",
                 "notes":            base_txn.get("notes", ""),
                 "split_group_id":   "",
             })
         return saved
 
+    def _split_is_outflow(self, base_txn: dict, splits: list[dict]) -> bool:
+        """Whether a split is money out of its account (decides the direction of
+        lines that move to another account). A stored transaction's own sign
+        wins; otherwise the lines' categories decide; otherwise money out."""
+        if base_txn.get("id"):
+            stored = self.get_transaction(base_txn["id"])
+            if stored and abs(float(stored.get("amount") or 0)) > 0.005:
+                return float(stored["amount"]) < 0
+        gid = base_txn.get("split_group_id") or ""
+        if gid:
+            total = sum(float(m.get("amount") or 0) for m in self.get_split_group(gid))
+            if abs(total) > 0.005:
+                return total < 0
+        types = {self._category_type(s.get("category_id", "")) for s in splits
+                 if s.get("category_id") and not s.get("transfer_to")}
+        if types and types <= {"income", "other_income"}:
+            return False
+        if types:
+            return True
+        return float(base_txn.get("amount") or 0) <= 0
+
     def delete_split_group(self, group_id: str):
+        """Delete every line of a split and the other side of any part of it that
+        moved to another account."""
+        pairs = {m.get("transfer_pair_id") for m in self.get_split_group(group_id)} - {"", None}
         with self._conn() as c:
             c.execute("DELETE FROM transactions WHERE split_group_id=?", (group_id,))
+            for p in pairs:
+                c.execute("DELETE FROM transactions WHERE transfer_pair_id=?", (p,))
 
     def clear_all_data(self):
         """

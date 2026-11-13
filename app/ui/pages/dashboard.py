@@ -308,7 +308,7 @@ class DashboardPage(QWidget):
         lay.addLayout(_section_header("Recent transactions",
                                       "Last 30 days · transfers excluded", view_all))
 
-        self._table = DataTable(["Date", "Payee / Memo", "Category", "Amount"], flat=True)
+        self._table = DataTable(["Date", "Payee / Memo", "Account", "Amount"], flat=True)
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(1, hh.ResizeMode.Stretch)
         hh.setSectionResizeMode(2, hh.ResizeMode.Stretch)

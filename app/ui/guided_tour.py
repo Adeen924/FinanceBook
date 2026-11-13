@@ -36,8 +36,9 @@ STEPS = [
 
     dict(nav="Accounts", target=lambda mw, p: getattr(p, "_add_btn", None),
          title="Step 1 — Add your accounts",
-         body="Click <b>“+ Add Account”</b> to create each bank, credit-card, "
-              "loan or cash account and give it a name and starting balance."),
+         body="Click <b>“+ New Account”</b>, pick the type, and create each bank, "
+              "credit-card, loan or cash account with a name and starting balance. "
+              "Your income and expense accounts (categories) live in this same list."),
 
     dict(nav="Accounts",
          target=lambda mw, p: (p.first_account_name_rect()
@@ -63,8 +64,8 @@ STEPS = [
     dict(nav="Transactions", target=lambda mw, p: getattr(p, "_add_btn", None),
          title="Step 3 — Add & manage transactions",
          body="Click <b>“+ Add Transaction”</b>. From that one screen you can also "
-              "<b>Split</b> a purchase across categories or mark it a "
-              "<b>Transfer</b> between accounts."),
+              "<b>Split</b> a purchase across accounts. Pick a bank, card or loan in "
+              "the <b>Account</b> field to record a transfer between your accounts."),
 
     dict(nav="Recurring", target=lambda mw, p: getattr(p, "_add_btn", None),
          title="Rent, subscriptions & other repeats",

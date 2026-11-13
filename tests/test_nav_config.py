@@ -12,7 +12,7 @@ from sheets.client import Database
 
 # The sidebar a Personal book has always had — it must never change.
 PERSONAL_ORDER = ["Dashboard", "Accounts", "Transactions", "Transfers", "Import",
-                  "Reconcile", "Loans", "Recurring", "Rules", "Categories", "Reports"]
+                  "Reconcile", "Loans", "Recurring", "Rules", "Reports"]
 
 
 def labels(book, enabled=NC.ALL_MODULES):
@@ -24,19 +24,19 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(labels("business", NC.preset_modules("simple")),
                          ["Dashboard", "Accounts", "Transactions", "Receipts",
                           "Invoices & Bills", "Owner Investment", "Taxes", "Reports",
-                          "Categories & Rules"])
+                          "Rules"])
 
     def test_standard(self):
         self.assertEqual(labels("business", NC.preset_modules("standard")),
                          ["Dashboard", "Accounts", "Transactions", "Receipts",
                           "Invoices & Bills", "Fixed Assets", "Owner Investment", "Taxes",
-                          "Reports", "Categories & Rules"])
+                          "Reports", "Rules"])
 
     def test_full(self):
         self.assertEqual(labels("business", NC.preset_modules("full")),
                          ["Dashboard", "Accounts", "Transactions", "Receipts",
                           "Invoices & Bills", "Inventory", "Fixed Assets", "People & Payroll",
-                          "Owner Investment", "Taxes", "Reports", "Categories & Rules"])
+                          "Owner Investment", "Taxes", "Reports", "Rules"])
 
     def test_presets_nest(self):
         s, st, f = (NC.preset_modules(k) for k in ("simple", "standard", "full"))
@@ -71,7 +71,7 @@ class PersonalTests(unittest.TestCase):
     def test_icons_unchanged(self):
         self.assertEqual([it.icon for it in NC.visible_items("personal")],
                          ["dashboard", "accounts", "transactions", "transfers", "import",
-                          "reconcile", "loans", "calendar", "rules", "categories", "reports"])
+                          "reconcile", "loans", "calendar", "rules", "reports"])
 
 
 class StoredPreferenceTests(unittest.TestCase):
@@ -146,7 +146,8 @@ class LayoutTests(unittest.TestCase):
                          ("Transactions", "Import", "Reconcile", "Transfers", "Recurring"))
         self.assertEqual(items["Accounts"].pages, ("Accounts", "Loans"))
         self.assertEqual(items["Invoices & Bills"].pages, ("Invoices & Bills", "Contacts"))
-        self.assertEqual(items["Categories & Rules"].pages, ("Categories", "Rules"))
+        self.assertEqual(items["Rules"].pages, ("Rules",))
+        self.assertNotIn("Categories & Rules", items)
 
     def test_loans_tab_follows_module(self):
         items = {it.id: it for it in NC.visible_items("business", NC.ALL_MODULES - {"loans"})}
@@ -166,7 +167,7 @@ class LayoutTests(unittest.TestCase):
     def test_everything_off_keeps_core(self):
         self.assertEqual(labels("business", frozenset()),
                          ["Dashboard", "Accounts", "Transactions", "Contacts", "Reports",
-                          "Categories & Rules"])
+                          "Rules"])
 
     def test_locate(self):
         for name in NC.ALL_PAGES:
@@ -175,8 +176,12 @@ class LayoutTests(unittest.TestCase):
             self.assertEqual(hit[1], name)
         item, page = NC.locate("Import", "business")
         self.assertEqual((item.id, page), ("Transactions", "Import"))
+        # v1.14: Categories are part of Accounts; the old ids still resolve.
         item, page = NC.locate("Categories & Rules", "business")
-        self.assertEqual(page, "Categories")
+        self.assertEqual((item.id, page), ("Rules", "Rules"))
+        item, page = NC.locate("Categories", "business")
+        self.assertEqual((item.id, page), ("Accounts", "Accounts"))
+        self.assertEqual(NC.locate("Categories", "personal")[1], "Accounts")
         self.assertEqual(NC.locate("Settings", "personal"), (None, "Settings"))
         self.assertIsNone(NC.locate("Receipts", "personal"))
         self.assertIsNone(NC.locate("Nope", "business"))

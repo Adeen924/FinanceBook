@@ -5,7 +5,9 @@ from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
                               QTextEdit, QLabel, QCheckBox, QFrame,
                               QPushButton, QMessageBox, QWidget, QHBoxLayout)
 from PyQt6.QtCore import QDate
-from ui.widgets import FilterComboBox, DateField
+from ui.widgets import FilterComboBox, DateField, AccountPicker
+from utils.chart_of_accounts import account_value
+from utils.ledger import category_sign
 
 
 # Owner-paid treatments (business books): which built-in account the expense
@@ -64,7 +66,8 @@ class TransactionDialog(QDialog):
 
         if self._business:
             self._build_paid_by_rows(form)
-        form.addRow("Account *", self.account_combo)
+        self.account_combo.setToolTip("The account this entry appears in (bank, card, cash…)")
+        form.addRow("Bank / card account *", self.account_combo)
         if self._business:
             self.account_combo.currentIndexChanged.connect(self._sync_paid_by_from_account)
             self._init_paid_by()
@@ -94,17 +97,33 @@ class TransactionDialog(QDialog):
         self.amount_spin.valueChanged.connect(self._update_loan_preview)
         form.addRow("Amount *", self.amount_spin)
 
-        self._amount_note = QLabel(
-            "Enter a positive amount — the category decides the direction "
-            "(Expense subtracts, Income adds). Use a negative for a refund/return.")
+        self._amount_note = QLabel("")
         self._amount_note.setObjectName("Muted")
         self._amount_note.setWordWrap(True)
         form.addRow("", self._amount_note)
 
-        # Category — type-to-filter, starts blank with a placeholder
-        self.cat_combo = self._build_category_combo()
-        self.cat_combo.select_by_data(self.transaction.get("category_id",""))
-        form.addRow("Category", self.cat_combo)
+        # Account — one type-to-filter list of income/expense accounts
+        # (categories) and balance-sheet accounts. Picking a balance-sheet
+        # account makes the entry a transfer to/from it.
+        self._partner = None
+        if (self.transaction.get("id") and str(self.transaction.get("is_transfer", "0")) == "1"
+                and not self.transaction.get("split_group_id")):
+            self._partner = self.db.get_transfer_partner(self.transaction)
+        self.cat_combo = AccountPicker(
+            self.db, exclude_account_id=self.account_combo.currentData() or "",
+            keep_ids=[self.transaction.get("category_id", "")])
+        self.cat_combo.setToolTip(
+            "Where the money goes or comes from: an income or expense account, or one "
+            "of your own accounts (bank, card, loan…) to record a transfer.")
+        if self._partner:
+            self.cat_combo.select_by_data(account_value(self._partner.get("account_id", "")))
+        else:
+            self.cat_combo.select_by_data(self.transaction.get("category_id", ""))
+        form.addRow("Account", self.cat_combo)
+        self.cat_combo.currentIndexChanged.connect(self._on_target_changed)
+        self.cat_combo.lineEdit().editingFinished.connect(self._on_target_changed)
+        self.account_combo.currentIndexChanged.connect(
+            lambda _: self.cat_combo.set_exclude_account(self.account_combo.currentData() or ""))
 
         if self._business:
             self.charged_combo = FilterComboBox(placeholder="Company (general business)")
@@ -127,31 +146,10 @@ class TransactionDialog(QDialog):
             form.addRow("Vendor / customer", self.contact_combo)
             self.payee_edit.editingFinished.connect(self._suggest_contact)
 
-        # ── Transfer section ───────────────────────────────────────────────────
+        # ── Split section ──────────────────────────────────────────────────────
         sep0 = QFrame(); sep0.setFrameShape(QFrame.Shape.HLine); sep0.setObjectName("Muted")
         form.addRow(sep0)
-
-        self._transfer_chk = QCheckBox("This is a transfer between my accounts")
-        self._transfer_chk.toggled.connect(self._on_transfer_toggled)
-        form.addRow("Transfer", self._transfer_chk)
-
-        self._transfer_box = QWidget()
-        _tb = QVBoxLayout(self._transfer_box)
-        _tb.setContentsMargins(0, 0, 0, 0)
-        _tb.setSpacing(4)
-        self._transfer_acct_combo = QComboBox()
-        for a in self._accounts:
-            self._transfer_acct_combo.addItem(a["name"], a["id"])
-        _tb.addWidget(self._transfer_acct_combo)
-        _hint = QLabel("Money moves into this account. A matching entry is created "
-                       "there automatically, and transfers are left out of P&L.")
-        _hint.setObjectName("Muted"); _hint.setWordWrap(True)
-        _tb.addWidget(_hint)
-        form.addRow("Goes to account", self._transfer_box)
-        self._set_row_visible(self._transfer_box, False)
-
-        # ── Split section ──────────────────────────────────────────────────────
-        self._split_chk = QCheckBox("Split this transaction across multiple categories")
+        self._split_chk = QCheckBox("Split this transaction across multiple accounts")
         self._split_chk.toggled.connect(self._on_split_toggled)
         form.addRow("Split", self._split_chk)
 
@@ -159,7 +157,7 @@ class TransactionDialog(QDialog):
         _sb = QHBoxLayout(self._split_box)
         _sb.setContentsMargins(0, 0, 0, 0)
         _sb.setSpacing(8)
-        self._split_btn = QPushButton("Choose categories && amounts…")
+        self._split_btn = QPushButton("Choose accounts && amounts…")
         self._split_btn.setObjectName("Secondary")
         self._split_btn.clicked.connect(self._define_split)
         _sb.addWidget(self._split_btn)
@@ -242,31 +240,14 @@ class TransactionDialog(QDialog):
             del_btn.clicked.connect(self._delete_self)
         lay.addWidget(btns)
 
-        # Pre-fill an existing transfer so it can be reviewed / kept in sync.
-        # Always present the outflow (negative) side as the source "Account" and
-        # the inflow (positive) side as "Goes to account", no matter which row the
-        # user opened, so re-saving never flips the transfer's direction.
-        if self.transaction.get("id") and str(self.transaction.get("is_transfer","0")) == "1":
-            partner = self.db.get_transfer_partner(self.transaction)
-            if partner:
-                self._transfer_chk.setChecked(True)
-                this_amt = float(self.transaction.get("amount") or 0)
-                if this_amt <= 0:
-                    from_acct = self.transaction.get("account_id")
-                    to_acct   = partner.get("account_id")
-                else:
-                    from_acct = partner.get("account_id")
-                    to_acct   = self.transaction.get("account_id")
-                for i in range(self.account_combo.count()):
-                    if self.account_combo.itemData(i) == from_acct:
-                        self.account_combo.setCurrentIndex(i)
-                        break
-                for i in range(self._transfer_acct_combo.count()):
-                    if self._transfer_acct_combo.itemData(i) == to_acct:
-                        self._transfer_acct_combo.setCurrentIndex(i)
-                        break
-                self.amount_spin.setValue(abs(this_amt))
+        # An existing transfer opens from this row's side: the other account is in
+        # the Account picker and the amount reads positive for money going out of
+        # this account, negative for money coming in, so re-saving keeps both
+        # sides exactly as they were.
+        if self._partner:
+            self.amount_spin.setValue(-float(self.transaction.get("amount") or 0))
 
+        self._on_target_changed()
         self._update_loan_lock()
 
     # ── attachments ────────────────────────────────────────────────────────────
@@ -350,8 +331,6 @@ class TransactionDialog(QDialog):
         if not any(a["id"] == acct["id"] for a in self._accounts):
             self._accounts.append(acct)
             self.account_combo.addItem(acct["name"], acct["id"])
-            if hasattr(self, "_transfer_acct_combo"):
-                self._transfer_acct_combo.addItem(acct["name"], acct["id"])
         ix = self.account_combo.findData(acct["id"])
         if ix >= 0:
             self.account_combo.blockSignals(True)
@@ -435,7 +414,7 @@ class TransactionDialog(QDialog):
         c = self.db.match_contact(self.payee_edit.text())
         if c:
             self.contact_combo.select_by_data(c["id"])
-            if not self.cat_combo.current_data() and c.get("default_category_id"):
+            if not self.cat_combo.currentText().strip() and c.get("default_category_id"):
                 self.cat_combo.select_by_data(c["default_category_id"])
 
     def _business_fields(self) -> dict:
@@ -457,26 +436,21 @@ class TransactionDialog(QDialog):
     # ── combo builders ──────────────────────────────────────────────────────────
 
     def _category_sign(self, cat_id: str) -> int:
-        """-1 for expense / debt-repayment categories (entered positive but stored
-        negative = money out), +1 otherwise. A negative entry therefore becomes a
-        refund (stored positive)."""
-        cat = next((c for c in getattr(self, "_cats", []) if c.get("id") == cat_id), None)
-        if cat and cat.get("type") in ("expense", "debt_repayment"):
+        """-1 for spending categories (expense, other expense, debt repayment —
+        entered positive but stored negative = money out) and for a transfer to
+        another account (positive = money leaving this one); +1 otherwise. A
+        negative entry therefore becomes a refund (stored positive)."""
+        if (cat_id or "").startswith("acct:"):
             return -1
-        return 1
+        cat = next((c for c in getattr(self, "_cats", []) if c.get("id") == cat_id), None)
+        return category_sign(cat.get("type")) if cat else 1
 
-    def _build_category_combo(self) -> FilterComboBox:
-        """Filterable category combo: roots as 'Name', subs as 'Parent → Child'."""
-        combo = FilterComboBox(placeholder="Type to search categories…")
-        cats = self.db.get_categories_for_book(
-            keep_ids=[self.transaction.get("category_id", "")])
-        roots = [c for c in cats if not c.get("parent_id")]
-        for cat in roots:
-            combo.add_option(cat["name"], cat["id"])
-            for sub in cats:
-                if sub.get("parent_id") == cat["id"]:
-                    combo.add_option(f"{cat['name']} → {sub['name']}", sub["id"])
-        return combo
+    def _target(self) -> tuple:
+        """('category', id) | ('account', id) | ('', '') from the Account picker."""
+        return self.cat_combo.selection()
+
+    def _is_transfer(self) -> bool:
+        return self._target()[0] == "account"
 
     # ── mode handling ────────────────────────────────────────────────────────────
     # Transfer + Split + Category can all be used together. Only a loan payment
@@ -489,10 +463,9 @@ class TransactionDialog(QDialog):
             c.blockSignals(False)
 
     def _update_loan_lock(self):
-        busy = self._transfer_chk.isChecked() or self._split_chk.isChecked()
+        busy = self._is_transfer() or self._split_chk.isChecked()
         self._loan_chk.setEnabled(not busy)
         loan_on = self._loan_chk.isChecked()
-        self._transfer_chk.setEnabled(not loan_on)
         self._split_chk.setEnabled(not loan_on)
 
     def _set_row_visible(self, field_widget, visible: bool):
@@ -502,8 +475,13 @@ class TransactionDialog(QDialog):
             lbl.setVisible(visible)
         field_widget.setVisible(visible)
 
-    def _on_transfer_toggled(self, on: bool):
-        self._set_row_visible(self._transfer_box, on)
+    def _on_target_changed(self, *_):
+        """The Account picker changed: a balance-sheet account makes this a
+        transfer (no Paid by / Charged to; filed under "Account Transfers" and
+        left out of P&L)."""
+        if not hasattr(self, "_loan_chk"):
+            return          # still building the dialog
+        on = self._is_transfer()
         if self._business:
             self._set_row_visible(self.paid_by_combo, not on)
             self._set_row_visible(self.charged_combo, not on)
@@ -512,11 +490,13 @@ class TransactionDialog(QDialog):
                 self._treatment_hint.setVisible(False)
             else:
                 self._update_paid_by_visibility()
-        # Transfers need no payee or category — they're filed automatically under
-        # "Account Transfers" and excluded from P&L. Hide those rows for clarity.
-        self._set_row_visible(self.payee_edit, not on)
-        self._set_row_visible(self.cat_combo, not on)
-        self._amount_note.setVisible(not on)
+        self._amount_note.setText(
+            "Transfer: a positive amount moves money out of this account into the one "
+            "picked above; a negative amount moves it in. The other account's entry is "
+            "created (or the matching imported one linked) automatically."
+            if on else
+            "Enter a positive amount — the account decides the direction "
+            "(Expense subtracts, Income adds). Use a negative for a refund/return.")
         if on and self._loan_chk.isChecked():
             self._force_off(self._loan_chk)
             self._set_row_visible(self._loan_combo, False)
@@ -543,10 +523,11 @@ class TransactionDialog(QDialog):
         base = dict(self.transaction)
         base["amount"] = str(total)
         base["account_id"] = self.account_combo.currentData() or base.get("account_id", "")
-        dest = self._transfer_acct_combo.currentData() if self._transfer_chk.isChecked() else ""
+        kind, target = self._target()
+        base["category_id"] = target if kind == "category" else ""
         from ui.dialogs.split_dialog import SplitDialog
-        dlg = SplitDialog(self.db, base, total_amount=total,
-                          transfer_to_id=dest, parent=self)
+        dlg = SplitDialog(self.db, base, total_amount=total, parent=self,
+                          first_target=self.cat_combo.current_data())
         if dlg.exec() == SplitDialog.DialogCode.Accepted:
             self._pending_splits = dlg.get_splits()
             self._update_split_summary()
@@ -556,9 +537,13 @@ class TransactionDialog(QDialog):
             self._split_summary.setText("No split defined yet.")
             return
         cats = {c["id"]: c for c in self.db.get_categories()}
+        accts = {a["id"]: a for a in self.db.get_accounts(active=None)}
         parts = []
         for s in self._pending_splits:
-            nm = cats.get(s.get("category_id",""), {}).get("name", "Uncategorized")
+            if s.get("transfer_to"):
+                nm = "→ " + accts.get(s["transfer_to"], {}).get("name", "account")
+            else:
+                nm = cats.get(s.get("category_id", ""), {}).get("name", "Uncategorized")
             parts.append(f"{nm}: ${abs(float(s.get('amount') or 0)):,.2f}")
         self._split_summary.setText("  ·  ".join(parts))
 
@@ -566,14 +551,8 @@ class TransactionDialog(QDialog):
 
     def _on_loan_toggled(self, checked: bool):
         if checked:
-            self._force_off(self._transfer_chk, self._split_chk)
-            self._set_row_visible(self._transfer_box, False)
+            self._force_off(self._split_chk)
             self._split_box.setVisible(False)
-            # Transfer was just force-disabled (signals blocked), so restore the
-            # Payee/Category rows it had hidden.
-            self._set_row_visible(self.payee_edit, True)
-            self._set_row_visible(self.cat_combo, True)
-            self._amount_note.setVisible(True)
         self._set_row_visible(self._loan_combo, checked)
         self._loan_preview.setVisible(checked)
         self._update_loan_lock()
@@ -670,43 +649,56 @@ class TransactionDialog(QDialog):
             self.account_combo.setFocus()
             return
 
-        split_on    = self._split_chk.isChecked()
-        transfer_on = self._transfer_chk.isChecked()
-        dest = self._transfer_acct_combo.currentData() if transfer_on else ""
+        split_on = self._split_chk.isChecked()
+        kind, dest = self._target()
 
         if split_on and (not self._pending_splits or len(self._pending_splits) < 2):
             QMessageBox.warning(self, "Define the Split",
-                "Click “Choose categories & amounts…” and set at least two "
+                "Click “Choose accounts & amounts…” and set at least two "
                 "lines that add up to the total.")
             return
 
+        if not split_on and self.cat_combo.currentText().strip() and not kind:
+            QMessageBox.warning(self, "Pick an Account",
+                f"“{self.cat_combo.currentText().strip()}” isn't in the list. "
+                "Pick an account from the list, or clear the field to leave it "
+                "uncategorized.")
+            self.cat_combo.setFocus()
+            return
+
+        transfer_on = kind == "account" and not split_on
         if transfer_on:
-            if not dest:
-                QMessageBox.warning(self, "Choose an Account",
-                                    "Select the account the money is going into.")
-                return
             if dest == self.account_combo.currentData():
                 QMessageBox.warning(self, "Same Account",
-                    "The destination account must be different from the source.")
+                    "The other account must be different from this one.")
                 return
             if abs(self.amount_spin.value()) < 0.005:
                 QMessageBox.warning(self, "Amount Needed", "Enter the amount.")
                 return
 
-        # Split (optionally also a transfer)
+        # Split (lines may move parts to other accounts)
         if split_on:
-            self.db.split_transaction(self.get_data(), self._pending_splits,
-                                      transfer_to=dest)
+            data = self.get_data()
+            if self._partner:
+                self.db.detach_transfer_partner(self.transaction)
+                data["is_transfer"], data["transfer_pair_id"] = "0", ""
+            self.db.split_transaction(data, self._pending_splits)
             self.handled = True
             self.accept()
             return
 
-        # Transfer only
+        # Transfer to / from another of the user's accounts
         if transfer_on:
-            self.db.save_transfer_pair(self.get_data(), dest)
+            self.db.save_transfer_pair(self.get_data(), dest, keep_sign=True,
+                                       match_existing=True)
             self.handled = True
             self.accept()
             return
+
+        # No longer a transfer: undo the other side (an imported bank entry is
+        # unlinked and left uncategorized, a mirror FinanceBook made is removed).
+        if self._partner:
+            self.db.detach_transfer_partner(self.transaction)
 
         if self._loan_chk.isChecked() and not self._loans:
             QMessageBox.warning(self, "No Loans",
@@ -753,14 +745,19 @@ class TransactionDialog(QDialog):
 
     def get_data(self) -> dict:
         data = dict(self.transaction)
-        cat_id  = self.cat_combo.current_data() or ""
+        kind, target = self._target()
+        cat_id = target if kind == "category" else ""
         entered = self.amount_spin.value()
-        # The amount is typed as a positive number; the category decides whether
+        # The amount is typed as a positive number; the account decides whether
         # it's stored as money out (expense → negative) or in (income → positive),
-        # and a negative entry flips that (a refund). Transfers manage their own
-        # signs (save_transfer_pair takes the magnitude), so leave them as typed.
-        amount = entered if self._transfer_chk.isChecked() \
-            else entered * self._category_sign(cat_id)
+        # and a negative entry flips that (a refund). For a transfer, positive is
+        # money leaving this account.
+        amount = entered * self._category_sign(self.cat_combo.current_data())
+        if kind != "account" and (str(data.get("is_transfer", "0")) == "1"
+                                  and not data.get("split_group_id")):
+            # Was a transfer, now categorized: it becomes an ordinary entry.
+            data["is_transfer"] = "0"
+            data["transfer_pair_id"] = ""
         data.update({
             "date":       self.date_edit.date().toString("yyyy-MM-dd"),
             "account_id": self.account_combo.currentData(),

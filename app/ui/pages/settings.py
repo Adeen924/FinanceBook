@@ -244,9 +244,9 @@ class SettingsPage(QWidget):
             self._module_notes[m.key] = note
 
         locked = QLabel(
-            "🔒 Always shown: Dashboard, Accounts, Transactions (with Import, Reconcile, "
-            "Transfers and Recurring tabs), Contacts, Reports, Categories &amp; Rules and "
-            "Settings.")
+            "🔒 Always shown: Dashboard, Accounts (your chart of accounts, including "
+            "income and expense accounts), Transactions (with Import, Reconcile, "
+            "Transfers and Recurring tabs), Contacts, Reports, Rules and Settings.")
         locked.setObjectName("Muted")
         locked.setWordWrap(True)
         locked.setTextFormat(Qt.TextFormat.RichText)
