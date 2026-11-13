@@ -86,7 +86,7 @@ class ImportPage(QWidget):
         lay.addWidget(self._status_label)
 
         self._table = DataTable(
-            ["Date", "Payee / Memo", "Amount", "Auto Category", "Duplicate?"])
+            ["Date", "Payee / Memo", "Amount", "Auto Account", "Duplicate?"])
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._table.setColumnWidth(0, 110)
         self._table.setColumnWidth(2, 110)
@@ -164,14 +164,14 @@ class ImportPage(QWidget):
         self._parsed = new
         self._render_preview(new, dups)
 
-        matched   = [t for t in new if t.get("category_id")]
-        unmatched = [t for t in new if not t.get("category_id")]
+        matched   = [t for t in new if t.get("category_id") or t.get("_transfer_to")]
+        unmatched = [t for t in new if not (t.get("category_id") or t.get("_transfer_to"))]
 
         status_parts = []
         if matched:
             status_parts.append(f"{len(matched)} auto-categorized")
         if unmatched:
-            status_parts.append(f"{len(unmatched)} need a category")
+            status_parts.append(f"{len(unmatched)} need an account")
         if dups:
             status_parts.append(f"{len(dups)} duplicates skipped")
         if warnings:
@@ -186,23 +186,27 @@ class ImportPage(QWidget):
 
     def _render_preview(self, new_txns, dup_txns):
         cats = {c["id"]: c["name"] for c in self.db.get_categories()}
+        accts = {a["id"]: a["name"] for a in self.db.get_accounts(active=None)}
 
         def by_date(t):
             return t.get("date", "")
 
-        matched   = sorted([t for t in new_txns if t.get("category_id")],  key=by_date)
-        unmatched = sorted([t for t in new_txns if not t.get("category_id")], key=by_date)
+        def has_account(t):
+            return bool(t.get("category_id") or t.get("_transfer_to"))
+
+        matched   = sorted([t for t in new_txns if has_account(t)],  key=by_date)
+        unmatched = sorted([t for t in new_txns if not has_account(t)], key=by_date)
         dups      = sorted(dup_txns, key=by_date)
 
         # Build sections: (header_text, transactions, is_dup)
         sections = []
         if matched:
             sections.append((
-                f"AUTO-CATEGORIZED BY RULES  —  {len(matched)} transaction(s)",
+                f"ACCOUNT SET BY RULES  —  {len(matched)} transaction(s)",
                 matched, False, "#e7f6ec", "#15803d"))
         if unmatched:
             sections.append((
-                f"NEEDS A CATEGORY  —  {len(unmatched)} transaction(s)",
+                f"NEEDS AN ACCOUNT  —  {len(unmatched)} transaction(s)",
                 unmatched, False, "#fff4e0", "#b45309"))
         if dups:
             sections.append((
@@ -231,6 +235,8 @@ class ImportPage(QWidget):
 
             for t in txns:
                 cat_name = cats.get(t.get("category_id", ""), "")
+                if t.get("_transfer_to"):
+                    cat_name = "⇄ Transfer · " + accts.get(t["_transfer_to"], "account")
                 self._table.set_item(row, 0, t.get("date", ""))
                 self._table.set_item(row, 1, t.get("payee") or t.get("memo", "—"))
                 self._table.money_item(row, 2, float(t.get("amount") or 0))

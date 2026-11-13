@@ -32,7 +32,9 @@ from sheets.admin_store import AdminMixin, ADMIN_SCHEMA
 #   9  — recurring items, audit log + triggers, period lock, created/updated_by
 #  10  — receipts: shipping, discount, duties; receipt items: item_id, sku
 #  11  — receipt items: units_per_pack; items: pack_size (default 1)
-SCHEMA_VERSION = 11
+#  12  — rules: several conditions (rule_conditions), match_mode all/any,
+#         transfer_account_id (a rule can set a balance-sheet account)
+SCHEMA_VERSION = 12
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -53,6 +55,19 @@ CREATE TABLE IF NOT EXISTS rules (
     active      INTEGER DEFAULT 1,
     created_at  TEXT
 );
+
+-- v12: a rule's conditions (rules.field/operator/value/value2 keep the
+-- first one too, so the old columns stay meaningful).
+CREATE TABLE IF NOT EXISTS rule_conditions (
+    id       TEXT PRIMARY KEY,
+    rule_id  TEXT NOT NULL,
+    field    TEXT NOT NULL DEFAULT 'payee',
+    operator TEXT NOT NULL DEFAULT 'contains',
+    value    TEXT NOT NULL DEFAULT '',
+    value2   TEXT DEFAULT '',
+    sort     INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_rule_cond_rule ON rule_conditions(rule_id);
 
 CREATE TABLE IF NOT EXISTS accounts (
     id               TEXT PRIMARY KEY,
@@ -169,6 +184,9 @@ _NEW_COLUMNS = [
     # v11 — pack sizes (a "6 Pack" line = 6 stock units per qty)
     ("receipt_items", "units_per_pack",  "INTEGER DEFAULT 1"),
     ("items",         "pack_size",       "INTEGER DEFAULT 1"),
+    # v12 — multi-condition bank rules; a rule can set a balance-sheet account
+    ("rules",         "match_mode",          "TEXT DEFAULT 'all'"),
+    ("rules",         "transfer_account_id", "TEXT DEFAULT ''"),
 ] + PEOPLE_COLUMNS
 
 # Optional transaction columns: written only when the caller's dict has the key,
@@ -393,6 +411,16 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                     c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
             c.execute("CREATE INDEX IF NOT EXISTS idx_txn_split ON transactions(split_group_id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_txn_pair ON transactions(transfer_pair_id)")
+            # v12: each pre-1.14 rule's single condition becomes its first
+            # rule_conditions row. Idempotent: only rules with no rows yet.
+            for r in c.execute(
+                    "SELECT id, field, operator, value, value2 FROM rules WHERE id NOT IN "
+                    "(SELECT DISTINCT rule_id FROM rule_conditions)").fetchall():
+                c.execute(
+                    "INSERT INTO rule_conditions (id,rule_id,field,operator,value,value2,sort) "
+                    "VALUES (?,?,?,?,?,?,0)",
+                    (self._new_id() + self._new_id(), r["id"], r["field"] or "payee",
+                     r["operator"] or "contains", r["value"] or "", r["value2"] or ""))
             if c.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
                 c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -1026,6 +1054,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             c.execute("DELETE FROM classes")
             c.execute("DELETE FROM reconciliations")
             c.execute("DELETE FROM rules")
+            c.execute("DELETE FROM rule_conditions")
             c.execute("DELETE FROM loans")
             # Receipt files and their line items are kept; only their links to
             # the deleted transactions go.
@@ -1280,80 +1309,81 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
     # ── rules ─────────────────────────────────────────────────────────────────
 
     def get_rules(self) -> list[dict]:
+        """Rules, highest priority first, each with its "conditions" list."""
         with self._conn() as c:
-            return _to_dicts(c.execute(
+            rules = _to_dicts(c.execute(
                 "SELECT * FROM rules WHERE active IN (0,1) ORDER BY priority DESC, name"
             ).fetchall())
+            conds: dict = {}
+            for r in c.execute("SELECT * FROM rule_conditions ORDER BY sort, rowid"):
+                conds.setdefault(r["rule_id"], []).append(
+                    {"field": r["field"], "operator": r["operator"],
+                     "value": r["value"] or "", "value2": r["value2"] or ""})
+        from utils.rules import legacy_condition
+        for r in rules:
+            r["conditions"] = conds.get(r["id"]) or [legacy_condition(r)]
+            r["match_mode"] = r.get("match_mode") or "all"
+            r["transfer_account_id"] = r.get("transfer_account_id") or ""
+        return rules
 
     def save_rule(self, data: dict) -> dict:
+        """
+        Save a rule. data["conditions"] (a list of {field, operator, value,
+        value2}) replaces the rule's conditions; without it, the single
+        field/operator/value/value2 in data is the only condition (the pre-1.14
+        shape). The first condition is also written to the rules row so older
+        readers of those columns still see something sensible.
+        """
+        from utils.rules import legacy_condition
         active = 1 if str(data.get("active", "1")) == "1" else 0
         priority = int(data.get("priority") or 0)
+        conds = data.get("conditions")
+        if conds is None:
+            conds = [legacy_condition(data)]
+        conds = [c for c in conds if c.get("field")]
+        first = conds[0] if conds else legacy_condition(data)
+        mode = data.get("match_mode") if data.get("match_mode") in ("all", "any") else "all"
+        cols = (data.get("name", ""), first.get("field", "payee"),
+                first.get("operator", "contains"), str(first.get("value", "")),
+                str(first.get("value2", "") or ""), data.get("category_id", "") or "",
+                data.get("class_id", "") or "", priority, active, mode,
+                data.get("transfer_account_id", "") or "")
         with self._conn() as c:
             existing = c.execute("SELECT id FROM rules WHERE id=?",
                                  (data.get("id", ""),)).fetchone()
             if existing:
                 c.execute(
                     "UPDATE rules SET name=?,field=?,operator=?,value=?,value2=?,"
-                    "category_id=?,class_id=?,priority=?,active=? WHERE id=?",
-                    (data.get("name", ""), data.get("field", "payee"),
-                     data.get("operator", "contains"), data.get("value", ""),
-                     data.get("value2", ""), data.get("category_id", ""),
-                     data.get("class_id", ""), priority, active, data["id"]))
+                    "category_id=?,class_id=?,priority=?,active=?,match_mode=?,"
+                    "transfer_account_id=? WHERE id=?", cols + (data["id"],))
             else:
                 data["id"] = self._new_id()
                 data["created_at"] = self._now()
                 c.execute(
-                    "INSERT INTO rules (id,name,field,operator,value,value2,"
-                    "category_id,class_id,priority,active,created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (data["id"], data.get("name", ""), data.get("field", "payee"),
-                     data.get("operator", "contains"), data.get("value", ""),
-                     data.get("value2", ""), data.get("category_id", ""),
-                     data.get("class_id", ""), priority, active, data["created_at"]))
+                    "INSERT INTO rules (name,field,operator,value,value2,category_id,class_id,"
+                    "priority,active,match_mode,transfer_account_id,id,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", cols + (data["id"], data["created_at"]))
+            c.execute("DELETE FROM rule_conditions WHERE rule_id=?", (data["id"],))
+            for i, cond in enumerate(conds):
+                c.execute(
+                    "INSERT INTO rule_conditions (id,rule_id,field,operator,value,value2,sort) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (self._new_id() + self._new_id(), data["id"], cond.get("field", "payee"),
+                     cond.get("operator", "contains"), str(cond.get("value", "")),
+                     str(cond.get("value2", "") or ""), i))
+        data["conditions"] = conds
+        data["match_mode"] = mode
         return data
 
     def delete_rule(self, rule_id: str):
         with self._conn() as c:
             c.execute("DELETE FROM rules WHERE id=?", (rule_id,))
+            c.execute("DELETE FROM rule_conditions WHERE rule_id=?", (rule_id,))
 
     @staticmethod
     def _rule_matches(rule: dict, txn: dict) -> bool:
-        field    = rule.get("field", "payee")
-        operator = rule.get("operator", "contains")
-        value    = str(rule.get("value", ""))
-        value2   = str(rule.get("value2", ""))
-
-        if field in ("payee", "memo"):
-            text = (txn.get("payee") or txn.get("memo") or "").lower()
-            if field == "memo":
-                text = (txn.get("memo") or "").lower()
-            v = value.lower()
-            if operator == "contains":    return v in text
-            if operator == "equals":      return text == v
-            if operator == "starts_with": return text.startswith(v)
-            if operator == "ends_with":   return text.endswith(v)
-        elif field == "amount":
-            try:
-                amt = abs(float(txn.get("amount") or 0))
-                v   = float(value)
-                if operator == "equals":  return abs(amt - v) < 0.005
-                if operator == "gt":      return amt > v
-                if operator == "lt":      return amt < v
-                if operator == "between":
-                    v2 = float(value2)
-                    return min(v, v2) <= amt <= max(v, v2)
-            except (ValueError, TypeError):
-                return False
-        elif field == "date":
-            date_str = txn.get("date", "")
-            if operator == "equals":
-                return date_str == value
-            if operator == "day_of_month":
-                try:
-                    return int(date_str.split("-")[2]) == int(value)
-                except (IndexError, ValueError):
-                    return False
-        return False
+        from utils.rules import rule_matches
+        return rule_matches(rule, txn)
 
     def apply_rules(self, txns: list[dict]) -> list[dict]:
         """Apply active rules to a list of transaction dicts (modifies in-place).
@@ -1364,15 +1394,28 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         return txns
 
     def _apply_category_rules(self, txns: list[dict]) -> list[dict]:
+        """
+        First matching active rule (highest priority first) sets the account on
+        each uncategorized txn. A rule that targets a balance-sheet account sets
+        txn["_transfer_to"] instead of a category; bulk_save_transactions() and
+        apply_rules_to_all() turn that into a transfer (it is skipped for a txn
+        already in that account).
+        """
         rules = [r for r in self.get_rules()
                  if str(r.get("active", "1")) == "1"]
         rules.sort(key=lambda r: -(int(r.get("priority") or 0)))
         for txn in txns:
-            if txn.get("category_id"):
+            if txn.get("category_id") or txn.get("_transfer_to") \
+                    or str(txn.get("is_transfer", "0")) == "1":
                 continue  # don't overwrite already-categorized
             for rule in rules:
+                dest = rule.get("transfer_account_id") or ""
+                if dest and dest == txn.get("account_id"):
+                    continue
                 if self._rule_matches(rule, txn):
-                    if rule.get("category_id"):
+                    if dest:
+                        txn["_transfer_to"] = dest
+                    elif rule.get("category_id"):
                         txn["category_id"] = rule["category_id"]
                     if rule.get("class_id"):
                         txn["class_id"] = rule["class_id"]
@@ -1380,13 +1423,19 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         return txns
 
     def apply_rules_to_all(self) -> int:
-        """Re-apply rules to all uncategorized transactions. Returns count updated."""
+        """Re-apply rules to all uncategorized transactions. Returns count updated.
+        Matches of a rule that sets a balance-sheet account become transfers."""
         txns = self.get_transactions(include_transfers=True)
-        uncategorized = [t for t in txns if not t.get("category_id")]
+        uncategorized = [t for t in txns if not t.get("category_id")
+                         and str(t.get("is_transfer", "0")) != "1"]
         self.apply_rules(uncategorized)
         count = 0
         for t in uncategorized:
-            if t.get("category_id"):
+            dest = t.pop("_transfer_to", "")
+            if dest and not t.get("split_group_id"):
+                self.save_transfer_pair(t, dest, keep_sign=True, match_existing=True)
+                count += 1
+            elif t.get("category_id"):
                 self.save_transaction(t)
                 count += 1
         return count
