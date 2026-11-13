@@ -12,6 +12,8 @@ from ui.widgets import PageTitle, SecondaryButton, DangerButton, MutedLabel
 CATEGORY_TYPES = [
     ("Expense", "expense"),
     ("Income", "income"),
+    ("Other Expense", "other_expense"),
+    ("Other Income", "other_income"),
     ("Debt Repayment", "debt_repayment"),
     ("Asset Purchase (Balance Sheet)", "asset"),
     ("Inventory Purchase (Balance Sheet)", "inventory"),
@@ -103,6 +105,11 @@ class CategoryDialog(QDialog):
             hint.setWordWrap(True)
             form.addRow("", hint)
 
+        # Other income goes on Schedule C line 6 unless the user picks a line.
+        if self.tax_combo is not None and not edit_cat:
+            self.type_combo.currentIndexChanged.connect(self._default_tax_line)
+            self._default_tax_line()
+
         # A sub-category shares its parent's income/expense nature.
         if require_parent and self.parent_combo is not None:
             self.parent_combo.currentIndexChanged.connect(lambda _: self._sync_type())
@@ -115,6 +122,10 @@ class CategoryDialog(QDialog):
         btns.accepted.connect(self._ok)
         btns.rejected.connect(self.reject)
         lay.addWidget(btns)
+
+    def _default_tax_line(self, *_):
+        if self.type_combo.currentData() == "other_income" and not self.tax_combo.currentData():
+            self.tax_combo.setCurrentIndex(max(self.tax_combo.findData("6"), 0))
 
     def _sync_type(self):
         pid = self.parent_combo.currentData()

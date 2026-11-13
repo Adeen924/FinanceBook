@@ -499,7 +499,7 @@ class ReceiptsMixin:
             amt = float(ln["amount"])
             txn = dict(base, category_id=ln["category_id"], class_id=ln["class_id"],
                        charged_to=ln["charged_to"], memo=ln["memo"] or base["memo"],
-                       amount=str(amt if ctype == "income" else -amt))
+                       amount=str(amt if ctype in ("income", "other_income") else -amt))
             if base_txn and base_txn.get("split_group_id"):
                 self.delete_split_group(base_txn["split_group_id"])
                 txn.pop("id", None)

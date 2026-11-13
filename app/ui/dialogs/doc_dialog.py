@@ -132,7 +132,7 @@ class DocDialog(QDialog):
                 continue
             if want and c.get("type") != want:
                 continue
-            if not want and c.get("type") == "income":
+            if not want and c.get("type") in ("income", "other_income"):
                 continue
             combo.add_option(c["name"], c["id"])
             for s in cats:

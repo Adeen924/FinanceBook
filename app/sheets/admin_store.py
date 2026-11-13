@@ -182,7 +182,7 @@ class AdminMixin:
             made = self.save_transaction({
                 "date": on, "account_id": t.get("account_id", ""), "payee": t.get("payee") or rec["name"],
                 "memo": t.get("memo") or f"Recurring: {rec['name']}",
-                "amount": str(amount if ctype == "income" else -amount),
+                "amount": str(amount if ctype in ("income", "other_income") else -amount),
                 "category_id": t.get("category_id", ""), "class_id": t.get("class_id", ""),
                 "contact_id": t.get("contact_id", "")})
         nxt = next_occurrence(on, rec["frequency"], rec.get("anchor_day") or None)

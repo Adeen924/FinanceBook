@@ -81,12 +81,19 @@ class ByMonthTab(GridTab):
     def build(self, start, end, cls):
         rows = self._rows(start, end, cls)
         months = RP.months_between(start, end)
-        g = RP.pivot(rows, lambda r: (r["section"], r["group"]), lambda r: r["month"])
-        self.header = ["Category"] + [f"{MONTHS[int(m[5:]) - 1]} {m[2:4]}" for m in months] + ["Total"]
-        for sec in ("income", "expense"):
+        g = RP.pivot(rows, lambda r: (RP.pnl_section_label(r), r["group"]), lambda r: r["month"])
+        self.header = ["Account"] + [f"{MONTHS[int(m[5:]) - 1]} {m[2:4]}" for m in months] + ["Total"]
+        has_other = any(k[0].startswith("Other") for k in g if k != "__total__")
+        for sec in RP.PNL_SECTION_ORDER:
             keys = sorted(k for k in g if k != "__total__" and k[0] == sec)
+            if sec == "Other Income" and has_other:
+                op = RP.pivot([r for r in rows if not r.get("other")], lambda r: "op",
+                              lambda r: r["month"]).get("op", {})
+                self.rows.append(["Net operating income"] + [op.get(m, ZERO) for m in months]
+                                 + [op.get("__total__", ZERO)])
             if keys:
-                self.rows.append([("INCOME" if sec == "income" else "EXPENSES")] + [""] * (len(months) + 1))
+                self.rows.append([{"Expense": "EXPENSES"}.get(sec, sec.upper())]
+                                 + [""] * (len(months) + 1))
             for k in keys:
                 self.rows.append([k[1]] + [g[k].get(m, ZERO) for m in months] + [g[k]["__total__"]])
         tot = g.get("__total__", {})
@@ -229,13 +236,15 @@ class BudgetTab(GridTab):
         budgets = self.db.get_budgets()
         spins = {}
         for c in self.db.get_categories():
-            if c.get("parent_id") or c.get("type") not in ("income", "expense"):
+            if c.get("parent_id") or c.get("type") not in ("income", "expense",
+                                                             "other_income", "other_expense"):
                 continue
             s = QDoubleSpinBox()
             s.setRange(0, 9_999_999)
             s.setPrefix("$")
             s.setValue(budgets.get(c["id"], 0))
-            f.addRow(("Income · " if c["type"] == "income" else "") + c["name"], s)
+            f.addRow({"income": "Income · ", "other_income": "Other income · ",
+                      "other_expense": "Other expense · "}.get(c["type"], "") + c["name"], s)
             spins[c["id"]] = s
         sa.setWidget(holder)
         lay.addWidget(sa)

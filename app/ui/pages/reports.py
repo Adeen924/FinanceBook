@@ -138,6 +138,8 @@ class ReportsPage(QWidget):
         expense_groups: dict[str, dict] = {}
         debt_groups: dict[str, dict] = {}
         capital_groups: dict[str, dict] = {}
+        other_income_groups: dict[str, dict] = {}
+        other_expense_groups: dict[str, dict] = {}
 
         for t in txns:
             amt = float(t.get("amount") or 0)
@@ -147,7 +149,11 @@ class ReportsPage(QWidget):
             group    = parent.get("name") or cat.get("name","Uncategorized")
             sub      = cat.get("name","") if cat.get("parent_id") else ""
 
-            if cat_type == "income" or (not cat.get("id") and amt > 0):
+            if cat_type == "other_income":
+                bucket = other_income_groups
+            elif cat_type == "other_expense":
+                bucket = other_expense_groups
+            elif cat_type == "income" or (not cat.get("id") and amt > 0):
                 bucket = income_groups
             elif cat_type == "debt_repayment":
                 bucket = debt_groups
@@ -174,9 +180,14 @@ class ReportsPage(QWidget):
         total_income   = sum(g["total"] for g in income_groups.values())
         total_expenses = sum(g["total"] for g in expense_groups.values())
         total_debt     = sum(g["total"] for g in debt_groups.values())
+        total_other    = sum(g["total"] for g in other_income_groups.values()) + \
+            sum(g["total"] for g in other_expense_groups.values())
+        has_other = bool(other_income_groups or other_expense_groups)
         # Debt repayment is principal moving between balances, not a P&L expense,
-        # so it is deliberately excluded from Net Income.
-        net = total_income + total_expenses
+        # so it is deliberately excluded from Net Income. Other income / expense
+        # is included, but shown below operating income.
+        operating = total_income + total_expenses
+        net = operating + total_other
 
         self._pnl_tree.clear()
 
@@ -211,9 +222,26 @@ class ReportsPage(QWidget):
         self._pnl_tree.addTopLevelItem(exp_root)
         exp_root.setExpanded(True)
 
+        from PyQt6.QtGui import QColor, QFont as QF
+        if has_other:
+            op_item = QTreeWidgetItem(["Net Operating Income", _money(operating)])
+            op_item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            op_item.setForeground(1, QColor(SUCCESS if operating >= 0 else DANGER))
+            fo = op_item.font(0); fo.setBold(True)
+            op_item.setFont(0, fo); op_item.setFont(1, fo)
+            self._pnl_tree.addTopLevelItem(op_item)
+            other_root = QTreeWidgetItem(["Other Income / Other Expense", ""])
+            if other_income_groups:
+                other_root.addChild(_add_group("Other Income", other_income_groups, 1))
+            if other_expense_groups:
+                other_root.addChild(_add_group("Other Expenses", other_expense_groups, -1))
+            self._pnl_tree.addTopLevelItem(other_root)
+            other_root.setExpanded(True)
+            for i in range(other_root.childCount()):
+                other_root.child(i).setExpanded(True)
+
         net_item = QTreeWidgetItem(["Net Income", _money(net)])
         net_item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        from PyQt6.QtGui import QColor, QFont as QF
         net_item.setForeground(1, QColor(SUCCESS if net >= 0 else DANGER))
         f = net_item.font(0); f.setBold(True); f.setPointSize(f.pointSize()+1)
         net_item.setFont(0, f); net_item.setFont(1, f)
@@ -240,6 +268,7 @@ class ReportsPage(QWidget):
             f"<b>Period:</b> {fmt_date(start)} to {fmt_date(end)} &nbsp;&nbsp; "
             f"<b>Income:</b> <span style='color:{SUCCESS}'>${total_income:,.2f}</span> &nbsp;&nbsp; "
             f"<b>Expenses:</b> <span style='color:{DANGER}'>${abs(total_expenses):,.2f}</span> &nbsp;&nbsp; "
+            + (f"<b>Other (net):</b> ${total_other:,.2f} &nbsp;&nbsp; " if has_other else "") +
             f"<b>Net:</b> <span style='color:{color}'>${net:,.2f}</span>"
             f"{debt_html}"
         )
@@ -328,9 +357,12 @@ class ReportsPage(QWidget):
         cats  = {c["id"]: c for c in self.db.get_categories()}
         with open(path, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["Date", "Account", "Payee", "Category", "Class", "Amount"])
+            w.writerow(["Date", "Bank / Card", "Payee", "Account", "Class", "Amount", "Section"])
             accts = {a["id"]: a for a in self.db.get_accounts()}
             clsmap = {c["id"]: c for c in self.db.get_classes()}
+            from utils.ledger import pnl_section
+            labels = {"income": "Income", "expense": "Expense", "other_income": "Other Income",
+                      "other_expense": "Other Expense", "excluded": "Not on P&L"}
             for t in txns:
                 cat = cats.get(t.get("category_id",""), {})
                 parent = cats.get(cat.get("parent_id",""), {})
@@ -338,11 +370,12 @@ class ReportsPage(QWidget):
                 w.writerow([t.get("date",""), accts.get(t["account_id"],{}).get("name",""),
                             t.get("payee",""), cat_name,
                             clsmap.get(t.get("class_id",""),{}).get("name",""),
-                            t.get("amount","")])
+                            t.get("amount",""), labels[pnl_section(t, cats)]])
             for ln in self.db.computed_pnl_lines(start, end):
                 label = ln["group"] + (f" > {ln['name']}" if ln["name"] else "")
                 w.writerow([end, "(computed)", "Non-cash: " + ln["computed"], label, "",
-                            f"{ln['amount']:.2f}"])
+                            f"{ln['amount']:.2f}",
+                            "Income" if ln["section"] == "income" else "Expense"])
 
     def _run_business_bs(self, as_of: str):
         """Accountant layout: Assets = Liabilities + Equity, all positive."""
