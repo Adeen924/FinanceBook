@@ -186,7 +186,7 @@ class DashboardPage(QWidget):
         self._alert_label.setObjectName("WarnChip")
         self._alert_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self._alert_label.setToolTip("Open Transactions to categorize them")
-        self._alert_label.mousePressEvent = lambda e: self._goto("Transactions")
+        self._alert_label.mousePressEvent = lambda e: self._open_uncategorized()
         self._alert_label.hide()
         hdr.addWidget(self._alert_label, 0, Qt.AlignmentFlag.AlignVCenter)
         grid.addLayout(hdr, 0, 0, 1, 12)
@@ -444,6 +444,17 @@ class DashboardPage(QWidget):
             return
         # _nav_to offers to turn the page's module on if it's hidden.
         mw._nav_to(page_name)
+
+    def _open_uncategorized(self):
+        """The ⚠ alert: open Transactions filtered to "Uncategorized only"."""
+        mw = getattr(self, "_main_window", None)
+        if mw is None:
+            return
+        page = mw.page("Transactions")          # navigates there too
+        if page is not None and hasattr(page, "show_uncategorized"):
+            page.show_uncategorized()
+        else:
+            mw._nav_to("Transactions")
 
     def _open_account(self, account_id: str):
         mw = getattr(self, "_main_window", None)
