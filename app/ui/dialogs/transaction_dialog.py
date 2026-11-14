@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
                               QDoubleSpinBox, QDialogButtonBox, QVBoxLayout,
                               QTextEdit, QLabel, QCheckBox, QFrame,
                               QPushButton, QMessageBox, QWidget, QHBoxLayout)
-from PyQt6.QtCore import QDate
+from PyQt6.QtCore import QDate, Qt
 from ui.widgets import FilterComboBox, DateField, AccountPicker
 from utils.chart_of_accounts import account_value
 from utils.ledger import category_sign
@@ -82,20 +82,50 @@ class TransactionDialog(QDialog):
         self.memo_edit.setPlaceholderText("Optional description")
         form.addRow("Memo", self.memo_edit)
 
-        # Amount
+        # Amount: a positive number plus an explicit direction. Stored amounts
+        # are signed (negative = money out of this account); an existing entry
+        # opens with the direction of its stored sign and keeps it — picking or
+        # changing the account never flips it (an imported withdrawal stays a
+        # withdrawal). A new entry follows the picked account's usual direction
+        # until the user chooses one. A negative amount still means "the other
+        # way" (e.g. a refund) and is tidied into Money in / out on leaving.
+        stored = float(self.transaction.get("amount") or 0)
         self.amount_spin = QDoubleSpinBox()
         self.amount_spin.setRange(-9_999_999, 9_999_999)
         self.amount_spin.setDecimals(2)
         self.amount_spin.setPrefix("$")
         self.amount_spin.setSingleStep(1.0)
-        # Stored amounts are signed (expense negative); the field shows them in
-        # entry terms (positive for an expense), so flip the sign for display.
         # Done before connecting valueChanged so it triggers no side effects.
-        self.amount_spin.setValue(
-            float(self.transaction.get("amount") or 0)
-            * self._category_sign(self.transaction.get("category_id", "")))
+        self.amount_spin.setValue(abs(stored))
         self.amount_spin.valueChanged.connect(self._update_loan_preview)
-        form.addRow("Amount *", self.amount_spin)
+        self.amount_spin.editingFinished.connect(self._normalize_amount)
+
+        self.direction_combo = QComboBox()
+        self.direction_combo.addItem("Money out", "out")
+        self.direction_combo.addItem("Money in", "in")
+        self.direction_combo.setItemData(0, "A payment, purchase or card charge",
+                                         Qt.ItemDataRole.ToolTipRole)
+        self.direction_combo.setItemData(1, "A deposit, refund or card payment",
+                                         Qt.ItemDataRole.ToolTipRole)
+        self.direction_combo.setToolTip(
+            "Whether this entry takes money out of the account above or puts money in.")
+        # True once the direction is decided by the stored entry or by the user;
+        # until then (a new entry) it follows the picked account.
+        self._direction_fixed = abs(stored) >= 0.005
+        if self._direction_fixed:
+            initial = "in" if stored > 0 else "out"
+        else:
+            initial = self._natural_direction(self.transaction.get("category_id", "")
+                                              or self._preset.get("category_id", ""))
+        self._set_direction(initial)
+        self.direction_combo.activated.connect(self._on_direction_picked)
+        amt_row = QWidget()
+        ar = QHBoxLayout(amt_row)
+        ar.setContentsMargins(0, 0, 0, 0)
+        ar.setSpacing(8)
+        ar.addWidget(self.amount_spin, 1)
+        ar.addWidget(self.direction_combo, 1)
+        form.addRow("Amount *", amt_row)
 
         self._amount_note = QLabel("")
         self._amount_note.setObjectName("Muted")
@@ -241,12 +271,8 @@ class TransactionDialog(QDialog):
         lay.addWidget(btns)
 
         # An existing transfer opens from this row's side: the other account is in
-        # the Account picker and the amount reads positive for money going out of
-        # this account, negative for money coming in, so re-saving keeps both
-        # sides exactly as they were.
-        if self._partner:
-            self.amount_spin.setValue(-float(self.transaction.get("amount") or 0))
-
+        # the Account picker and the direction reads Money out / in for this
+        # account, so re-saving keeps both sides exactly as they were.
         self._on_target_changed()
         self._update_loan_lock()
 
@@ -445,6 +471,35 @@ class TransactionDialog(QDialog):
         cat = next((c for c in getattr(self, "_cats", []) if c.get("id") == cat_id), None)
         return category_sign(cat.get("type")) if cat else 1
 
+    def _natural_direction(self, value: str) -> str:
+        """The usual direction for a picker value: 'out' for spending accounts
+        and transfers to another account (and for no account yet — most new
+        entries are payments), 'in' for income."""
+        if not value:
+            return "out"
+        return "out" if self._category_sign(value) < 0 else "in"
+
+    def _set_direction(self, direction: str):
+        self.direction_combo.blockSignals(True)
+        self.direction_combo.setCurrentIndex(max(self.direction_combo.findData(direction), 0))
+        self.direction_combo.blockSignals(False)
+
+    def _on_direction_picked(self, *_):
+        self._direction_fixed = True
+        self._on_target_changed()       # refresh the note under the amount
+
+    def _direction_sign(self) -> int:
+        return -1 if self.direction_combo.currentData() == "out" else 1
+
+    def _normalize_amount(self):
+        """A negative amount means the other direction: show it as a positive
+        amount with the direction switched (e.g. -20 on Groceries → $20 Money in)."""
+        v = self.amount_spin.value()
+        if v < 0:
+            self._set_direction("in" if self.direction_combo.currentData() == "out" else "out")
+            self._direction_fixed = True
+            self.amount_spin.setValue(-v)
+
     def _target(self) -> tuple:
         """('category', id) | ('account', id) | ('', '') from the Account picker."""
         return self.cat_combo.selection()
@@ -482,6 +537,8 @@ class TransactionDialog(QDialog):
         if not hasattr(self, "_loan_chk"):
             return          # still building the dialog
         on = self._is_transfer()
+        if not self._direction_fixed:
+            self._set_direction(self._natural_direction(self.cat_combo.current_data()))
         if self._business:
             self._set_row_visible(self.paid_by_combo, not on)
             self._set_row_visible(self.charged_combo, not on)
@@ -491,12 +548,16 @@ class TransactionDialog(QDialog):
             else:
                 self._update_paid_by_visibility()
         self._amount_note.setText(
-            "Transfer: a positive amount moves money out of this account into the one "
-            "picked above; a negative amount moves it in. The other account's entry is "
-            "created (or the matching imported one linked) automatically."
+            "Transfer: Money out moves it from this account into the one picked "
+            "above; Money in moves it from there into this account. The other "
+            "account's entry is created (or the matching imported one linked) "
+            "automatically."
             if on else
-            "Enter a positive amount — the account decides the direction "
-            "(Expense subtracts, Income adds). Use a negative for a refund/return.")
+            ("This entry keeps its direction when you change the account — switch "
+             "Money out / Money in only if the amount really went the other way."
+             if self._direction_fixed else
+             "Enter the amount; the account fills in its usual direction (Expense = "
+             "money out, Income = money in). Pick Money in for a refund."))
         if on and self._loan_chk.isChecked():
             self._force_off(self._loan_chk)
             self._set_row_visible(self._loan_combo, False)
@@ -748,11 +809,10 @@ class TransactionDialog(QDialog):
         kind, target = self._target()
         cat_id = target if kind == "category" else ""
         entered = self.amount_spin.value()
-        # The amount is typed as a positive number; the account decides whether
-        # it's stored as money out (expense → negative) or in (income → positive),
-        # and a negative entry flips that (a refund). For a transfer, positive is
-        # money leaving this account.
-        amount = entered * self._category_sign(self.cat_combo.current_data())
+        # The amount is typed as a positive number and Money out / Money in sets
+        # the stored sign (out → negative). A negative entry means the opposite
+        # direction (a refund). For a transfer, money out leaves this account.
+        amount = entered * self._direction_sign() or 0.0     # never "-0.0"
         if kind != "account" and (str(data.get("is_transfer", "0")) == "1"
                                   and not data.get("split_group_id")):
             # Was a transfer, now categorized: it becomes an ordinary entry.

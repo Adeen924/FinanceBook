@@ -110,7 +110,7 @@ see "Connect existing database + lock file" below. Tables:
 
 | Table | Purpose |
 |---|---|
-| `accounts` | Bank accounts (checking, savings, credit card, loan, etc.) |
+| `accounts` | Bank accounts (checking, savings, credit card, loan, etc.). `parent_id` (v1.15, schema 13) = top-level account in the same Chart of Accounts group, or '' |
 | `transactions` | All transactions. `is_transfer=1` → excluded from P&L. Loan payments carry `loan_id`, `principal_amount`, `interest_amount` |
 | `categories` | Income/expense categories with parent_id for sub-categories |
 | `classes` | Orthogonal dimension (departments/projects) |
@@ -127,7 +127,13 @@ Amount fields stored as REAL, returned as string.
 
 **Key methods:**
 - `apply_rules(txns)` — applies active rules to a list of txn dicts in-place
-- `apply_rules_to_all()` — re-categorizes all uncategorized transactions, returns count
+- `apply_rules_to_all()` — re-categorizes all uncategorized transactions (empty or
+  deleted category; skips the locked period, catches errors per transaction);
+  returns an `ApplyResult` (compares as the int count; `.categorized`,
+  `.skipped_locked`, `.failed`, `.message()`)
+- `uncategorized_txns()` / `uncategorized_count()` — via `ledger.is_uncategorized`
+- `find_flipped_imports()` / `flip_transaction_signs(ids)` — the v1.15 sign check
+- `move_category(id, parent)` / `move_account(id, parent)` / `rolled_up_balance(id)`
 - `get_setting(key)` / `set_setting(key, value)` — app settings
 - `get_institutions()` — distinct institution names for autocomplete
 - `get_loans()` / `save_loan(data)` / `delete_loan(id)` — loan CRUD
@@ -273,6 +279,15 @@ are never overwritten.
   starts_with, ends_with), `amount` (equals, gt, lt, between — on the absolute
   amount), `date` (equals, day_of_month), `direction` (is in|out),
   `account` (is <account id>). `describe_rule()` makes the table text.
+- Dates (v1.15): `normalize_date()` accepts what DateField accepts (M/D/YYYY,
+  M-D-YYYY, YYYY-MM-DD, M/D/YY, M/D); `condition_matches` normalizes both sides
+  (old rules may hold "3/15/2026"); the dialog saves YYYY-MM-DD and
+  `condition_problem()` validates dates and day_of_month 1–31.
+- `direction` reads the stored sign (negative = money out). Every importer
+  writes that convention: OFX/QFX/QBO keep the bank's TRNAMT sign, CSV/XLSX
+  Debit/Credit use `debit_credit_amount()` (magnitudes), a single Amount column
+  is as written unless "reverse the signs" is ticked; IIF imports no
+  transactions (chart of accounts only).
 - The action is mandatory: `category_id`, or `rules.transfer_account_id` for a
   balance-sheet account. `_apply_category_rules` then sets `txn["_transfer_to"]`
   (skipped when the txn is already in that account); `bulk_save_transactions()`
@@ -455,7 +470,7 @@ The loan dialog displays and accepts it as a percentage (`6.5 %`) and divides by
   Values: category id or `acct:<id>`; `.selection()` → (kind, id).
 - **Transaction dialog.** The "This is a transfer" checkbox and "Goes to
   account" box are gone. A transfer opens from the row's own side: picker = the
-  other account, amount shown as −stored (positive = money out of this account).
+  other account, amount shown as |stored| with Money out / Money in (v1.15).
   Saving re-files: account → `save_transfer_pair(keep_sign, match_existing)`;
   category on a former transfer → `detach_transfer_partner` first.
 - **Other Income / Other Expense** (`other_income`, `other_expense` category
@@ -483,6 +498,61 @@ The loan dialog displays and accepts it as a percentage (`6.5 %`) and divides by
   scrolls it to the centre; without keep it scrolls to the bottom as before.
 - Tests: `test_chart_of_accounts.py`, `test_other_pnl_types.py`,
   `test_rules_v14.py`, `test_transactions_screen.py`.
+
+## v1.15 fixes (schema 13)
+
+- **Money direction in the Transaction dialog.** `amount_spin` shows |amount|
+  and `direction_combo` ("out"/"in") sets the stored sign: `get_data()` saves
+  `entered * (-1 if out else 1)`. An existing entry's direction comes from its
+  stored sign and is never changed by picking an account (`_direction_fixed`);
+  a new / $0 entry follows `_natural_direction(picker value)` until the user
+  picks a direction (`activated`). A negative entry flips it and is tidied on
+  editingFinished. Transfers, loan payments, owner draws and splits use the
+  same sign. Before, `stored * _category_sign(category)` made an uncategorized
+  imported withdrawal (−50, sign +1) save as +50 once an expense was picked.
+- **Splits / receipts keep an existing entry's direction.**
+  `split_transaction` computes plain (category) lines with
+  `_plain_split_amount`; if the stored entry's sign (`_stored_sign`, read before
+  the old rows are deleted) disagrees with their total, those lines are negated
+  (an imported refund split across expense accounts stays money in). The
+  single-line receipt booking does the same. Context-menu re-file never changed
+  the amount; there are no bulk re-categorize actions.
+- **CSV/XLSX debits.** `debit_credit_amount(debit, credit)` = |credit| − |debit|
+  in both `parse_spreadsheet` and `parse_qb_multi_account_excel`. The import
+  hash still uses the pre-1.15 `credit - debit` so a file imported earlier
+  doesn't duplicate on re-import. `parse_spreadsheet(reverse_signs=True)`
+  negates a single Amount column (Import page checkbox).
+- **Sign check** (Settings → Data Checks → `ui/dialogs/sign_check_dialog.py`):
+  imported, non-transfer, non-split rows with amount > 0 on a spending type or
+  < 0 on an income type. Per-row "Flip sign" and "Flip All Selected"; locked
+  rows are disabled; read-only disables everything. Sets `sign_check_done`.
+- **Uncategorized** = not a transfer and category_id empty or not an active
+  category (`ledger.is_uncategorized`). Used by Apply to All, the Dashboard
+  alert (which opens Transactions → "⚠ Uncategorized only") and the filter.
+- **Transactions filters** apply on change: combos / checkbox at once; search
+  and dates through a 300 ms single-shot `_filter_timer`. `_quiet` suppresses
+  per-control reloads in `_clear_filter` / `show_account` /
+  `show_uncategorized`; `refresh()` still blocks the combos' signals.
+- **Pages refresh on show** (`MainWindow._nav_to` → `page.refresh()`, hub tabs
+  too), so Transactions / Dashboard reflect Apply to All when opened.
+- **Chart of Accounts tree.** `chart_rows` uses `_tree()`: any depth, a missing
+  / inactive / cyclic parent shows the row at the top level — nothing is
+  dropped. Entries carry `depth` and `parent`. Categories go in their root's
+  group; an account nests only under a parent in its own group.
+  `picker_entries` labels sub-rows "Parent → Child" (accounts add " · Group").
+- **Moving.** Accounts and categories are kept ONE level deep. `move_category`
+  / `move_account` refuse self, a sub-account as parent and (accounts) another
+  group with ValueError, and move the row's own children under the new parent.
+  A moved category takes the parent's type; its tax line / deduct % follow the
+  parent when the type changes or it had none. `save_category` routes parent
+  changes through `move_category` and a root's type change carries its subs.
+  `save_account` writes `parent_id` only when the key is present and changed;
+  a type change into another group detaches it (and mismatched subs).
+  Accounts page: "Move…" button + right-click Move to / Make Top-Level;
+  parent balance = own + subs (`rolled` in `_fill_chart`), group totals count
+  each account once. AccountDialog(accounts=…) adds "Sub-account of".
+- Tests: `test_import_signs.py`, `test_rules_v14.py` (ApplyAll*, DateCondition*),
+  `test_transactions_filter_ui.py`, `test_subaccounts.py` (incl. 12 → 13).
 
 ## Known issues / things to watch
 

@@ -187,7 +187,7 @@ class MigrationTests(unittest.TestCase):
         self.make_v11()
         db = Database(self.path)
         self.assertEqual(backup.read_user_version(self.path), SCHEMA_VERSION)
-        self.assertEqual(SCHEMA_VERSION, 12)
+        self.assertGreaterEqual(SCHEMA_VERSION, 12)
         self.assertTrue(db.last_migration_backup)            # backed up first
         rules = {r["id"]: r for r in db.get_rules()}
         self.assertEqual(rules["R1"]["conditions"],
@@ -287,3 +287,176 @@ class RuleDialogTests(unittest.TestCase):
                                lambda self_: opened.append(self_.rule["name"]) or 0):
             page._table.cellDoubleClicked.emit(0, 1)
         self.assertEqual(opened, ["Gas"])
+
+
+# ── v1.15: Apply to All Transactions with multi-condition rules ──────────────
+
+class DateConditionTests(unittest.TestCase):
+    T = {"payee": "RENT", "amount": "-1200", "date": "2026-03-15", "account_id": "CHK"}
+
+    def test_normalize_date(self):
+        for text in ("3/15/2026", "03/15/2026", "3-15-2026", "03-15-2026", "2026-03-15",
+                     "2026/03/15", "3/15/26"):
+            self.assertEqual(RL.normalize_date(text), "2026-03-15", text)
+        for bad in ("13/5/2026", "2/30/2026", "abc", "", "15"):
+            self.assertEqual(RL.normalize_date(bad), "", bad)
+
+    def test_date_equals_accepts_typed_formats(self):
+        for value in ("3/15/2026", "03-15-2026", "2026-03-15"):
+            self.assertTrue(RL.condition_matches(cond("date", "equals", value), self.T), value)
+        self.assertFalse(RL.condition_matches(cond("date", "equals", "3/16/2026"), self.T))
+        self.assertFalse(RL.condition_matches(cond("date", "equals", "garbage"), self.T))
+
+    def test_problem_text(self):
+        self.assertEqual(RL.condition_problem(cond("date", "equals", "3/15/2026")), "")
+        self.assertIn("date", RL.condition_problem(cond("date", "equals", "15th")).lower())
+        self.assertEqual(RL.condition_problem(cond("date", "day_of_month", "31")), "")
+        for bad in ("0", "32", "x", "1.5"):
+            self.assertIn("1 and 31", RL.condition_problem(cond("date", "day_of_month", bad)))
+        self.assertIn("number", RL.condition_problem(cond("amount", "gt", "abc")))
+
+
+class ApplyAllTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.db = Database(os.path.join(self.dir, "a.db"))
+        self.chk = self.db.save_account({"name": "Checking", "type": "checking"})["id"]
+        self.sav = self.db.save_account({"name": "Savings", "type": "savings"})["id"]
+        cats = {c["name"]: c["id"] for c in self.db.get_categories()}
+        self.gas, self.rent, self.food = cats["Gas"], cats["Parking"], cats["Groceries"]
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def add(self, payee, amount, date="2026-03-15", category_id="", h=""):
+        return self.db.save_transaction({"date": date, "account_id": self.chk, "payee": payee,
+                                         "amount": amount, "category_id": category_id,
+                                         "import_hash": h})["id"]
+
+    def test_multi_condition_rules_with_lock_orphan_and_dates(self):
+        # ALL: payee contains SHELL, money out, amount > 20, in Checking.
+        self.db.save_rule({"name": "Gas", "category_id": self.gas, "priority": "5",
+                           "match_mode": "all",
+                           "conditions": [cond("payee", "contains", "shell"),
+                                          cond("direction", "is", "out"),
+                                          cond("amount", "gt", "20"),
+                                          cond("account", "is", self.chk)]})
+        # ANY: rent on the 1st, or a specific date typed as M/D/YYYY.
+        self.db.save_rule({"name": "Rent", "category_id": self.rent, "match_mode": "any",
+                           "conditions": [cond("date", "day_of_month", "1"),
+                                          cond("date", "equals", "3/20/2026")]})
+        # ANY: two ways to spot a move to savings, recorded as a transfer.
+        self.db.save_rule({"name": "Save", "transfer_account_id": self.sav, "match_mode": "any",
+                           "conditions": [cond("payee", "contains", "xfer to sav"),
+                                          cond("memo", "contains", "savings")]})
+        self.db.save_category({"name": "Old Stuff", "type": "expense"})
+        gone = next(c for c in self.db.get_categories() if c["name"] == "Old Stuff")["id"]
+
+        locked = self.add("SHELL OIL", "-45", date="2025-12-20")         # locked period
+        gas = self.add("SHELL OIL", "-45", h="i1")
+        small = self.add("SHELL OIL", "-12")                              # fails amount > 20
+        refund = self.add("SHELL OIL", "45")                              # fails money out
+        rent1 = self.add("LANDLORD", "-1200", date="2026-04-01")
+        rent2 = self.add("LANDLORD", "-1200", date="2026-03-20")
+        orphan = self.add("SHELL OIL", "-60", category_id=gone)
+        xfer = self.add("XFER TO SAV", "-100")
+        keep = self.add("SHELL OIL", "-50", category_id=self.food)        # already filed
+        self.db.delete_category(gone)                                     # now orphaned
+        self.db.set_lock_date("2025-12-31")
+
+        result = self.db.apply_rules_to_all()
+        self.assertEqual(int(result), 5)            # gas, rent1, rent2, orphan, xfer
+        self.assertEqual((result.categorized, result.skipped_locked, result.failed), (5, 1, 0))
+        get = self.db.get_transaction
+        self.assertEqual(get(gas)["category_id"], self.gas)
+        self.assertEqual(get(orphan)["category_id"], self.gas)
+        self.assertEqual(get(locked)["category_id"], "")
+        self.assertEqual(get(small)["category_id"], "")
+        self.assertEqual(get(refund)["category_id"], "")
+        self.assertEqual(get(rent1)["category_id"], self.rent)
+        self.assertEqual(get(rent2)["category_id"], self.rent)
+        self.assertEqual(get(keep)["category_id"], self.food)
+        self.assertEqual(get(xfer)["is_transfer"], "1")
+        self.assertIn("skipped 1 in a locked period", result.message())
+
+    def test_one_failure_does_not_stop_the_run(self):
+        self.db.save_rule({"name": "Gas", "category_id": self.gas,
+                           "conditions": [cond("payee", "contains", "shell")]})
+        ids = [self.add("SHELL", "-10"), self.add("SHELL", "-20"), self.add("SHELL", "-30")]
+        real = self.db.save_transaction
+
+        def flaky(data):
+            if float(data.get("amount") or 0) == -20:
+                raise sqlite3.IntegrityError("boom")
+            return real(data)
+        with mock.patch.object(self.db, "save_transaction", side_effect=flaky):
+            result = self.db.apply_rules_to_all()
+        self.assertEqual((result.categorized, result.failed), (2, 1))
+        self.assertIn("boom", result.message())
+        self.assertEqual(sum(1 for i in ids if self.db.get_transaction(i)["category_id"]), 2)
+
+    def test_uncategorized_helper_and_dashboard_count(self):
+        from utils.ledger import is_uncategorized
+        cats = {c["id"] for c in self.db.get_categories()}
+        self.assertTrue(is_uncategorized({"category_id": ""}, cats))
+        self.assertTrue(is_uncategorized({"category_id": "NOPE"}, cats))
+        self.assertFalse(is_uncategorized({"category_id": self.gas}, cats))
+        self.assertFalse(is_uncategorized({"category_id": "NOPE", "is_transfer": "1"}, cats))
+        self.assertEqual(self.db.uncategorized_count(), 0)
+        self.add("A", "-1")
+        self.add("B", "-1", category_id="MISSING")
+        self.assertEqual(self.db.uncategorized_count(), 2)
+
+
+@unittest.skipUnless(_HAVE_QT, "PyQt6 not available")
+class ApplyAllUITests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "u.db")
+        self.db = Database(self.path)
+        self.gas = next(c for c in self.db.get_categories() if c["name"] == "Gas")["id"]
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_read_only_disables_apply(self):
+        from ui.pages.rules import RulesPage
+        page = RulesPage(Database(self.path, read_only=True))
+        page.refresh()
+        self.assertFalse(page._apply_btn.isEnabled())
+        self.assertIn("read-only", page._apply_btn.toolTip())
+        page = RulesPage(self.db)
+        page.refresh()
+        self.assertTrue(page._apply_btn.isEnabled())
+
+    def test_apply_reports_locked(self):
+        from ui.pages.rules import RulesPage
+        chk = self.db.save_account({"name": "Checking", "type": "checking"})["id"]
+        self.db.save_rule({"name": "Gas", "category_id": self.gas,
+                           "conditions": [cond("payee", "contains", "shell")]})
+        for d in ("2025-12-01", "2026-02-01"):
+            self.db.save_transaction({"date": d, "account_id": chk, "payee": "SHELL",
+                                      "amount": "-5"})
+        self.db.set_lock_date("2025-12-31")
+        page = RulesPage(self.db)
+        with mock.patch.object(QMessageBox, "question",
+                               return_value=QMessageBox.StandardButton.Yes), \
+                mock.patch.object(QMessageBox, "information") as info:
+            page._apply_all()
+        self.assertEqual(info.call_args[0][2], "Categorized 1; skipped 1 in a locked period.")
+
+    def test_rule_dialog_validates_and_normalizes_dates(self):
+        from ui.dialogs.rule_dialog import RuleDialog
+        dlg = RuleDialog(db=self.db)
+        dlg.name_edit.setText("Rent day")
+        row = dlg._rows[0]
+        row.field_combo.setCurrentIndex(row.field_combo.findData("date"))
+        row.value_edit.setText("15th")
+        self.assertIn("date", row.problem().lower())
+        row.value_edit.setText("3/15/2026")
+        self.assertEqual(row.problem(), "")
+        dlg.cat_combo.select_by_data(self.gas)
+        self.assertEqual(dlg.get_data()["conditions"][0]["value"], "2026-03-15")
+        row.op_combo.setCurrentIndex(row.op_combo.findData("day_of_month"))
+        row.value_edit.setText("32")
+        self.assertIn("1 and 31", row.problem())

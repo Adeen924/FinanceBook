@@ -17,9 +17,13 @@ CURRENCIES    = ["USD", "EUR", "GBP", "CAD", "AUD", "JPY", "CHF", "CNY", "MXN"]
 
 class AccountDialog(QDialog):
     def __init__(self, account: dict = None, institutions: list = None,
-                 balance: float = 0.0, parent=None, account_type: str = ""):
+                 balance: float = 0.0, parent=None, account_type: str = "",
+                 accounts: list = None):
+        """accounts: the active accounts, offered (filtered to the same Chart of
+        Accounts group) as the parent in "Sub-account of". None hides the row."""
         super().__init__(parent)
         self.account = account or {}
+        self._all_accounts = accounts
         if account_type and not self.account.get("id"):
             self.account = dict(self.account, type=account_type)
         self.balance = float(balance or 0)
@@ -53,6 +57,19 @@ class AccountDialog(QDialog):
         form.addRow("", self._type_hint)
         self.type_combo.currentIndexChanged.connect(self._sync_type_hint)
         self._sync_type_hint()
+
+        # Sub-account of: a top-level account in the same group (a bank account
+        # under a bank account, a card under a card…).
+        self.parent_combo = None
+        if self._all_accounts is not None:
+            self.parent_combo = QComboBox()
+            self.parent_combo.setToolTip(
+                "Nest this account under another one in the Accounts list. Its register, "
+                "reconciliation and reports stay its own; the parent shows the total.")
+            form.addRow("Sub-account of", self.parent_combo)
+            self._fill_parents(self.account.get("parent_id") or "")
+            self.type_combo.currentIndexChanged.connect(
+                lambda _: self._fill_parents(self.parent_combo.currentData() or ""))
 
         self.institution_edit = QLineEdit(self.account.get("institution",""))
         self.institution_edit.setPlaceholderText("e.g. Bank of America")
@@ -111,6 +128,20 @@ class AccountDialog(QDialog):
         btns.rejected.connect(self.reject)
         lay.addWidget(btns)
 
+    def _fill_parents(self, want: str):
+        from utils.chart_of_accounts import group_for_account
+        grp = group_for_account({"type": self.type_combo.currentData() or ""}).key
+        me = self.account.get("id") or ""
+        self.parent_combo.blockSignals(True)
+        self.parent_combo.clear()
+        self.parent_combo.addItem("— None (top-level account) —", "")
+        for a in sorted(self._all_accounts, key=lambda a: (a.get("name") or "").lower()):
+            if a.get("id") != me and not a.get("parent_id") \
+                    and group_for_account(a).key == grp:
+                self.parent_combo.addItem(a.get("name", ""), a["id"])
+        self.parent_combo.setCurrentIndex(max(self.parent_combo.findData(want), 0))
+        self.parent_combo.blockSignals(False)
+
     def _sync_type_hint(self, *_):
         self._type_hint.setVisible(self.type_combo.currentData() == "fixed assets")
 
@@ -141,4 +172,6 @@ class AccountDialog(QDialog):
         })
         if self._inactive_chk is not None:
             data["active"] = "0" if self._inactive_chk.isChecked() else "1"
+        if self.parent_combo is not None:
+            data["parent_id"] = self.parent_combo.currentData() or ""
         return data

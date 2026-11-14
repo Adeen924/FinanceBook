@@ -12,6 +12,57 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New in v1.15: money in / out, sub-accounts, rule and filter fixes
+
+> **This release upgrades the database format — update every computer that
+> shares a database first.** Older versions can't open it afterwards. A backup
+> is made automatically before the upgrade.
+
+> **Run the sign check once.** After updating, open **Settings → Data Checks →
+> Check for Flipped Imported Transactions…**. It lists imported transactions
+> whose sign doesn't match their account (money in under an expense account,
+> or money out under an income account) so you can flip the ones that are
+> wrong. Nothing is changed automatically — a real refund looks the same.
+
+- **Imported withdrawals stay withdrawals.** The transaction window now shows
+  the amount as a positive number with a **Money out / Money in** choice. An
+  existing entry keeps its direction when you pick or change its account; only
+  changing Money out / Money in (or the amount) changes it. Before, picking an
+  expense account for an uncategorized imported withdrawal turned a $50
+  payment into a $50 deposit. New entries still take their account's usual
+  direction, and a negative amount (or Money in) still records a refund.
+  Splitting an entry or booking a receipt against it keeps its direction too.
+- **CSV / Excel imports with Debit and Credit columns** read them as amounts
+  out and in, whatever sign the bank writes them with — a bank that lists
+  debits as `-50.00` or `(50.00)` no longer imports withdrawals as deposits.
+  Re-importing a file you imported before doesn't create duplicates. For a
+  credit-card file whose single Amount column shows charges as positive, tick
+  **"Charges / withdrawals are positive… reverse the signs"** on the Import page.
+- **Rules → Apply to All Transactions works with multi-condition rules.** It
+  no longer stops halfway with no message when it reaches a transaction in a
+  locked period: those are skipped and counted ("Categorized 12; skipped 3 in a
+  locked period"), and a problem with one transaction doesn't stop the rest.
+  Transactions whose account was deleted (shown as ⚠ Uncategorized) are now
+  included. Date conditions accept dates typed as `3/15/2026`, `03-15-2026` or
+  `2026-03-15`, and the rule window checks dates and days of the month (1–31)
+  before saving. The button is greyed out when the database is open read-only.
+- **The Transactions filters apply as you change them** — account, account
+  filter, From / To dates, *Show transfers* and the search box (after a short
+  pause in typing). The *Filter* button is gone. A new **⚠ Uncategorized only**
+  choice shows everything that still needs an account; the Dashboard's
+  "uncategorized" alert opens it, and its count now includes entries whose
+  account was deleted.
+- **Move any account to a sub-account and back.** On the Accounts page,
+  right-click an account (or use its **Move…** button) and pick **Move to →**
+  another account or **Top level**. Moving an account that has its own
+  sub-accounts brings them along, and a sub-account takes its parent's type
+  (and Schedule C line in a business book). Before, moving such an account made
+  its sub-accounts disappear from the list.
+- **Bank, card, loan, asset and equity accounts can have sub-accounts too**
+  (e.g. *Checking → Bills*). Choose **Sub-account of** in the account's Edit
+  window or use **Move…**. The parent shows its balance with its sub-accounts
+  added in; registers, reconciliation, transfers and reports stay per account.
+
 ## New: one Accounts list, smarter rules (v1.14)
 
 > **This version upgrades your database.** Update FinanceBook on every computer

@@ -497,9 +497,15 @@ class ReceiptsMixin:
             ln = lines[0]
             ctype = self._category_type(ln["category_id"])
             amt = float(ln["amount"])
+            signed = amt if ctype in ("income", "other_income") else -amt
+            # An existing bank entry keeps its direction (a receipt for a
+            # return attached to an imported deposit stays money in).
+            stored = self._stored_sign(base_txn) if base_txn else 0
+            if stored and abs(signed) > 0.005 and (signed > 0) != (stored > 0):
+                signed = -signed
             txn = dict(base, category_id=ln["category_id"], class_id=ln["class_id"],
                        charged_to=ln["charged_to"], memo=ln["memo"] or base["memo"],
-                       amount=str(amt if ctype in ("income", "other_income") else -amt))
+                       amount=str(signed))
             if base_txn and base_txn.get("split_group_id"):
                 self.delete_split_group(base_txn["split_group_id"])
                 txn.pop("id", None)

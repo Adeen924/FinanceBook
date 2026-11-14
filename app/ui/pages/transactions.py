@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QComboBox, QLineEdit, QMessageBox, QCheckBox,
                               QLabel, QHeaderView, QMenu)
-from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtCore import Qt, QDate, QTimer
 from PyQt6.QtGui import QAction
 from ui.widgets import (PageTitle, DataTable, SecondaryButton, DangerButton,
                         DateField, fmt_date)
@@ -9,6 +9,11 @@ from ui.styles  import SUCCESS, DANGER, WARNING
 
 
 class TransactionsPage(QWidget):
+    # Category-filter value for "⚠ Uncategorized only".
+    UNCATEGORIZED = "__uncategorized__"
+    # Typing in the search box (or a date) re-filters after this pause.
+    FILTER_DELAY_MS = 300
+
     def __init__(self, db, parent=None):
         super().__init__(parent)
         self.db = db
@@ -86,15 +91,27 @@ class TransactionsPage(QWidget):
         self._show_transfers.setChecked(True)
         filt.addWidget(self._show_transfers)
 
-        filter_btn = QPushButton("Filter")
-        filter_btn.clicked.connect(self._apply_filter)
-        filt.addWidget(filter_btn)
-
         clear_btn = SecondaryButton("Clear")
         clear_btn.clicked.connect(self._clear_filter)
         filt.addWidget(clear_btn)
 
         lay.addLayout(filt)
+
+        # Every filter control re-filters by itself. Combos and the checkbox act
+        # at once; the search box and dates wait for a short pause in typing.
+        # _quiet is set while several controls are changed together (Clear,
+        # opening an account), which then reload once.
+        self._quiet = False
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(self.FILTER_DELAY_MS)
+        self._filter_timer.timeout.connect(self._on_filter_changed)
+        self._acct_filter.currentIndexChanged.connect(self._on_filter_changed)
+        self._cat_filter.currentIndexChanged.connect(self._on_filter_changed)
+        self._show_transfers.toggled.connect(self._on_filter_changed)
+        self._date_from.dateChanged.connect(self._schedule_filter)
+        self._date_to.dateChanged.connect(self._schedule_filter)
+        self._search_edit.textChanged.connect(self._schedule_filter)
 
         # ── Summary bar ──
         self._summary_label = QLabel("")
@@ -142,6 +159,7 @@ class TransactionsPage(QWidget):
         cur_cat = self._cat_filter.currentData()
         self._cat_filter.clear()
         self._cat_filter.addItem("All Income / Expense Accounts", "")
+        self._cat_filter.addItem("⚠ Uncategorized only", self.UNCATEGORIZED)
         roots = [c for c in cats if not c.get("parent_id")]
         for cat in roots:
             self._cat_filter.addItem(cat["name"], cat["id"])
@@ -156,6 +174,28 @@ class TransactionsPage(QWidget):
 
         self._apply_filter()
 
+    def _schedule_filter(self, *_):
+        if not self._quiet:
+            self._filter_timer.start()
+
+    def _on_filter_changed(self, *_):
+        if not self._quiet:
+            self._apply_filter()
+
+    def show_uncategorized(self):
+        """Show every entry that still needs an account (Dashboard alert)."""
+        self._quiet = True
+        try:
+            self._acct_filter.setCurrentIndex(0)
+            self._search_edit.clear()
+            self._date_from.setDate(QDate(2000, 1, 1))
+            self._date_to.setDate(QDate.currentDate())
+            ix = self._cat_filter.findData(self.UNCATEGORIZED)
+            self._cat_filter.setCurrentIndex(max(ix, 0))
+        finally:
+            self._quiet = False
+        self._apply_filter()
+
     def _apply_filter(self, *_args, keep=None):
         """Reload the register. keep: a transaction (dict) to re-select and
         scroll to afterwards — the one just edited / split / re-filed — found
@@ -168,9 +208,14 @@ class TransactionsPage(QWidget):
         cat_id = self._cat_filter.currentData() or None
         show_transfers = self._show_transfers.isChecked()
 
+        self._filter_timer.stop()       # this reload covers any pending one
         txns = self.db.get_transactions(account_id=acct_id, start=start, end=end,
                                          include_transfers=show_transfers)
-        if cat_id:
+        if cat_id == self.UNCATEGORIZED:
+            from utils.ledger import is_uncategorized
+            ids = {c["id"] for c in self.db.get_categories()}
+            txns = [t for t in txns if is_uncategorized(t, ids)]
+        elif cat_id:
             txns = [t for t in txns if t.get("category_id") == cat_id]
         if search:
             txns = [t for t in txns
@@ -277,28 +322,36 @@ class TransactionsPage(QWidget):
             self._table.scrollToTop()
 
     def _clear_filter(self):
-        self._acct_filter.setCurrentIndex(0)
-        self._cat_filter.setCurrentIndex(0)
-        self._date_from.setDate(QDate(QDate.currentDate().year(), 1, 1))
-        self._date_to.setDate(QDate.currentDate())
-        self._search_edit.clear()
-        self._show_transfers.setChecked(True)
+        self._quiet = True
+        try:
+            self._acct_filter.setCurrentIndex(0)
+            self._cat_filter.setCurrentIndex(0)
+            self._date_from.setDate(QDate(QDate.currentDate().year(), 1, 1))
+            self._date_to.setDate(QDate.currentDate())
+            self._search_edit.clear()
+            self._show_transfers.setChecked(True)
+        finally:
+            self._quiet = False
         self._apply_filter()
 
     def show_account(self, account_id: str):
         """Filter the page to one account, newest first — used when an account
         name is clicked on the Accounts or Dashboard page."""
-        self._cat_filter.setCurrentIndex(0)
-        self._search_edit.clear()
-        self._show_transfers.setChecked(True)
-        # Widen the date range so recent transactions show regardless of year.
-        self._date_from.setDate(QDate(2000, 1, 1))
-        self._date_to.setDate(QDate.currentDate())
-        # Select the account in the filter dropdown.
-        for i in range(self._acct_filter.count()):
-            if self._acct_filter.itemData(i) == account_id:
-                self._acct_filter.setCurrentIndex(i)
-                break
+        self._quiet = True
+        try:
+            self._cat_filter.setCurrentIndex(0)
+            self._search_edit.clear()
+            self._show_transfers.setChecked(True)
+            # Widen the date range so recent transactions show regardless of year.
+            self._date_from.setDate(QDate(2000, 1, 1))
+            self._date_to.setDate(QDate.currentDate())
+            # Select the account in the filter dropdown.
+            for i in range(self._acct_filter.count()):
+                if self._acct_filter.itemData(i) == account_id:
+                    self._acct_filter.setCurrentIndex(i)
+                    break
+        finally:
+            self._quiet = False
         self._apply_filter()
 
     def _transfer_targets(self) -> dict:

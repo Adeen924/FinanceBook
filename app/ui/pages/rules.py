@@ -22,10 +22,10 @@ class RulesPage(QWidget):
         hdr.addWidget(PageTitle("Rules"))
         hdr.addStretch()
 
-        apply_btn = QPushButton("Apply to All Transactions")
-        apply_btn.setObjectName("Secondary")
-        apply_btn.clicked.connect(self._apply_all)
-        hdr.addWidget(apply_btn)
+        self._apply_btn = QPushButton("Apply to All Transactions")
+        self._apply_btn.setObjectName("Secondary")
+        self._apply_btn.clicked.connect(self._apply_all)
+        hdr.addWidget(self._apply_btn)
 
         add_btn = QPushButton("+ Add Rule")
         add_btn.clicked.connect(self._add)
@@ -59,6 +59,12 @@ class RulesPage(QWidget):
 
     def refresh(self):
         from utils.rules import describe_rule
+        ro = bool(getattr(self.db, "read_only", False))
+        self._apply_btn.setEnabled(not ro)
+        self._apply_btn.setToolTip(
+            "This database is open read-only (another computer is using it), so "
+            "rules can't change transactions right now." if ro else
+            "Set the account on every uncategorized transaction using your active rules.")
         rules = self.db.get_rules()
         self._rules = rules
         cats  = {c["id"]: c["name"] for c in self.db.get_categories()}
@@ -137,15 +143,27 @@ class RulesPage(QWidget):
             self.refresh()
 
     def _apply_all(self):
+        if getattr(self.db, "read_only", False):
+            return
+        lock = self.db.lock_date()
+        locked_note = (f"\n\nTransactions dated on or before {lock} are in a locked "
+                       "period and will be skipped." if lock else "")
         reply = QMessageBox.question(
             self, "Apply Rules to All Transactions",
             "This will set the account on every transaction that doesn't have one "
-            "yet, using your active rules (a rule that sets one of your own accounts "
-            "records a transfer).\n\nTransactions that already have an account will "
-            "not be changed. Continue?",
+            "yet (or whose account was deleted), using your active rules (a rule "
+            "that sets one of your own accounts records a transfer).\n\n"
+            "Transactions that already have an account will not be changed."
+            f"{locked_note}\n\nContinue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            count = self.db.apply_rules_to_all()
-            QMessageBox.information(
-                self, "Done",
-                f"Applied rules to {count} transaction(s).")
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            result = self.db.apply_rules_to_all()
+        except Exception as e:          # anything unexpected: say so, don't crash
+            QMessageBox.warning(self, "Rules Not Applied", str(e))
+            return
+        if result.failed:
+            QMessageBox.warning(self, "Done — With Problems", result.message())
+        else:
+            QMessageBox.information(self, "Done", result.message())

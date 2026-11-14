@@ -38,6 +38,7 @@ class SettingsPage(QWidget):
         lay.addWidget(self._build_receipt_files_section())
         lay.addWidget(self._build_ai_section())
         lay.addWidget(self._build_control_section())
+        lay.addWidget(self._build_data_checks_section())
         lay.addWidget(self._build_reset_section())
         lay.addWidget(self._build_about_section())
         lay.addStretch()
@@ -734,6 +735,43 @@ class SettingsPage(QWidget):
         from ui.dialogs.audit_dialog import AuditDialog
         AuditDialog(self.db, self).exec()
 
+    # ── Data checks ───────────────────────────────────────────────────────────
+
+    def _build_data_checks_section(self) -> QGroupBox:
+        grp = QGroupBox("Data Checks")
+        lay = QVBoxLayout(grp)
+        lay.setSpacing(10)
+        hint = QLabel(
+            "Before version 1.15, an imported withdrawal could be saved as a deposit "
+            "(or the other way round) when you picked its account, or when a bank's CSV "
+            "listed debits as negative numbers. Run this check once to review imported "
+            "transactions whose sign doesn't match their account and flip the wrong ones.")
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        row = QHBoxLayout()
+        self._sign_check_btn = QPushButton("Check for Flipped Imported Transactions…")
+        self._sign_check_btn.setObjectName("Secondary")
+        self._sign_check_btn.clicked.connect(self._open_sign_check)
+        row.addWidget(self._sign_check_btn)
+        self._sign_check_lbl = QLabel("")
+        self._sign_check_lbl.setObjectName("Muted")
+        row.addWidget(self._sign_check_lbl)
+        row.addStretch()
+        lay.addLayout(row)
+        return grp
+
+    def _refresh_data_checks(self):
+        done = self.db.get_setting("sign_check_done") == "1"
+        self._sign_check_lbl.setText("✓ Checked" if done else "Not run yet on this database")
+
+    def _open_sign_check(self):
+        from ui.dialogs.sign_check_dialog import SignCheckDialog
+        SignCheckDialog(self.db, self).exec()
+        if not self.db.read_only:
+            self.db.set_setting("sign_check_done", "1")
+        self._refresh_data_checks()
+
     # ── Reset section ─────────────────────────────────────────────────────────
 
     def _build_reset_section(self) -> QGroupBox:
@@ -844,3 +882,4 @@ class SettingsPage(QWidget):
         self._refresh_receipt_files()
         self._refresh_ai()
         self._refresh_control()
+        self._refresh_data_checks()
