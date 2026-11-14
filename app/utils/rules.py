@@ -8,6 +8,8 @@ single condition in the rules row itself; the schema-12 migration copies it
 into one rule_conditions row, and legacy_condition() rebuilds it for a rule
 dict that has none (e.g. built in code by an older caller).
 """
+import re
+from datetime import date
 
 FIELDS = (
     ("payee", "Payee / Description"),
@@ -26,7 +28,7 @@ OPERATORS = {
     "memo": _TEXT_OPS,
     "amount": (("equals", "= equals"), ("gt", "> greater than"),
                ("lt", "< less than"), ("between", "between")),
-    "date": (("equals", "= specific date (YYYY-MM-DD)"),
+    "date": (("equals", "= specific date"),
              ("day_of_month", "day of month (1 – 31)")),
     "direction": (("is", "is"),),
     "account": (("is", "is"),),
@@ -55,6 +57,58 @@ def conditions_of(rule: dict) -> list:
     if conds is None:
         return [legacy_condition(rule)]
     return list(conds)
+
+
+_ISO_DATE = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$")
+_US_DATE = re.compile(r"^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2}|\d{4}))?$")
+
+
+def normalize_date(text: str, today: date | None = None) -> str:
+    """A typed date as YYYY-MM-DD, or '' if it isn't one. Accepts the same
+    forms as the app's date boxes (DateField): M/D/YYYY, MM/DD/YYYY, M-D-YYYY,
+    YYYY-MM-DD (also with / or .), M/D/YY (20YY) and M/D (this year)."""
+    text = (text or "").strip()
+    m = _ISO_DATE.match(text)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    else:
+        m = _US_DATE.match(text)
+        if not m:
+            return ""
+        mo, d = int(m.group(1)), int(m.group(2))
+        yy = m.group(3)
+        if yy is None:
+            y = (today or date.today()).year
+        else:
+            y = int(yy) + (2000 if len(yy) == 2 else 0)
+    try:
+        return date(y, mo, d).isoformat()
+    except ValueError:
+        return ""
+
+
+def condition_problem(cond: dict) -> str:
+    """Why a condition can't be saved (shown in the rule dialog), or ''."""
+    field = cond.get("field") or "payee"
+    op = cond.get("operator") or ""
+    value = str(cond.get("value") or "").strip()
+    if not value:
+        return "Fill in a value for every condition."
+    if field == "amount":
+        try:
+            float(value)
+            if op == "between":
+                float(str(cond.get("value2") or ""))
+        except ValueError:
+            return "Amounts must be numbers (e.g. 50 or 49.99)."
+    if field == "date":
+        if op == "day_of_month":
+            if not value.isdigit() or not 1 <= int(value) <= 31:
+                return "Day of month must be a whole number between 1 and 31."
+        elif not normalize_date(value):
+            return (f"“{value}” isn't a date. Type it as MM/DD/YYYY "
+                    "(e.g. 03/15/2026) or YYYY-MM-DD.")
+    return ""
 
 
 def condition_matches(cond: dict, txn: dict) -> bool:
@@ -97,12 +151,15 @@ def condition_matches(cond: dict, txn: dict) -> bool:
             return False
         return False
     if field == "date":
-        date_str = txn.get("date", "") or ""
+        date_str = normalize_date(txn.get("date", "") or "")
+        if not date_str:
+            return False
         if op == "equals":
-            return date_str == value
+            # Rules saved before 1.15 may hold the date as typed (e.g. 3/15/2026).
+            return date_str == normalize_date(value)
         if op == "day_of_month":
             try:
-                return int(date_str.split("-")[2]) == int(value)
+                return int(date_str.split("-")[2]) == int(value.strip())
             except (IndexError, ValueError):
                 return False
         return False

@@ -37,7 +37,12 @@ class ConditionRow(QWidget):
         self.op_combo.setMinimumWidth(130)
         lay.addWidget(self.op_combo)
 
-        self.value_edit = QLineEdit(str(cond.get("value", "")))
+        shown = str(cond.get("value", ""))
+        if cond.get("field") == "date" and cond.get("operator") == "equals":
+            iso = RL.normalize_date(shown)          # show a saved date as MM/DD/YYYY
+            if iso:
+                shown = f"{iso[5:7]}/{iso[8:10]}/{iso[:4]}"
+        self.value_edit = QLineEdit(shown)
         lay.addWidget(self.value_edit, 1)
         self.choice_combo = QComboBox()       # money in/out, bank account
         lay.addWidget(self.choice_combo, 1)
@@ -87,12 +92,14 @@ class ConditionRow(QWidget):
                 for a in self._accounts:
                     self.choice_combo.addItem(a["name"], a["id"])
             self.choice_combo.setCurrentIndex(max(self.choice_combo.findData(want), 0))
-        self.value_edit.setPlaceholderText({
-            "amount": "e.g. 50.00", "date": "YYYY-MM-DD or 1–31",
-        }.get(field, "Text to match"))
         self._sync_value2()
 
     def _sync_value2(self, *_):
+        self.value_edit.setPlaceholderText({
+            "amount": "e.g. 50.00",
+            "date": ("1–31" if self.op_combo.currentData() == "day_of_month"
+                     else "MM/DD/YYYY"),
+        }.get(self.field(), "Text to match"))
         show = self.op_combo.currentData() == "between"
         self.and_lbl.setVisible(show)
         self.value2_edit.setVisible(show)
@@ -103,6 +110,9 @@ class ConditionRow(QWidget):
             value = self.choice_combo.currentData() or ""
         else:
             value = self.value_edit.text().strip()
+            if field == "date" and self.op_combo.currentData() == "equals":
+                # Saved as YYYY-MM-DD whatever form was typed (3/15/2026 …).
+                value = RL.normalize_date(value) or value
         return {"field": field, "operator": self.op_combo.currentData() or "",
                 "value": value,
                 "value2": self.value2_edit.text().strip()
@@ -110,17 +120,7 @@ class ConditionRow(QWidget):
 
     def problem(self) -> str:
         """Why this condition can't be saved, or ''."""
-        c = self.condition()
-        if not c["value"]:
-            return "Fill in a value for every condition."
-        if c["field"] == "amount":
-            try:
-                float(c["value"])
-                if c["operator"] == "between":
-                    float(c["value2"])
-            except ValueError:
-                return "Amounts must be numbers (e.g. 50 or 49.99)."
-        return ""
+        return RL.condition_problem(self.condition())
 
 
 class RuleDialog(QDialog):

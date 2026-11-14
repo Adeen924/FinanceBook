@@ -231,6 +231,42 @@ def _to_dicts(rows) -> list[dict]:
     return [_to_dict(r) for r in rows]
 
 
+class ApplyResult:
+    """What Rules → Apply to All Transactions did. Compares (and converts) as
+    the number of transactions it set, which is what it returned before 1.15."""
+    def __init__(self):
+        self.categorized = 0
+        self.skipped_locked = 0
+        self.failed = 0
+        self.first_error = ""
+
+    def __int__(self):
+        return self.categorized
+
+    __index__ = __int__
+
+    def __eq__(self, other):
+        if isinstance(other, int):
+            return self.categorized == other
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self.categorized)
+
+    def __repr__(self):
+        return (f"ApplyResult(categorized={self.categorized}, "
+                f"skipped_locked={self.skipped_locked}, failed={self.failed})")
+
+    def message(self) -> str:
+        """e.g. "Categorized 4; skipped 1 in a locked period." """
+        msg = f"Categorized {self.categorized}"
+        if self.skipped_locked:
+            msg += f"; skipped {self.skipped_locked} in a locked period"
+        if self.failed:
+            msg += (f"; {self.failed} couldn't be saved (first: {self.first_error})")
+        return msg + "."
+
+
 class NewerSchemaError(Exception):
     """The file was upgraded by a newer FinanceBook than this one."""
     def __init__(self, version: int):
@@ -1493,23 +1529,53 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                     break
         return txns
 
-    def apply_rules_to_all(self) -> int:
-        """Re-apply rules to all uncategorized transactions. Returns count updated.
-        Matches of a rule that sets a balance-sheet account become transfers."""
-        txns = self.get_transactions(include_transfers=True)
-        uncategorized = [t for t in txns if not t.get("category_id")
-                         and str(t.get("is_transfer", "0")) != "1"]
-        self.apply_rules(uncategorized)
-        count = 0
-        for t in uncategorized:
+    def uncategorized_txns(self, include_transfers: bool = False) -> list[dict]:
+        """Transactions that still need an account (see ledger.is_uncategorized:
+        an empty category, or one that no longer exists)."""
+        from utils.ledger import is_uncategorized
+        ids = {c["id"] for c in self.get_categories()}
+        return [t for t in self.get_transactions(include_transfers=include_transfers)
+                if is_uncategorized(t, ids)]
+
+    def uncategorized_count(self) -> int:
+        return len(self.uncategorized_txns())
+
+    def apply_rules_to_all(self) -> "ApplyResult":
+        """
+        Re-apply rules to every uncategorized transaction (an empty category or
+        one that no longer exists). Matches of a rule that sets a balance-sheet
+        account become transfers. Transactions in a locked period are left
+        alone and counted; an error on one transaction is counted and the run
+        carries on. Returns an ApplyResult (an int: how many were set).
+        """
+        lock = self.lock_date()
+        pending = self.uncategorized_txns(include_transfers=True)
+        for t in pending:
+            t["_was"] = t.get("category_id") or ""
+            t["category_id"] = ""          # an orphaned category counts as none
+        self.apply_rules(pending)
+        result = ApplyResult()
+        for t in pending:
+            was = t.pop("_was")
             dest = t.pop("_transfer_to", "")
-            if dest and not t.get("split_group_id"):
-                self.save_transfer_pair(t, dest, keep_sign=True, match_existing=True)
-                count += 1
-            elif t.get("category_id"):
-                self.save_transaction(t)
-                count += 1
-        return count
+            matched = bool(dest and not t.get("split_group_id")) or bool(t.get("category_id"))
+            if not matched:
+                continue
+            if lock and (t.get("date") or "") <= lock:
+                result.skipped_locked += 1
+                continue
+            try:
+                if dest and not t.get("split_group_id"):
+                    self.save_transfer_pair(t, dest, keep_sign=True, match_existing=True)
+                else:
+                    self.save_transaction(t)
+                result.categorized += 1
+            except (sqlite3.Error, ValueError) as e:
+                t["category_id"] = was
+                result.failed += 1
+                if not result.first_error:
+                    result.first_error = f"{t.get('date', '')} {t.get('payee', '')}: {e}".strip()
+        return result
 
     # ── loans ─────────────────────────────────────────────────────────────────
 

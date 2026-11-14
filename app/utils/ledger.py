@@ -75,6 +75,17 @@ def category_sign(ctype: str) -> int:
     return -1 if (ctype or "") in ("expense", "other_expense", "debt_repayment") else 1
 
 
+def is_uncategorized(txn: dict, category_ids) -> bool:
+    """True when a transaction still needs an account: not a transfer, and its
+    category_id is empty or points to a category that no longer exists (e.g.
+    one that was deleted) — the Transactions screen shows both as
+    "⚠ Uncategorized". category_ids: the ids of the existing categories."""
+    if str(txn.get("is_transfer", "0")) == "1":
+        return False
+    cid = txn.get("category_id") or ""
+    return not cid or cid not in category_ids
+
+
 def pnl_bucket(txn: dict, cats: dict) -> str:
     """
     Where a non-transfer transaction lands: 'income', 'expense' or 'excluded'.

@@ -682,8 +682,8 @@ class DashboardPage(QWidget):
             self._acct_list.insertWidget(i, row)
 
     def _load_alerts(self):
-        all_txns = self.db.get_transactions(include_transfers=False)
-        uncategorized = sum(1 for t in all_txns if not t.get("category_id"))
+        # Includes entries whose account was deleted (shown "⚠ Uncategorized").
+        uncategorized = self.db.uncategorized_count()
         if uncategorized:
             noun = "transaction" if uncategorized == 1 else "transactions"
             self._alert_label.setText(f"⚠  {uncategorized} uncategorized {noun}")
