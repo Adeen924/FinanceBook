@@ -10,7 +10,8 @@ edited. Tabs: Chart of Accounts, Inactive Accounts, Classes.
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QMessageBox, QHeaderView, QLabel, QTabWidget,
                              QTreeWidget, QTreeWidgetItem, QDialog, QFormLayout,
-                             QComboBox, QDialogButtonBox, QCheckBox)
+                             QComboBox, QDialogButtonBox, QCheckBox, QMenu,
+                             QInputDialog)
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QColor, QFont
 from ui.widgets import PageTitle, DataTable, SecondaryButton
@@ -75,7 +76,9 @@ class AccountsPage(QWidget):
         hdr.addWidget(PageTitle("Accounts"))
         hdr.addStretch()
         self._sub_btn = SecondaryButton("+ Sub-account")
-        self._sub_btn.setToolTip("Add an income / expense account under another one")
+        self._sub_btn.setToolTip("Add an income / expense account under another one. "
+                                 "To nest a bank, card or other balance-sheet account, "
+                                 "use Move… or its Edit dialog.")
         self._sub_btn.clicked.connect(self._add_sub)
         hdr.addWidget(self._sub_btn)
         self._add_btn = QPushButton("+ New Account")
@@ -136,6 +139,8 @@ class AccountsPage(QWidget):
         self._tree.setAlternatingRowColors(True)
         self._tree.itemClicked.connect(self._on_item_clicked)
         self._tree.itemDoubleClicked.connect(lambda it, _c: self._edit_item(it))
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._context_menu)
         pl.addWidget(self._tree, 1)
         return page
 
@@ -181,7 +186,17 @@ class AccountsPage(QWidget):
         from ui.pages.categories import type_label
         net = 0.0
         self._first_account_item = None
-        for group, entries in COA.chart_rows(accounts, cats):
+        rows = COA.chart_rows(accounts, cats)
+        # A parent account shows its balance with its sub-accounts rolled up;
+        # group totals and the net add each account once (its own balance).
+        own = {e["data"]["id"]: self.db.account_balance(e["data"]["id"])
+               for _g, es in rows for e in es if e["kind"] == "account"}
+        rolled = dict(own)
+        for _g, es in rows:
+            for e in reversed(es):
+                if e["kind"] == "account" and e.get("parent"):
+                    rolled[e["parent"]] = rolled.get(e["parent"], 0.0) + rolled[e["data"]["id"]]
+        for group, entries in rows:
             head = QTreeWidgetItem([group.label.upper(), "", "", "", ""])
             f = QFont(head.font(0)); f.setBold(True)
             head.setFont(COL_NAME, f)
@@ -191,10 +206,11 @@ class AccountsPage(QWidget):
             group_total = 0.0
             for e in entries:
                 d = e["data"]
+                indent = "    " + "    " * e["depth"] + ("↳ " if e["depth"] else "")
                 if e["kind"] == "account":
-                    bal = self.db.account_balance(d["id"])
-                    group_total += bal
-                    item = QTreeWidgetItem(["    " + d.get("name", ""),
+                    group_total += own[d["id"]]
+                    bal = rolled[d["id"]]
+                    item = QTreeWidgetItem([indent + d.get("name", ""),
                                             (d.get("type") or "").title(),
                                             d.get("institution", "") or "—",
                                             _money(bal), ""])
@@ -203,10 +219,12 @@ class AccountsPage(QWidget):
                     item.setFont(COL_NAME, fn)
                     item.setToolTip(COL_NAME, "Click to view this account's transactions")
                     item.setForeground(COL_BALANCE, QColor(SUCCESS if bal >= 0 else DANGER))
+                    if abs(bal - own[d["id"]]) >= 0.005:
+                        item.setToolTip(COL_BALANCE, "Includes its sub-accounts. This account "
+                                        f"alone: {_money(own[d['id']])}")
                     if self._first_account_item is None:
                         self._first_account_item = item
                 else:
-                    indent = "        ↳ " if e["depth"] else "    "
                     detail = ""
                     if business:
                         line = d.get("tax_line") or ""
@@ -270,6 +288,12 @@ class AccountsPage(QWidget):
         edit_btn.setObjectName("CellButton")
         edit_btn.clicked.connect(lambda _, e=entry: self._edit_entry(e))
         lay.addWidget(edit_btn)
+        move_btn = QPushButton("Move…")
+        move_btn.setObjectName("CellButton")
+        move_btn.setToolTip("Make this a sub-account of another account, or top-level")
+        move_btn.setMinimumWidth(move_btn.fontMetrics().horizontalAdvance("Move…") + 34)
+        move_btn.clicked.connect(lambda _, e=entry: self._move_dialog(e))
+        lay.addWidget(move_btn)
         del_btn = QPushButton("Delete")
         del_btn.setObjectName("CellDanger")
         del_btn.clicked.connect(lambda _, e=entry: self._delete_entry(e))
@@ -316,6 +340,101 @@ class AccountsPage(QWidget):
         else:
             self._edit_category(e["data"])
 
+    # ── move to… ───────────────────────────────────────────────────────────────
+
+    def move_options(self, e) -> list:
+        """[(text, parent id)] an entry can move under: "Top level" first, then
+        every valid parent — a top-level account other than itself; for a
+        balance-sheet account only those in its own group. (Its own
+        sub-accounts are never top-level, so no cycle can be offered.)"""
+        d = e["data"]
+        out = [("Top level", "")]
+        if e["kind"] == "account":
+            grp = COA.group_for_account(d).key
+            for a in sorted(self.db.get_accounts(), key=lambda a: a.get("name", "").lower()):
+                if a["id"] != d["id"] and not a.get("parent_id") \
+                        and COA.group_for_account(a).key == grp:
+                    out.append((a.get("name", ""), a["id"]))
+        else:
+            from ui.pages.categories import type_label
+            for c in sorted(self.db.get_categories_for_book(keep_ids=[d.get("parent_id", "")]),
+                            key=lambda c: c.get("name", "").lower()):
+                if c["id"] != d["id"] and not c.get("parent_id"):
+                    out.append((f"{c.get('name', '')}  ({type_label(c.get('type', ''))})",
+                                c["id"]))
+        return out
+
+    def _move_dialog(self, e):
+        opts = self.move_options(e)
+        cur = e["data"].get("parent_id") or ""
+        texts = [t for t, _v in opts]
+        start = next((i for i, (_t, v) in enumerate(opts) if v == cur), 0)
+        text, ok = QInputDialog.getItem(
+            self, "Move Account", f"Move “{e['data'].get('name', '')}” to:",
+            texts, start, False)
+        if ok:
+            self.move_entry(e, opts[texts.index(text)][1])
+
+    def move_entry(self, e, parent_id: str):
+        """Move an account / category under parent_id ("" = top level),
+        asking first when its sub-accounts come along or its type changes."""
+        d = e["data"]
+        if (d.get("parent_id") or "") == (parent_id or ""):
+            return
+        notes = []
+        if parent_id:
+            if e["kind"] == "account":
+                kids = [a for a in self.db.get_accounts(active=None)
+                        if a.get("parent_id") == d["id"]]
+                parent = self.db.get_account(parent_id) or {}
+            else:
+                kids = [c for c in self.db.get_categories() if c.get("parent_id") == d["id"]]
+                parent = self.db.get_category(parent_id) or {}
+                if parent.get("type") and parent.get("type") != d.get("type"):
+                    from ui.pages.categories import type_label
+                    notes.append(f"It will become {type_label(parent['type'])}, like "
+                                 f"“{parent.get('name', '')}” (a sub-account shares its "
+                                 "parent's type).")
+            if kids:
+                n = len(kids)
+                notes.insert(0, f"It has {n} sub-account{'s' if n != 1 else ''}, which will "
+                                f"move under “{parent.get('name', '')}” too (accounts go one "
+                                "level deep).")
+        if notes and QMessageBox.question(
+                self, "Move Account",
+                f"Move “{d.get('name', '')}”?\n\n" + "\n\n".join(notes),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            if e["kind"] == "account":
+                self.db.move_account(d["id"], parent_id)
+            else:
+                self.db.move_category(d["id"], parent_id)
+        except ValueError as err:
+            QMessageBox.warning(self, "Can't Move", str(err))
+            return
+        self.refresh()
+
+    def _context_menu(self, pos):
+        item = self._tree.itemAt(pos)
+        e = self._entry(item)
+        if not e:
+            return
+        menu = QMenu(self)
+        menu.addAction("Edit…", lambda: self._edit_entry(e))
+        move = menu.addMenu("Move to")
+        cur = e["data"].get("parent_id") or ""
+        for text, value in self.move_options(e):
+            act = move.addAction(text, lambda v=value: self.move_entry(e, v))
+            act.setCheckable(True)
+            act.setChecked(value == cur)
+        if cur:
+            menu.addAction("Make Top-Level", lambda: self.move_entry(e, ""))
+        menu.addSeparator()
+        menu.addAction("Delete…", lambda: self._delete_entry(e))
+        menu.exec(self._tree.viewport().mapToGlobal(pos))
+
     def _delete_entry(self, e):
         if e["kind"] == "account":
             self._delete_account(e["data"])
@@ -330,10 +449,9 @@ class AccountsPage(QWidget):
         if kind == "account":
             from ui.dialogs.account_dialog import AccountDialog
             ad = AccountDialog(institutions=self.db.get_institutions(), parent=self,
-                               account_type=atype)
+                               account_type=atype, accounts=self.db.get_accounts())
             if ad.exec() == QDialog.DialogCode.Accepted:
-                self.db.save_account(ad.get_data())
-                self.refresh()
+                self._save_account(ad.get_data())
         else:
             from ui.pages.categories import CategoryDialog
             cd = CategoryDialog(self.db, parent=self, top_level=True, category_type=atype)
@@ -363,16 +481,25 @@ class AccountsPage(QWidget):
         from ui.dialogs.account_dialog import AccountDialog
         balance = self.db.account_balance(acct["id"])
         dlg = AccountDialog(account=acct, institutions=self.db.get_institutions(),
-                            balance=balance, parent=self)
+                            balance=balance, parent=self, accounts=self.db.get_accounts())
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.db.save_account(dlg.get_data())
-            self.refresh()
+            self._save_account(dlg.get_data())
+
+    def _save_account(self, data):
+        try:
+            self.db.save_account(data)
+        except ValueError as err:
+            QMessageBox.warning(self, "Can't Save", str(err))
+        self.refresh()
 
     def _edit_category(self, cat):
         from ui.pages.categories import CategoryDialog
         dlg = CategoryDialog(self.db, edit_cat=cat, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.db.save_category(dlg.get_data())
+            try:
+                self.db.save_category(dlg.get_data())
+            except ValueError as err:
+                QMessageBox.warning(self, "Can't Save", str(err))
             self.refresh()
 
     def _reactivate(self, acct):

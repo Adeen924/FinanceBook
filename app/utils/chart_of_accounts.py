@@ -85,25 +85,61 @@ def group_for_category(cat: dict) -> Group:
     return _CATEGORY_TYPE_GROUP.get(cat.get("type") or "expense", GROUPS_BY_KEY["expense"])
 
 
+def _name_key(d: dict):
+    return (d.get("name") or "").lower()
+
+
+def _tree(items, nests) -> list:
+    """[(item, depth, displayed parent id, root item), …] in display order:
+    each root sorted by name, followed by its descendants (any depth). An item
+    nests under its parent_id only if that parent is in `items` and
+    nests(parent, child) agrees; anything else — a missing parent, or a cycle
+    nothing reaches from a root — is shown at the top level. Every item
+    appears exactly once."""
+    by_id = {i["id"]: i for i in items}
+    children: dict = {}
+    roots = []
+    for it in items:
+        pid = it.get("parent_id") or ""
+        if pid and pid != it["id"] and pid in by_id and nests(by_id[pid], it):
+            children.setdefault(pid, []).append(it)
+        else:
+            roots.append(it)
+    out, seen = [], set()
+
+    def walk(node, depth, parent_id, root):
+        if node["id"] in seen:
+            return
+        seen.add(node["id"])
+        out.append((node, depth, parent_id, root))
+        for ch in sorted(children.get(node["id"], []), key=_name_key):
+            walk(ch, depth + 1, node["id"], root)
+
+    for r in sorted(roots, key=_name_key):
+        walk(r, 0, "", r)
+    for it in sorted(items, key=_name_key):          # cycles: not reachable from a root
+        walk(it, 0, "", it)
+    return out
+
+
 def chart_rows(accounts, categories) -> list:
     """
     Ordered rows for the list: [(group, [entry, …]), …] with empty groups left
-    out. An entry is {"kind": "account"|"category", "data": dict, "depth": 0|1}.
-    Accounts are sorted by name; categories keep parent → indented children
-    (a child whose parent is missing is shown at the top level).
+    out. An entry is {"kind": "account"|"category", "data": dict, "depth": int,
+    "parent": displayed parent id or ""}. Each top-level row is followed by its
+    indented sub-accounts. Sub-accounts are listed in their top-level account's
+    group (a balance-sheet sub-account only nests under a parent in its own
+    group). Nothing is ever left out: a row whose parent is missing, inactive
+    or part of a cycle is shown at the top level.
     """
     by_group = {g.key: [] for g in GROUPS}
-    for a in sorted(accounts, key=lambda a: (a.get("name") or "").lower()):
+    same_group = lambda p, c: group_for_account(p).key == group_for_account(c).key
+    for a, depth, pid, _root in _tree(accounts, same_group):
         by_group[group_for_account(a).key].append(
-            {"kind": "account", "data": a, "depth": 0})
-    ids = {c["id"] for c in categories}
-    roots = [c for c in categories if not c.get("parent_id") or c["parent_id"] not in ids]
-    for root in sorted(roots, key=lambda c: (c.get("name") or "").lower()):
-        g = by_group[group_for_category(root).key]
-        g.append({"kind": "category", "data": root, "depth": 0})
-        for sub in sorted((c for c in categories if c.get("parent_id") == root["id"]),
-                          key=lambda c: (c.get("name") or "").lower()):
-            g.append({"kind": "category", "data": sub, "depth": 1})
+            {"kind": "account", "data": a, "depth": depth, "parent": pid})
+    for c, depth, pid, root in _tree(categories, lambda p, ch: True):
+        by_group[group_for_category(root).key].append(
+            {"kind": "category", "data": c, "depth": depth, "parent": pid})
     return [(g, by_group[g.key]) for g in GROUPS if by_group[g.key]]
 
 
@@ -114,18 +150,19 @@ def picker_entries(categories, accounts, exclude_account_id: str = "") -> list:
     accounts (as "Name · Group"), excluding the transaction's own account.
     """
     out = []
-    names = {c["id"]: c.get("name", "") for c in categories}
     for g, entries in chart_rows([a for a in accounts if a.get("id") != exclude_account_id],
                                  categories):
         opts = []
+        path: list = []                 # names of the displayed ancestors
         for e in entries:
             d = e["data"]
+            del path[e["depth"]:]
+            text = " → ".join(path + [d.get("name", "")])
+            path.append(d.get("name", ""))
             if e["kind"] == "account":
-                opts.append((f"{d.get('name', '')} · {g.label}", ACCOUNT_PREFIX + d["id"]))
-            elif e["depth"]:
-                opts.append((f"{names.get(d.get('parent_id'), '')} → {d.get('name', '')}", d["id"]))
+                opts.append((f"{text} · {g.label}", ACCOUNT_PREFIX + d["id"]))
             else:
-                opts.append((d.get("name", ""), d["id"]))
+                opts.append((text, d["id"]))
         out.append((g.label, opts))
     # Balance-sheet groups first, matching the list, is fine — but a transaction
     # is most often categorized, so put P&L groups first in the picker.

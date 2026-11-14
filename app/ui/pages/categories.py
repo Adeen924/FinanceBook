@@ -110,11 +110,14 @@ class CategoryDialog(QDialog):
             self.type_combo.currentIndexChanged.connect(self._default_tax_line)
             self._default_tax_line()
 
-        # A sub-category shares its parent's income/expense nature.
-        if require_parent and self.parent_combo is not None:
-            self.parent_combo.currentIndexChanged.connect(lambda _: self._sync_type())
-            self._sync_type()
-            self.type_combo.setEnabled(False)
+        # A sub-category shares its parent's income/expense nature: with a
+        # parent picked, the type follows it (also when editing — moving an
+        # expense account under an income one makes it income).
+        if self.parent_combo is not None:
+            self.parent_combo.currentIndexChanged.connect(lambda _: self._on_parent_changed())
+            if require_parent:
+                self._sync_type()
+            self.type_combo.setEnabled(not self.parent_combo.currentData())
 
         lay.addLayout(form)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
@@ -127,14 +130,30 @@ class CategoryDialog(QDialog):
         if self.type_combo.currentData() == "other_income" and not self.tax_combo.currentData():
             self.tax_combo.setCurrentIndex(max(self.tax_combo.findData("6"), 0))
 
-    def _sync_type(self):
+    def _on_parent_changed(self):
+        has_parent = bool(self.parent_combo.currentData())
+        if has_parent:
+            self._sync_type(force_tax=bool(self.edit_cat))
+        self.type_combo.setEnabled(not has_parent)
+
+    def _children(self) -> list:
+        if not self.edit_cat:
+            return []
+        return [c for c in self.db.get_categories()
+                if c.get("parent_id") == self.edit_cat.get("id")]
+
+    def _sync_type(self, force_tax: bool = False):
         pid = self.parent_combo.currentData()
         parent = next((c for c in self.db.get_categories() if c["id"] == pid), None)
         if parent:
             ix = self.type_combo.findData(parent.get("type", "expense"))
             if ix >= 0:
                 self.type_combo.setCurrentIndex(ix)
-            if getattr(self, "tax_combo", None) is not None and not self.edit_cat:
+            type_changed = bool(self.edit_cat) and \
+                parent.get("type") != self.edit_cat.get("type")
+            if getattr(self, "tax_combo", None) is not None and (
+                    not self.edit_cat or (force_tax and (
+                        type_changed or not self.tax_combo.currentData()))):
                 ix = self.tax_combo.findData(parent.get("tax_line", ""))
                 self.tax_combo.setCurrentIndex(max(ix, 0))
                 self.pct_spin.setValue(float(parent.get("deduct_pct") or 100))
@@ -144,6 +163,19 @@ class CategoryDialog(QDialog):
             return
         if self.require_parent and not (self.parent_combo and self.parent_combo.currentData()):
             return
+        new_parent = self.parent_combo.currentData() if self.parent_combo is not None else ""
+        kids = self._children()
+        if new_parent and kids and new_parent != (self.edit_cat or {}).get("parent_id"):
+            n = len(kids)
+            target = self.parent_combo.currentText()
+            if QMessageBox.question(
+                    self, "Move Sub-accounts Too?",
+                    f"“{self.edit_cat.get('name', '')}” has {n} sub-account"
+                    f"{'s' if n != 1 else ''}. Accounts go one level deep, so "
+                    f"{'they' if n != 1 else 'it'} will move under “{target}” too. Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) != QMessageBox.StandardButton.Yes:
+                return
         self.accept()
 
     def get_data(self) -> dict:

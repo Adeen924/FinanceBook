@@ -34,7 +34,8 @@ from sheets.admin_store import AdminMixin, ADMIN_SCHEMA
 #  11  — receipt items: units_per_pack; items: pack_size (default 1)
 #  12  — rules: several conditions (rule_conditions), match_mode all/any,
 #         transfer_account_id (a rule can set a balance-sheet account)
-SCHEMA_VERSION = 12
+#  13  — accounts.parent_id: balance-sheet sub-accounts (bank, card, loan…)
+SCHEMA_VERSION = 13
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -187,6 +188,8 @@ _NEW_COLUMNS = [
     # v12 — multi-condition bank rules; a rule can set a balance-sheet account
     ("rules",         "match_mode",          "TEXT DEFAULT 'all'"),
     ("rules",         "transfer_account_id", "TEXT DEFAULT ''"),
+    # v13 — balance-sheet sub-accounts (one level, same Chart of Accounts group)
+    ("accounts",      "parent_id",           "TEXT DEFAULT ''"),
 ] + PEOPLE_COLUMNS
 
 # Optional transaction columns: written only when the caller's dict has the key,
@@ -495,7 +498,98 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             return _to_dict(c.execute(
                 "SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone())
 
+    # Balance-sheet sub-accounts (v13): accounts.parent_id points to a TOP-LEVEL
+    # account in the same Chart of Accounts group (a bank account under a bank
+    # account, a card under a card…). One level deep, like categories, so the
+    # "Parent → Child" names and the roll-up stay simple. Registers,
+    # reconciliation, transfers and reports stay per account; only the Accounts
+    # list nests them and shows the parent's balance with its subs rolled up.
+
+    @staticmethod
+    def _account_group(atype: str):
+        from utils.chart_of_accounts import group_for_account
+        return group_for_account({"type": atype})
+
+    def _check_account_parent(self, account_id: str, atype: str, parent_id: str):
+        """Raise ValueError if parent_id can't be account_id's parent."""
+        if not parent_id:
+            return
+        if parent_id == account_id:
+            raise ValueError("An account can't be a sub-account of itself.")
+        parent = self.get_account(parent_id)
+        if not parent:
+            raise ValueError("That parent account doesn't exist.")
+        if parent.get("parent_id"):
+            raise ValueError(f"“{parent.get('name', '')}” is itself a sub-account. Pick a "
+                             "top-level account — sub-accounts go one level deep.")
+        mine, theirs = self._account_group(atype), self._account_group(parent.get("type", ""))
+        if mine.key != theirs.key:
+            raise ValueError(f"A {mine.label} account can only be a sub-account of another "
+                             f"{mine.label} account (“{parent.get('name', '')}” is "
+                             f"{theirs.label}).")
+
+    def move_account(self, account_id: str, new_parent_id: str) -> int:
+        """Make an account a sub-account of new_parent_id, or top-level with "".
+        Its own sub-accounts move under the new parent with it (accounts are
+        one level deep). Returns how many sub-accounts moved along."""
+        acct = self.get_account(account_id)
+        if not acct:
+            raise ValueError("That account doesn't exist.")
+        new_parent_id = new_parent_id or ""
+        self._check_account_parent(account_id, acct.get("type", ""), new_parent_id)
+        with self._conn() as c:
+            c.execute("UPDATE accounts SET parent_id=? WHERE id=?", (new_parent_id, account_id))
+            if not new_parent_id:
+                return 0
+            cur = c.execute("UPDATE accounts SET parent_id=? WHERE parent_id=? AND id!=?",
+                            (new_parent_id, account_id, new_parent_id))
+            return cur.rowcount
+
+    def _detach_mismatched_sub_accounts(self, account_id: str):
+        """After a type change: a sub-account whose group no longer matches its
+        parent's becomes top-level (in either direction)."""
+        acct = self.get_account(account_id)
+        if not acct:
+            return
+        grp = self._account_group(acct.get("type", "")).key
+        with self._conn() as c:
+            if acct.get("parent_id"):
+                parent = c.execute("SELECT type FROM accounts WHERE id=?",
+                                   (acct["parent_id"],)).fetchone()
+                if not parent or self._account_group(parent["type"] or "").key != grp:
+                    c.execute("UPDATE accounts SET parent_id='' WHERE id=?", (account_id,))
+            for r in c.execute("SELECT id, type FROM accounts WHERE parent_id=?",
+                               (account_id,)).fetchall():
+                if self._account_group(r["type"] or "").key != grp:
+                    c.execute("UPDATE accounts SET parent_id='' WHERE id=?", (r["id"],))
+
+    def rolled_up_balance(self, account_id: str) -> float:
+        """An account's balance plus its active sub-accounts' (Accounts list)."""
+        total = self.account_balance(account_id)
+        with self._conn() as c:
+            subs = [r[0] for r in c.execute(
+                "SELECT id FROM accounts WHERE parent_id=? AND id!=? AND active=1",
+                (account_id, account_id))]
+        return total + sum(self.account_balance(s) for s in subs)
+
     def save_account(self, data: dict) -> dict:
+        """Insert or update an account. parent_id is written only when the
+        caller's dict has the key (older callers never blank it); it is checked
+        first and raises ValueError if it isn't a valid parent."""
+        want_parent = (data.get("parent_id") or "") if "parent_id" in data else None
+        old = self.get_account(data["id"]) if data.get("id") else None
+        if old and want_parent == (old.get("parent_id") or ""):
+            want_parent = None      # unchanged; a type change may still detach it below
+        if want_parent:
+            self._check_account_parent(data.get("id", ""), data.get("type", "checking"),
+                                       want_parent)
+        self._save_account_row(data)
+        if want_parent is not None:
+            self.move_account(data["id"], want_parent)
+        self._detach_mismatched_sub_accounts(data["id"])
+        return data
+
+    def _save_account_row(self, data: dict) -> dict:
         ob = float(data.get("opening_balance") or 0)
         active = 1 if str(data.get("active", "1")) == "1" else 0
         with self._conn() as c:
@@ -1245,9 +1339,80 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                 "SELECT type FROM categories WHERE id=?", (cat_id,)).fetchone()
         return (row["type"] if row else "") or ""
 
-    def save_category(self, data: dict) -> dict:
+    def move_category(self, cat_id: str, new_parent_id: str) -> dict:
+        """
+        Make a category (income / expense account) a sub-account of the
+        top-level category new_parent_id, or top-level with "".
+
+        Categories are one level deep (reports and the "Parent → Child" names
+        rely on it), so a category that has its own sub-accounts brings them
+        along: they move under the new parent too, rather than being left
+        pointing at something that is now a sub-account (which used to hide
+        them). A sub-account shares its parent's type: if the new parent's
+        type differs, the moved accounts take it, and their Schedule C line and
+        deductible % follow the parent's (the old line belonged to the other
+        type). Raises ValueError for a move that would make a cycle or nest
+        deeper. Returns {"moved_children": n, "type_changed": bool}.
+        """
+        cat = self.get_category(cat_id)
+        if not cat:
+            raise ValueError("That account doesn't exist.")
+        new_parent_id = new_parent_id or ""
+        info = {"moved_children": 0, "type_changed": False}
+        if not new_parent_id:
+            with self._conn() as c:
+                c.execute("UPDATE categories SET parent_id='' WHERE id=?", (cat_id,))
+            return info
+        if new_parent_id == cat_id:
+            raise ValueError("An account can't be a sub-account of itself.")
+        parent = self.get_category(new_parent_id)
+        if not parent or str(parent.get("active", "1")) != "1":
+            raise ValueError("That parent account doesn't exist.")
+        if parent.get("parent_id"):
+            raise ValueError(f"“{parent.get('name', '')}” is itself a sub-account. Pick a "
+                             "top-level account — sub-accounts go one level deep.")
+        ptype = parent.get("type") or "expense"
+        p_line = parent.get("tax_line") or ""
+        p_pct = float(parent.get("deduct_pct") or 100)
         with self._conn() as c:
-            if data.get("id") and self.get_category(data["id"]):
+            rows = [dict(r) for r in c.execute(
+                "SELECT id, type, tax_line, deduct_pct FROM categories "
+                "WHERE (id=? OR parent_id=?) AND id!=?",
+                (cat_id, cat_id, new_parent_id)).fetchall()]
+            for r in rows:
+                changed = (r["type"] or "expense") != ptype
+                if changed or not (r["tax_line"] or ""):
+                    line, pct = p_line, p_pct
+                else:
+                    line, pct = r["tax_line"], float(r["deduct_pct"] or 100)
+                c.execute("UPDATE categories SET parent_id=?, type=?, tax_line=?, deduct_pct=? "
+                          "WHERE id=?", (new_parent_id, ptype, line, pct, r["id"]))
+                if r["id"] == cat_id:
+                    info["type_changed"] = changed
+                else:
+                    info["moved_children"] += 1
+        return info
+
+    def save_category(self, data: dict) -> dict:
+        """Insert or update a category. Changing an existing one's parent goes
+        through move_category() (children move along, type follows the parent);
+        changing a top-level one's type carries its sub-accounts with it."""
+        existing = self.get_category(data["id"]) if data.get("id") else None
+        if existing:
+            new_parent = data.get("parent_id", "") or ""
+            if new_parent != (existing.get("parent_id") or ""):
+                self.move_category(data["id"], new_parent)
+                moved = self.get_category(data["id"])
+                data["type"] = moved.get("type")
+                if "tax_line" not in data or moved.get("type") != existing.get("type"):
+                    data.pop("tax_line", None)
+                    data.pop("deduct_pct", None)
+            elif new_parent:
+                parent = self.get_category(new_parent)
+                if parent and parent.get("type"):
+                    data["type"] = parent["type"]       # a sub-account shares its parent's type
+        with self._conn() as c:
+            if existing:
                 c.execute("UPDATE categories SET name=?,parent_id=?,type=? WHERE id=?",
                           (data["name"], data.get("parent_id",""),
                            data.get("type","expense"), data["id"]))
@@ -1263,6 +1428,11 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             if "deduct_pct" in data:
                 c.execute("UPDATE categories SET deduct_pct=? WHERE id=?",
                           (float(data.get("deduct_pct") or 100), data["id"]))
+            if existing and not data.get("parent_id") and \
+                    (data.get("type") or "expense") != (existing.get("type") or "expense"):
+                # A top-level account's type change carries its sub-accounts.
+                c.execute("UPDATE categories SET type=? WHERE parent_id=? AND id!=?",
+                          (data.get("type") or "expense", data["id"], data["id"]))
         return data
 
     def delete_category(self, cat_id: str):
