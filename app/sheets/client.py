@@ -911,6 +911,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         any_transfer_line = any(_dest(s) for s in splits)
         tcat = self.get_transfer_category_id() if any_transfer_line else ""
         outflow = self._split_is_outflow(base_txn, splits)
+        stored_sign = 0 if has_dest else self._stored_sign(base_txn)    # before the delete below
         preserved_hash = base_txn.get("import_hash", "") or ""
         old_members = self.get_split_group(base_txn.get("split_group_id") or "")
         old_pairs = {m.get("transfer_pair_id") for m in old_members}
@@ -937,6 +938,15 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                     else:
                         c.execute("DELETE FROM transactions WHERE id=?", (r["id"],))
 
+        # An existing entry keeps its direction: if the plain (category) lines
+        # would add up to the opposite sign of what is stored — e.g. an
+        # imported $50 refund split across two expense accounts — they are
+        # refunds, so their signs are reversed rather than the money flipping.
+        flip_plain = False
+        if stored_sign:
+            plain_total = sum(self._plain_split_amount(s) for s in splits if not _dest(s))
+            flip_plain = abs(plain_total) > 0.005 and (plain_total > 0) != (stored_sign > 0)
+
         saved = []
         moved: dict = {}      # destination account -> signed amount it receives
         pairs: dict = {}      # destination account -> transfer_pair_id
@@ -959,14 +969,9 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                 moved[dest] = moved.get(dest, 0.0) - amt
                 cat = tcat
             else:
-                # Plain split: the category type sets the sign, just like a normal
-                # transaction (expense subtracts, income adds, uncategorized keeps
-                # whatever sign was entered so refunds still work).
-                ctype = self._category_type(cat)
-                if ctype in ("income", "other_income") or category_sign(ctype) < 0:
-                    amt = abs(raw) * category_sign(ctype)
-                else:
-                    amt = raw
+                amt = self._plain_split_amount(s)
+                if flip_plain:
+                    amt = -amt
             child = {
                 "date":          base_txn.get("date", ""),
                 "account_id":    base_txn.get("account_id", ""),
@@ -1011,19 +1016,38 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             })
         return saved
 
-    def _split_is_outflow(self, base_txn: dict, splits: list[dict]) -> bool:
-        """Whether a split is money out of its account (decides the direction of
-        lines that move to another account). A stored transaction's own sign
-        wins; otherwise the lines' categories decide; otherwise money out."""
+    def _plain_split_amount(self, s: dict) -> float:
+        """Signed amount of a split line filed under a category: the category
+        type sets the sign, just like a normal transaction (expense subtracts,
+        income adds; other types and uncategorized keep the sign entered)."""
+        from utils.ledger import category_sign
+        raw = float(s.get("amount") or 0)
+        ctype = self._category_type(s.get("category_id", ""))
+        if ctype in ("income", "other_income") or category_sign(ctype) < 0:
+            return abs(raw) * category_sign(ctype)
+        return raw
+
+    def _stored_sign(self, base_txn: dict) -> int:
+        """-1 / +1 for the direction of an already-saved transaction (or split
+        group) being re-split, 0 for a new one or a $0 entry."""
         if base_txn.get("id"):
             stored = self.get_transaction(base_txn["id"])
             if stored and abs(float(stored.get("amount") or 0)) > 0.005:
-                return float(stored["amount"]) < 0
+                return -1 if float(stored["amount"]) < 0 else 1
         gid = base_txn.get("split_group_id") or ""
         if gid:
             total = sum(float(m.get("amount") or 0) for m in self.get_split_group(gid))
             if abs(total) > 0.005:
-                return total < 0
+                return -1 if total < 0 else 1
+        return 0
+
+    def _split_is_outflow(self, base_txn: dict, splits: list[dict]) -> bool:
+        """Whether a split is money out of its account (decides the direction of
+        lines that move to another account). A stored transaction's own sign
+        wins; otherwise the lines' categories decide; otherwise money out."""
+        stored = self._stored_sign(base_txn)
+        if stored:
+            return stored < 0
         types = {self._category_type(s.get("category_id", "")) for s in splits
                  if s.get("category_id") and not s.get("transfer_to")}
         if types and types <= {"income", "other_income"}:
@@ -1071,6 +1095,53 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             rows = c.execute(
                 "SELECT import_hash FROM transactions WHERE import_hash!=''").fetchall()
             return {r["import_hash"] for r in rows}
+
+    # ── sign check (v1.15) ────────────────────────────────────────────────────
+    # Before 1.15 an imported withdrawal could be saved as a deposit (and the
+    # other way round) when an account was picked for it in the Transaction
+    # dialog, or when a bank's CSV wrote debits as negative numbers. Nothing is
+    # flipped automatically — a real refund looks the same — so these list the
+    # suspects for the user to review.
+
+    _SPENDING_TYPES = ("expense", "other_expense", "debt_repayment")
+    _INCOME_TYPES = ("income", "other_income")
+
+    def find_flipped_imports(self) -> list[dict]:
+        """Imported, non-transfer, non-split transactions whose stored sign
+        disagrees with their account type: money in (positive) filed under a
+        spending account, or money out (negative) under an income account.
+        Each row also carries "category_name" and "category_type"."""
+        sp = ",".join("?" * len(self._SPENDING_TYPES))
+        inc = ",".join("?" * len(self._INCOME_TYPES))
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT t.*, c.name AS category_name, c.type AS category_type "
+                "FROM transactions t JOIN categories c ON c.id = t.category_id "
+                "WHERE COALESCE(t.import_hash,'') != '' AND t.is_transfer = 0 "
+                "AND COALESCE(t.split_group_id,'') = '' AND c.active = 1 AND ("
+                f"(t.amount > 0.004 AND c.type IN ({sp})) OR "
+                f"(t.amount < -0.004 AND c.type IN ({inc}))) "
+                "ORDER BY t.date, t.created_at",
+                self._SPENDING_TYPES + self._INCOME_TYPES).fetchall()
+        return _to_dicts(rows)
+
+    def flip_transaction_signs(self, txn_ids) -> tuple[int, int]:
+        """Reverse the sign of each listed transaction (transfers and split
+        lines are left alone — flipping one side would unbalance them).
+        Returns (flipped, skipped because their date is in a locked period)."""
+        lock = self.lock_date()
+        flipped = locked = 0
+        for tid in txn_ids:
+            t = self.get_transaction(tid)
+            if not t or str(t.get("is_transfer", "0")) == "1" or t.get("split_group_id"):
+                continue
+            if lock and (t.get("date") or "") <= lock:
+                locked += 1
+                continue
+            with self._conn() as c:
+                c.execute("UPDATE transactions SET amount = -amount WHERE id=?", (tid,))
+            flipped += 1
+        return flipped, locked
 
     # ── categories ────────────────────────────────────────────────────────────
 

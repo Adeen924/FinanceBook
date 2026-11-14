@@ -55,12 +55,27 @@ def _parse_amount(val) -> float | None:
         return None
 
 
+def debit_credit_amount(debit: float | None, credit: float | None) -> float | None:
+    """Signed amount from separate Debit / Credit columns: debits are money out
+    (negative) and credits money in (positive), whatever sign the bank wrote
+    them with — some banks write debits as "-50.00" or "(50.00)", which must not
+    turn a withdrawal into a deposit. None when both are empty / zero."""
+    debit, credit = abs(debit or 0.0), abs(credit or 0.0)
+    if not (debit or credit):
+        return None
+    return credit - debit
+
+
 def parse_spreadsheet(file_bytes: bytes, filename: str, account_id: str,
-                      col_mapping: dict = None) -> tuple[list[dict], list[str]]:
+                      col_mapping: dict = None,
+                      reverse_signs: bool = False) -> tuple[list[dict], list[str]]:
     """
     Parse CSV or XLSX.
     Returns (transactions, warnings).
     col_mapping can override auto-detection: {"date": "Date", "payee": "Payee", ...}
+    reverse_signs: the file's single Amount column has money out as positive
+    (common for credit-card exports, where a charge is "42.10") — negate it.
+    Debit / Credit columns are never reversed: their meaning is fixed.
     """
     warnings = []
 
@@ -151,19 +166,25 @@ def parse_spreadsheet(file_bytes: bytes, filename: str, account_id: str,
 
         # Resolve amount
         amount = None
+        hash_amount = None
         if amount_col:
             amount = _parse_amount(row.get(amount_col, ""))
+            if amount is not None and reverse_signs:
+                amount = -amount
         elif debit_col or credit_col:
             debit = _parse_amount(row.get(debit_col, "") if debit_col else None) or 0.0
             credit = _parse_amount(row.get(credit_col, "") if credit_col else None) or 0.0
-            # Debits are outflows (negative), credits are inflows (positive)
-            amount = credit - debit if (credit or debit) else None
+            amount = debit_credit_amount(debit, credit)
+            # The duplicate check hashes the amount as versions before 1.15
+            # computed it (credit - debit as written), so re-importing a file
+            # imported before the sign fix doesn't add every row a second time.
+            hash_amount = credit - debit
 
         if amount is None:
             warnings.append(f"Row {header_idx+idx+2}: no amount found, skipped.")
             continue
 
-        raw = f"{account_id}|{date_str}|{amount}|{payee}"
+        raw = f"{account_id}|{date_str}|{amount if hash_amount is None else hash_amount}|{payee}"
         import_hash = hashlib.md5(raw.encode()).hexdigest()[:16]
 
         results.append({
@@ -305,13 +326,14 @@ def parse_qb_multi_account_excel(file_bytes: bytes) -> tuple[list[dict], list[st
                 split = "" if v.lower() in ("nan", "none") else v
 
             amount = None
+            hash_amount = None
             if amount_col is not None and amount_col < len(cells):
                 amount = _parse_amount(cells[amount_col])
             if amount is None and (debit_col is not None or credit_col is not None):
                 debit  = (_parse_amount(cells[debit_col])  if debit_col  is not None and debit_col  < len(cells) else None) or 0.0
                 credit = (_parse_amount(cells[credit_col]) if credit_col is not None and credit_col < len(cells) else None) or 0.0
-                if credit or debit:
-                    amount = credit - debit
+                amount = debit_credit_amount(debit, credit)
+                hash_amount = credit - debit        # pre-1.15 duplicate key
 
             if amount is None:
                 warnings.append(f"Row {i + 2}: no amount found — skipped.")
@@ -324,6 +346,7 @@ def parse_qb_multi_account_excel(file_bytes: bytes) -> tuple[list[dict], list[st
                 "memo":           memo,
                 "split":          split,
                 "amount":         amount,
+                "hash_amount":    amount if hash_amount is None else hash_amount,
             })
         else:
             # ── Account section header ────────────────────────────────────────
@@ -353,7 +376,7 @@ def parse_qb_multi_account_excel(file_bytes: bytes) -> tuple[list[dict], list[st
             continue
 
         amount = rec["amount"]
-        raw = f"{account_name}|{rec['date']}|{amount}|{rec['payee']}"
+        raw = f"{account_name}|{rec['date']}|{rec['hash_amount']}|{rec['payee']}"
         import_hash = hashlib.md5(raw.encode()).hexdigest()[:16]
 
         transactions.append({

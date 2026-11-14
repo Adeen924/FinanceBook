@@ -218,11 +218,12 @@ class UnifiedPickerUITests(unittest.TestCase):
         self.assertEqual(chk[0]["is_transfer"], "1")
 
         # Re-opened from the savings side: the picker shows Checking, the amount
-        # reads negative (money came in), and saving changes nothing.
+        # reads $125 Money in (v1.15: amount + direction), and saving changes nothing.
         dlg2 = self.dialog(sav[0])
         self.assertEqual(dlg2.cat_combo.current_data(), "acct:" + self.chk)
-        self.assertEqual(dlg2.amount_spin.value(), -125)
-        dlg2.amount_spin.setValue(-150)
+        self.assertEqual((dlg2.amount_spin.value(), dlg2.direction_combo.currentData()),
+                         (125, "in"))
+        dlg2.amount_spin.setValue(150)
         dlg2._accept()
         self.assertEqual([float(t["amount"]) for t in
                           self.db.get_transactions(account_id=self.chk)], [-150])

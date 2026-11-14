@@ -2,7 +2,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QComboBox, QLabel, QFileDialog, QMessageBox,
                               QGroupBox, QFormLayout, QLineEdit,
-                              QHeaderView, QTableWidgetItem)
+                              QHeaderView, QTableWidgetItem, QCheckBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 from ui.widgets import PageTitle, DataTable, SecondaryButton
@@ -61,6 +61,13 @@ class ImportPage(QWidget):
         col_lay.addRow("Amount column:", self._col_amount)
         col_lay.addRow("Debit column:",  self._col_debit)
         col_lay.addRow("Credit column:", self._col_credit)
+        self._reverse_signs = QCheckBox(
+            "Charges / withdrawals are positive in the Amount column — reverse the signs")
+        self._reverse_signs.setToolTip(
+            "Some credit-card exports list a purchase as 42.10 and a payment as -500. "
+            "FinanceBook stores money out as negative, so tick this for those files. "
+            "Check the preview: money out should show in red.")
+        col_lay.addRow("", self._reverse_signs)
         self._col_grp.setEnabled(False)
         lay.addWidget(self._col_grp)
 
@@ -148,7 +155,8 @@ class ImportPage(QWidget):
                 col_map = {k: v for k, v in col_map.items() if v}
                 parsed, warnings = parse_spreadsheet(
                     self._file_bytes, self._filename, acct_id,
-                    col_map if col_map else None)
+                    col_map if col_map else None,
+                    reverse_signs=self._reverse_signs.isChecked())
         except Exception as e:
             QMessageBox.critical(self, "Parse Error",
                 f"Could not parse file:\n{e}")
