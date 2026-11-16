@@ -288,6 +288,12 @@ are never overwritten.
   Debit/Credit use `debit_credit_amount()` (magnitudes), a single Amount column
   is as written unless "reverse the signs" is ticked; IIF imports no
   transactions (chart of accounts only).
+- Match mode (v1.15.1): a NEW rule defaults to "any"
+  (`rules.DEFAULT_NEW_MATCH_MODE`) — the RuleDialog lists Any first and selects
+  it when `self.rule` is empty, and the import's auto payee rules pass
+  `match_mode: "any"`. A stored blank / missing mode still means "all"
+  (`get_rules`, `save_rule`, `rule_matches`, `describe_rule`), so no existing
+  rule changes behaviour; `save_rule()` without a mode also saves "all".
 - The action is mandatory: `category_id`, or `rules.transfer_account_id` for a
   balance-sheet account. `_apply_category_rules` then sets `txn["_transfer_to"]`
   (skipped when the txn is already in that account); `bulk_save_transactions()`
@@ -553,6 +559,39 @@ The loan dialog displays and accepts it as a percentage (`6.5 %`) and divides by
   each account once. AccountDialog(accounts=…) adds "Sub-account of".
 - Tests: `test_import_signs.py`, `test_rules_v14.py` (ApplyAll*, DateCondition*),
   `test_transactions_filter_ui.py`, `test_subaccounts.py` (incl. 12 → 13).
+
+## Dropdowns (v1.15.1, no schema change)
+
+Every dropdown is set up centrally in `ui/styles.py`; a new `QComboBox`,
+`FilterComboBox` or `AccountPicker` gets it with no code of its own.
+
+- **QSS:** `QComboBox { combobox-popup: 0; }` (DbSelector too) makes the list
+  drop down BELOW the box as a plain list — Fusion's default menu-style popup
+  opened on top of the box with the current item under the mouse. Popup rules
+  are `QComboBox QAbstractItemView` / `QListView#ComboPopup` (completer popups)
+  and their `::item`, `::item:hover`, `::item:selected` (solid
+  `POPUP_SELECTED` + `PRIMARY` left accent) and `::item:disabled` (muted group
+  headers). Square corners, 1px `POPUP_BORDER`, white
+  `QComboBoxPrivateContainer` — no dark corners on Windows.
+- **App-wide event filter** (`_AppFilter`, installed once by `apply_theme`,
+  also tints title bars): on Polish/Show of a `QComboBox` → `setup_combo()`
+  gives it `ComboItemDelegate` (a `QStyledItemDelegate`, rows ≥
+  `POPUP_MIN_ROW` = 32 px, draws `insertSeparator` rows) so the `::item`
+  rules apply; a combo's / `QLineEdit`'s QCompleter popup gets
+  `setup_completer_popup()` (objectName `ComboPopup` + the delegate).
+  `FilterComboBox` also calls it right after creating its completer. On Show
+  of the popup (`QComboBoxPrivateContainer` / `#ComboPopup`) the width is
+  set to max(box width, longest item) capped at `POPUP_MAX_WIDTH` (560) and
+  kept on screen.
+- Delegates are kept in `_live_delegates` until Qt deletes them: a completer
+  popup's Python wrapper can be garbage-collected, which would otherwise drop
+  the Python half of the delegate.
+- Don't `setStyleSheet` on a single combo or give it another delegate unless
+  you mean to opt out of the shared look.
+- Tests: `test_dropdowns_ui.py` (applies the theme offscreen, saves PNGs of
+  the open Match / Money out-in / Account popups to `tests/artifacts/`,
+  git-ignored; `tests/__init__.py` points offscreen Qt at the Windows fonts
+  folder so text renders), `test_rules_any_default.py`.
 
 ## Known issues / things to watch
 
