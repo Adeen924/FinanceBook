@@ -96,31 +96,11 @@ class TransfersPage(QWidget):
         self._tabs.setTabText(1, f"Linked Transfers ({len(self._linked)})")
 
     def _detect(self, accts: dict) -> list[dict]:
-        from datetime import datetime
-        txns = [t for t in self.db.get_transactions(include_transfers=True)
-                if str(t.get("is_transfer","0")) == "0"]
-        potential, seen = [], set()
-        for i, t1 in enumerate(txns):
-            if t1["id"] in seen:
-                continue
-            try:
-                d1 = datetime.strptime(t1["date"], "%Y-%m-%d").date()
-                a1 = float(t1.get("amount") or 0)
-            except Exception:
-                continue
-            for t2 in txns[i+1:]:
-                if t2["id"] in seen or t2["account_id"] == t1["account_id"]:
-                    continue
-                try:
-                    d2 = datetime.strptime(t2["date"], "%Y-%m-%d").date()
-                    a2 = float(t2.get("amount") or 0)
-                except Exception:
-                    continue
-                if abs((d2-d1).days) <= 3 and abs(a1+a2) < 0.01 and a1 != 0:
-                    seen.add(t1["id"]); seen.add(t2["id"])
-                    potential.append({"txn_a": t1, "txn_b": t2, "amount": abs(a1)})
-                    break
-        return potential
+        """Possible transfers, from the same matching engine the Import page's
+        Match column uses (exact opposite amount, ≤3 days, one-to-one, nothing
+        reconciled, split or in a locked period)."""
+        from utils.matching import find_transfer_pairs
+        return find_transfer_pairs(self.db)
 
     def _render_potential(self, accts):
         self._pot_table.clear_rows()
@@ -147,7 +127,7 @@ class TransfersPage(QWidget):
 
         self._pot_label.setText(
             f"{len(self._potential)} possible transfer{'s' if len(self._potential) != 1 else ''} found "
-            f"(same amount, opposite direction, ≤3 days apart)."
+            f"(same amount, opposite direction, ≤3 days apart, each used once)."
             if self._potential else "No potential transfers found — everything looks clean.")
 
     def _render_linked(self, accts):

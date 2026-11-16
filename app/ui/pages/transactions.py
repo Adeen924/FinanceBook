@@ -538,6 +538,14 @@ class TransactionsPage(QWidget):
             item_act.triggered.connect(lambda: self._itemize(txn, receipts[0]))
             menu.addAction(item_act)
 
+        if (str(txn.get("is_transfer", "0")) == "1" and txn.get("transfer_pair_id")
+                and not txn.get("split_group_id")):
+            menu.addSeparator()
+            unlink_act = QAction("Unlink Transfer", self)
+            unlink_act.setToolTip("Split this transfer back into two ordinary transactions.")
+            unlink_act.triggered.connect(lambda: self._unlink_transfer(txn))
+            menu.addAction(unlink_act)
+
         menu.addSeparator()
         del_act = QAction("Delete", self)
         del_act.triggered.connect(lambda: self._delete_txn(txn))
@@ -627,6 +635,23 @@ class TransactionsPage(QWidget):
             txn["category_id"] = target
             self.db.save_transaction(txn)
         self._apply_filter(keep=txn)
+
+    def _unlink_transfer(self, txn):
+        """Undo a transfer link (e.g. one the Import page's Match column made):
+        both entries stay, as ordinary uncategorized transactions."""
+        reply = QMessageBox.question(
+            self, "Unlink Transfer",
+            "Unlink this transfer? Both transactions are kept as ordinary entries "
+            "(uncategorized), and will count in reports again once categorized.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.db.unlink_transfer(txn["id"])
+        except Exception as e:
+            QMessageBox.warning(self, "Unlink Failed", str(e))
+            return
+        self._apply_filter()
 
     def _delete_txn(self, txn):
         gid = txn.get("split_group_id")

@@ -5,10 +5,15 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QHeaderView, QTableWidgetItem, QCheckBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
-from ui.widgets import PageTitle, DataTable
+from ui.widgets import PageTitle, DataTable, fmt_date
 from ui.styles  import SUCCESS, WARNING
+from utils.matching import find_matches, MIRROR, MANUAL, TRANSFER, RULE
 
 FLIP_SETTING = "import_flip|{account}|{format}"
+
+COLUMNS = ["Date", "Payee / Memo", "Amount", "Auto Account", "Duplicate?", "Match"]
+MATCH_COL = 5
+DONT_MATCH = "Don't match"
 
 
 def _money(v: float) -> str:
@@ -20,6 +25,11 @@ class ImportPage(QWidget):
         super().__init__(parent)
         self.db = db
         self._parsed: list[dict] = []
+        self._matches: list = []           # utils.matching.RowMatch per _parsed row
+        self._choice: dict = {}            # _parsed index → matched txn id ("" = don't)
+        self._match_widgets: dict = {}     # _parsed index → its checkbox / dropdown
+        self._dup_count = 0
+        self._extra_status: list[str] = []
         self._fixes: list[dict] = []       # earlier imports whose sign gets corrected
         self._file_bytes = b""
         self._filename   = ""
@@ -128,13 +138,13 @@ class ImportPage(QWidget):
         self._status_label = QLabel("")
         lay.addWidget(self._status_label)
 
-        self._table = DataTable(
-            ["Date", "Payee / Memo", "Amount", "Auto Account", "Duplicate?"])
+        self._table = DataTable(COLUMNS)
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._table.setColumnWidth(0, 110)
         self._table.setColumnWidth(2, 110)
         self._table.setColumnWidth(3, 160)
         self._table.setColumnWidth(4, 100)
+        self._table.setColumnWidth(MATCH_COL, 300)
         lay.addWidget(self._table)
 
     def refresh(self):
@@ -147,6 +157,11 @@ class ImportPage(QWidget):
 
     def _reset_preview(self):
         self._parsed = []
+        self._matches = []
+        self._choice = {}
+        self._match_widgets = {}
+        self._dup_count = 0
+        self._extra_status = []
         self._fixes = []
         self._parsed_key = None
         self._table.clear_rows()
@@ -264,28 +279,25 @@ class ImportPage(QWidget):
         # Auto-apply rules to new transactions
         self.db.apply_rules(new)
 
+        # Match each new row against what's already in FinanceBook (the same
+        # engine the Transfers page uses). A single candidate is pre-ticked;
+        # with several the user picks one from the dropdown.
         self._parsed = new
+        self._matches = find_matches(self.db, new, acct_id)
+        self._choice = {i: (m.chosen.id if m.chosen else "")
+                        for i, m in enumerate(self._matches) if m.candidates}
         self._fixes = fixes
+        self._dup_count = len(dups)
+        self._extra_status = []
+        if fixes:
+            self._extra_status.append(f"{len(fixes)} earlier imports get their sign corrected")
+        if warnings:
+            self._extra_status.append(f"{len(warnings)} parse warnings")
+        if res:
+            self._extra_status.extend(res.notes)
         self._render_preview(new, dups, fixes)
         self._render_summary(parsed, res)
-
-        matched   = [t for t in new if t.get("category_id") or t.get("_transfer_to")]
-        unmatched = [t for t in new if not (t.get("category_id") or t.get("_transfer_to"))]
-
-        status_parts = []
-        if matched:
-            status_parts.append(f"{len(matched)} auto-categorized")
-        if unmatched:
-            status_parts.append(f"{len(unmatched)} need an account")
-        if fixes:
-            status_parts.append(f"{len(fixes)} earlier imports get their sign corrected")
-        if dups:
-            status_parts.append(f"{len(dups)} duplicates skipped")
-        if warnings:
-            status_parts.append(f"{len(warnings)} parse warnings")
-        if res:
-            status_parts.extend(res.notes)
-        self._status_label.setText("   |   ".join(status_parts) or "No transactions found")
+        self._update_status()
         self._import_btn.setEnabled(bool(new or fixes))
 
         if warnings and not from_toggle:
@@ -320,27 +332,154 @@ class ImportPage(QWidget):
         self._warn_label.setText("⚠  " + "\n⚠  ".join(reasons) if reasons else "")
         self._warn_label.setVisible(bool(reasons))
 
+    # ── matches ───────────────────────────────────────────────────────────────
+
+    def match_counts(self) -> tuple[int, int, int]:
+        """(new, matched, duplicates skipped) as the preview stands now."""
+        matched = sum(1 for cid in self._choice.values() if cid)
+        return len(self._parsed) - matched, matched, self._dup_count
+
+    def _update_status(self):
+        new, matched, dups = self.match_counts()
+        head = f"{new} new · {matched} matched"
+        if dups:
+            head += f" · {dups} duplicates skipped"
+        parts = [head]
+        plain = [t for i, t in enumerate(self._parsed) if not self._choice.get(i)]
+        auto = sum(1 for t in plain if t.get("category_id") or t.get("_transfer_to"))
+        if auto:
+            parts.append(f"{auto} auto-categorized")
+        if len(plain) - auto:
+            parts.append(f"{len(plain) - auto} need an account")
+        parts.extend(self._extra_status)
+        if not (self._parsed or dups or self._fixes):
+            parts = ["No transactions found"]
+        self._status_label.setText("   |   ".join(parts))
+
+    def _acct_name(self, account_id: str) -> str:
+        a = self.db.get_account(account_id) or {}
+        return a.get("name") or "another account"
+
+    def _cand_label(self, m, cand) -> str:
+        t = cand.txn
+        if m.kind == MIRROR:
+            partner = self.db.get_transfer_partner(t) or {}
+            return "✓ Replaces transfer side · " + self._acct_name(
+                partner.get("account_id") or t.get("account_id", ""))
+        if m.kind == MANUAL:
+            return f"✓ Matches your entry · {fmt_date(t.get('date', ''))}"
+        prefix = "⇄ Transfer (rule)" if m.kind == RULE else "⇄ Transfer"
+        return f"{prefix} · {self._acct_name(t['account_id'])} {fmt_date(t.get('date', ''))}"
+
+    def _cand_tip(self, m, cand) -> str:
+        t = cand.txn
+        what = {MIRROR: "Takes the place of the transfer side FinanceBook recorded.",
+                MANUAL: "Merges into the entry you typed: your category, class, payee "
+                        "and notes stay; the bank's date is used.",
+                TRANSFER: "Both become one transfer (Account Transfers, left out of P&L).",
+                RULE: "Your rule's transfer links to this existing entry instead of "
+                      "creating a new one."}[m.kind]
+        payee = t.get("payee") or t.get("memo") or "—"
+        amt = float(t.get("amount") or 0)
+        days = "same day" if cand.days == 0 else f"{cand.days} day(s) apart"
+        return (f"{fmt_date(t.get('date', ''))} · {payee} · "
+                f"{'-' if amt < 0 else ''}{_money(amt)}\n"
+                f"{self._acct_name(t['account_id'])} · {days} · score {cand.score}\n{what}\n"
+                "Untick (or choose “Don't match”) to import it as a new transaction.")
+
+    def _match_widget(self, i: int, m):
+        """The Match cell for _parsed row i: a checkbox for one candidate, a
+        dropdown for several."""
+        cell = QWidget()
+        lay = QHBoxLayout(cell)
+        lay.setContentsMargins(6, 0, 6, 0)
+        if len(m.candidates) == 1:
+            cand = m.candidates[0]
+            box = QCheckBox(self._cand_label(m, cand))
+            box.setChecked(self._choice.get(i) == cand.id)
+            box.setToolTip(self._cand_tip(m, cand))
+            box.toggled.connect(
+                lambda on, i=i, cid=cand.id: self._set_choice(i, cid if on else ""))
+            lay.addWidget(box)
+            self._match_widgets[i] = box
+        else:
+            combo = QComboBox()
+            combo.setPlaceholderText(f"{len(m.candidates)} possible matches")
+            for k, cand in enumerate(m.candidates):
+                combo.addItem(self._cand_label(m, cand), cand.id)
+                combo.setItemData(k, self._cand_tip(m, cand), Qt.ItemDataRole.ToolTipRole)
+            combo.addItem(DONT_MATCH, "")
+            combo.setToolTip("Pick the entry this bank row is, or “Don't match” to "
+                             "import it as a new transaction.")
+            chosen = self._choice.get(i) or ""
+            combo.setCurrentIndex(combo.findData(chosen) if chosen else -1)
+            combo.activated.connect(
+                lambda k, i=i, c=combo: self._set_choice(i, c.itemData(k) or ""))
+            lay.addWidget(combo, 1)
+            self._match_widgets[i] = combo
+        return cell
+
+    def _set_choice(self, i: int, cand_id: str):
+        """Row i now uses cand_id ("" = import as new). One existing entry can
+        only be matched once, so a row that had it lets go."""
+        if cand_id:
+            for j, cid in list(self._choice.items()):
+                if j != i and cid == cand_id:
+                    self._choice[j] = ""
+                    self._sync_widget(j)
+        self._choice[i] = cand_id
+        self._sync_widget(i)
+        self._update_status()
+
+    def _sync_widget(self, i: int):
+        w = self._match_widgets.get(i)
+        cid = self._choice.get(i) or ""
+        if isinstance(w, QCheckBox):
+            w.blockSignals(True)
+            w.setChecked(bool(cid))
+            w.blockSignals(False)
+        elif isinstance(w, QComboBox):
+            w.blockSignals(True)
+            w.setCurrentIndex(w.findData(cid) if cid else -1)
+            w.blockSignals(False)
+
     def _render_preview(self, new_txns, dup_txns, fix_txns=()):
         cats = {c["id"]: c["name"] for c in self.db.get_categories()}
         accts = {a["id"]: a["name"] for a in self.db.get_accounts(active=None)}
+        index = {id(t): i for i, t in enumerate(self._parsed)}
 
         def by_date(t):
             return t.get("date", "")
 
+        def match_of(t):
+            i = index.get(id(t))
+            return self._matches[i] if i is not None and i < len(self._matches) else None
+
+        def is_matched(t):
+            m = match_of(t)
+            return bool(m and m.candidates)
+
         def has_account(t):
             return bool(t.get("category_id") or t.get("_transfer_to"))
 
-        matched   = sorted([t for t in new_txns if has_account(t)],  key=by_date)
-        unmatched = sorted([t for t in new_txns if not has_account(t)], key=by_date)
+        found     = sorted([t for t in new_txns if is_matched(t)], key=by_date)
+        rest      = [t for t in new_txns if not is_matched(t)]
+        ruled     = sorted([t for t in rest if has_account(t)], key=by_date)
+        unmatched = sorted([t for t in rest if not has_account(t)], key=by_date)
         dups      = sorted(dup_txns, key=by_date)
         fixes     = sorted(fix_txns, key=by_date)
 
         # Build sections: (header_text, transactions, tag, bg, fg)
         sections = []
-        if matched:
+        if found:
             sections.append((
-                f"ACCOUNT SET BY RULES  —  {len(matched)} transaction(s)",
-                matched, "", "#e7f6ec", "#15803d"))
+                f"MATCHED  —  {len(found)} transaction(s) already in FinanceBook  ·  "
+                "ticked rows are linked or merged, not added twice",
+                found, "", "#e8f0fe", "#1d4ed8"))
+        if ruled:
+            sections.append((
+                f"ACCOUNT SET BY RULES  —  {len(ruled)} transaction(s)",
+                ruled, "", "#e7f6ec", "#15803d"))
         if unmatched:
             sections.append((
                 f"NEEDS AN ACCOUNT  —  {len(unmatched)} transaction(s)",
@@ -357,12 +496,13 @@ class ImportPage(QWidget):
 
         total_rows = sum(1 + len(txns) for _, txns, _, _, _ in sections)
         self._table.clear_rows()
+        self._match_widgets = {}
         self._table.setRowCount(total_rows)
 
         row = 0
         for header_text, txns, tag, hdr_bg, hdr_fg in sections:
             # Section header row — spans all columns
-            self._table.setSpan(row, 0, 1, 5)
+            self._table.setSpan(row, 0, 1, len(COLUMNS))
             hdr_item = QTableWidgetItem(f"  {header_text}")
             hdr_item.setBackground(QColor(hdr_bg))
             hdr_item.setForeground(QColor(hdr_fg))
@@ -391,30 +531,72 @@ class ImportPage(QWidget):
                     self._table.set_item(row, 3, "—")
                 if tag:
                     self._table.set_item(row, 4, tag, color=WARNING)
-                self._table.setRowHeight(row, 28)
+                m = match_of(t) if not tag else None
+                height = 32
+                if m and m.candidates:
+                    self._table.setCellWidget(row, MATCH_COL, self._match_widget(index[id(t)], m))
+                    height = 42         # room for the dropdown / checkbox
+                elif m and m.kind == RULE:
+                    self._table.set_item(
+                        row, MATCH_COL,
+                        "⇄ Transfer (rule) · " + accts.get(m.rule_account, "account"),
+                        color=SUCCESS)
+                    item = self._table.item(row, MATCH_COL)
+                    if item is not None:
+                        item.setToolTip("Your rule makes this a transfer. Nothing matching "
+                                        "was found in that account, so FinanceBook "
+                                        "records its other side.")
+                self._table.setRowHeight(row, height)
                 row += 1
 
     # ── importing ─────────────────────────────────────────────────────────────
+
+    def import_rows(self) -> list[dict]:
+        """The rows Import will save, each carrying the match the preview shows
+        (row["_match"]); unticked / "Don't match" rows carry none."""
+        rows = []
+        for i, t in enumerate(self._parsed):
+            t = dict(t)
+            t.pop("_legacy_hash", None)
+            cid = self._choice.get(i) or ""
+            if cid:
+                t["_match"] = {"kind": self._matches[i].kind, "id": cid}
+            rows.append(t)
+        return rows
 
     def _import(self):
         if not (self._parsed or self._fixes):
             return
         acct_id = self._acct_combo.currentData()
         try:
-            rows = []
-            for t in self._parsed:
-                t = dict(t)
-                t.pop("_legacy_hash", None)
-                rows.append(t)
-            saved = self.db.bulk_save_transactions(rows)
+            rows = self.import_rows()
             outcome = {"fixed": 0, "locked": 0, "skipped": 0, "missing": 0}
-            for t in self._fixes:
-                outcome[self.db.fix_imported_sign(acct_id, t["_legacy_hash"],
-                                                  t["import_hash"])] += 1
-            if acct_id and self._format_id:
-                self.db.set_setting(self._flip_key(acct_id, self._format_id),
-                                    "1" if self._flip.isChecked() else "0")
+            # One database transaction: a failure leaves nothing half-imported
+            # or half-linked.
+            with self.db.atomic():
+                res = self.db.import_transactions(rows)
+                for t in self._fixes:
+                    outcome[self.db.fix_imported_sign(acct_id, t["_legacy_hash"],
+                                                      t["import_hash"])] += 1
+                if acct_id and self._format_id:
+                    self.db.set_setting(self._flip_key(acct_id, self._format_id),
+                                        "1" if self._flip.isChecked() else "0")
+            saved = res["saved"]
+            self.last_result = res
             msg = f"Successfully imported {len(saved)} transactions."
+            done_bits = []
+            if res["new"] or res["rule_transfers"]:
+                done_bits.append(f"{res['new'] + res['rule_transfers']} new")
+            if res["linked"]:
+                done_bits.append(f"{res['linked']} linked as transfers")
+            if res["merged"]:
+                done_bits.append(f"{res['merged']} merged into your entries")
+            if res["adopted"]:
+                done_bits.append(f"{res['adopted']} replaced transfer sides")
+            if res["linked"] or res["merged"] or res["adopted"]:
+                msg += "\n\n" + " · ".join(done_bits) + "."
+                msg += ("\n\nTo undo a transfer link, right-click it in Transactions → "
+                        "Unlink Transfer (or Transfers → Linked Transfers).")
             if outcome["fixed"]:
                 msg += (f"\n\nCorrected the sign of {outcome['fixed']} transaction(s) an "
                         "earlier import had the wrong way round.")
@@ -424,12 +606,11 @@ class ImportPage(QWidget):
                         "(in a locked period, or a transfer / split). Review them with "
                         "Settings → Check for Flipped Imported Transactions.")
             QMessageBox.information(self, "Import Complete", msg)
-            self._parsed = []
-            self._fixes = []
-            self._parsed_key = None
-            self._table.clear_rows()
-            self._import_btn.setEnabled(False)
+            self._reset_preview()
             done = f"✓ Imported {len(saved)} transactions"
+            matched = res["linked"] + res["merged"] + res["adopted"]
+            if matched:
+                done += f" ({matched} matched)"
             if outcome["fixed"]:
                 done += f", corrected {outcome['fixed']}"
             self._status_label.setText(done)
