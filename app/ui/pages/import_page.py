@@ -5,8 +5,14 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QHeaderView, QTableWidgetItem, QCheckBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
-from ui.widgets import PageTitle, DataTable, SecondaryButton
-from ui.styles  import SUCCESS, DANGER, WARNING
+from ui.widgets import PageTitle, DataTable
+from ui.styles  import SUCCESS, WARNING
+
+FLIP_SETTING = "import_flip|{account}|{format}"
+
+
+def _money(v: float) -> str:
+    return f"${abs(v):,.2f}"
 
 
 class ImportPage(QWidget):
@@ -14,8 +20,11 @@ class ImportPage(QWidget):
         super().__init__(parent)
         self.db = db
         self._parsed: list[dict] = []
+        self._fixes: list[dict] = []       # earlier imports whose sign gets corrected
         self._file_bytes = b""
         self._filename   = ""
+        self._format_id  = ""
+        self._parsed_key = None            # (account, file) the flip choice belongs to
         self._build()
 
     def _build(self):
@@ -42,6 +51,14 @@ class ImportPage(QWidget):
         browse_btn.clicked.connect(self._browse)
         file_row.addWidget(self._file_label)
         file_row.addWidget(browse_btn)
+        file_row.addStretch()
+        self._banks_btn = QPushButton("Supported banks…")
+        self._banks_btn.setObjectName("Secondary")
+        self._banks_btn.setToolTip(
+            "Bank CSV exports FinanceBook recognises and reads the right way round. "
+            "Other files still import with automatic column detection.")
+        self._banks_btn.clicked.connect(self._show_supported_banks)
+        file_row.addWidget(self._banks_btn)
         grp1_lay.addRow("File:", file_row)
         lay.addWidget(grp1)
 
@@ -61,13 +78,6 @@ class ImportPage(QWidget):
         col_lay.addRow("Amount column:", self._col_amount)
         col_lay.addRow("Debit column:",  self._col_debit)
         col_lay.addRow("Credit column:", self._col_credit)
-        self._reverse_signs = QCheckBox(
-            "Charges / withdrawals are positive in the Amount column — reverse the signs")
-        self._reverse_signs.setToolTip(
-            "Some credit-card exports list a purchase as 42.10 and a payment as -500. "
-            "FinanceBook stores money out as negative, so tick this for those files. "
-            "Check the preview: money out should show in red.")
-        col_lay.addRow("", self._reverse_signs)
         self._col_grp.setEnabled(False)
         lay.addWidget(self._col_grp)
 
@@ -77,6 +87,15 @@ class ImportPage(QWidget):
         self._preview_label.setStyleSheet("font-weight:bold; font-size:14px;")
         step3_hdr.addWidget(self._preview_label)
         step3_hdr.addStretch()
+
+        self._flip = QCheckBox("Flip all signs")
+        self._flip.setToolTip(
+            "Money out should show in red and money in in green. If the preview has "
+            "them the wrong way round (common for credit-card files that list a "
+            "purchase as 42.10), tick this. FinanceBook remembers the choice for "
+            "this account and bank format.")
+        self._flip.toggled.connect(self._flip_toggled)
+        step3_hdr.addWidget(self._flip)
 
         parse_btn = QPushButton("Parse File")
         parse_btn.clicked.connect(self._parse)
@@ -88,6 +107,23 @@ class ImportPage(QWidget):
         self._import_btn.setEnabled(False)
         step3_hdr.addWidget(self._import_btn)
         lay.addLayout(step3_hdr)
+
+        summary = QHBoxLayout()
+        self._format_label = QLabel("")
+        self._format_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._totals_label = QLabel("")
+        summary.addWidget(self._format_label)
+        summary.addStretch()
+        summary.addWidget(self._totals_label)
+        lay.addLayout(summary)
+
+        self._warn_label = QLabel("")
+        self._warn_label.setWordWrap(True)
+        self._warn_label.setStyleSheet(
+            f"background:#fff6d6; color:#7a4b00; border:1px solid {WARNING}; "
+            "border-radius:8px; padding:8px 12px;")
+        self._warn_label.setVisible(False)
+        lay.addWidget(self._warn_label)
 
         self._status_label = QLabel("")
         lay.addWidget(self._status_label)
@@ -107,10 +143,22 @@ class ImportPage(QWidget):
         self._acct_combo.addItem("— Select account —", "")
         for a in accounts:
             self._acct_combo.addItem(a["name"], a["id"])
+        self._reset_preview()
+
+    def _reset_preview(self):
         self._parsed = []
+        self._fixes = []
+        self._parsed_key = None
         self._table.clear_rows()
         self._import_btn.setEnabled(False)
         self._status_label.setText("")
+        self._format_label.setText("")
+        self._totals_label.setText("")
+        self._warn_label.setVisible(False)
+
+    def _show_supported_banks(self):
+        from ui.dialogs.supported_banks_dialog import SupportedBanksDialog
+        SupportedBanksDialog(self).exec()
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -119,13 +167,55 @@ class ImportPage(QWidget):
         if not path:
             return
         with open(path, "rb") as f:
-            self._file_bytes = f.read()
-        self._filename = path.split("/")[-1].split("\\")[-1]
-        self._file_label.setText(self._filename)
-        ext = self._filename.rsplit(".", 1)[-1].lower()
-        self._col_grp.setEnabled(ext in ("csv", "xlsx", "xls"))
+            self.set_file(f.read(), path.split("/")[-1].split("\\")[-1])
 
-    def _parse(self):
+    def set_file(self, data: bytes, filename: str):
+        self._file_bytes = data
+        self._filename = filename
+        self._file_label.setText(filename)
+        ext = filename.rsplit(".", 1)[-1].lower()
+        self._col_grp.setEnabled(ext in ("csv", "xlsx", "xls"))
+        self._reset_preview()
+
+    # ── parsing ───────────────────────────────────────────────────────────────
+
+    def _flip_toggled(self, _checked):
+        # Re-parse what's on screen with the new direction.
+        if self._parsed_key is not None:
+            self._parse(from_toggle=True)
+
+    def _flip_key(self, acct_id: str, format_id: str) -> str:
+        return FLIP_SETTING.format(account=acct_id, format=format_id)
+
+    def _set_flip(self, on: bool):
+        self._flip.blockSignals(True)
+        self._flip.setChecked(on)
+        self._flip.blockSignals(False)
+
+    def _run_parser(self, acct_id, kind, ext, flip):
+        """(rows, ParseResult or None) for the current file."""
+        if ext in ("ofx", "qfx", "qbo"):
+            from parsers.qfx import parse_ofx
+            from io import BytesIO
+            rows = parse_ofx(BytesIO(self._file_bytes), acct_id)
+            if flip:
+                for t in rows:
+                    t["amount"] = str(-float(t.get("amount") or 0))
+            return rows, None
+        from parsers.spreadsheet import analyze_spreadsheet
+        col_map = {
+            "date":   self._col_date.text().strip()   or None,
+            "payee":  self._col_payee.text().strip()  or None,
+            "amount": self._col_amount.text().strip() or None,
+            "debit":  self._col_debit.text().strip()  or None,
+            "credit": self._col_credit.text().strip() or None,
+        }
+        col_map = {k: v for k, v in col_map.items() if v}
+        res = analyze_spreadsheet(self._file_bytes, self._filename, acct_id,
+                                  col_map or None, reverse_signs=flip, account_kind=kind)
+        return res.rows, res
+
+    def _parse(self, from_toggle: bool = False):
         acct_id = self._acct_combo.currentData()
         if not acct_id:
             QMessageBox.warning(self, "No Account",
@@ -136,41 +226,48 @@ class ImportPage(QWidget):
                 "Please select a file to import.")
             return
 
-        ext      = self._filename.rsplit(".", 1)[-1].lower()
-        warnings = []
+        from parsers.spreadsheet import account_kind_for
+        acct = self.db.get_account(acct_id) or {}
+        kind = account_kind_for(acct.get("type", ""))
+        ext  = self._filename.rsplit(".", 1)[-1].lower()
+        key  = (acct_id, self._filename, len(self._file_bytes))
         try:
-            if ext in ("ofx", "qfx", "qbo"):
-                from parsers.qfx import parse_ofx
-                from io import BytesIO
-                parsed = parse_ofx(BytesIO(self._file_bytes), acct_id)
+            if from_toggle or key == self._parsed_key:
+                parsed, res = self._run_parser(acct_id, kind, ext, self._flip.isChecked())
             else:
-                from parsers.spreadsheet import parse_spreadsheet
-                col_map = {
-                    "date":   self._col_date.text().strip()   or None,
-                    "payee":  self._col_payee.text().strip()  or None,
-                    "amount": self._col_amount.text().strip() or None,
-                    "debit":  self._col_debit.text().strip()  or None,
-                    "credit": self._col_credit.text().strip() or None,
-                }
-                col_map = {k: v for k, v in col_map.items() if v}
-                parsed, warnings = parse_spreadsheet(
-                    self._file_bytes, self._filename, acct_id,
-                    col_map if col_map else None,
-                    reverse_signs=self._reverse_signs.isChecked())
+                # A new file / account: start from the flip choice remembered for
+                # this account + bank format (off when there is none).
+                parsed, res = self._run_parser(acct_id, kind, ext, False)
+                fmt_id = res.format_id if res else "ofx"
+                remembered = self.db.get_setting(self._flip_key(acct_id, fmt_id), "0") == "1"
+                self._set_flip(remembered)
+                if remembered:
+                    parsed, res = self._run_parser(acct_id, kind, ext, True)
         except Exception as e:
             QMessageBox.critical(self, "Parse Error",
                 f"Could not parse file:\n{e}")
             return
+        self._parsed_key = key
+        self._format_id = res.format_id if res else "ofx"
+        warnings = res.warnings if res else []
 
         existing_hashes = self.db.get_existing_hashes()
-        dups = [t for t in parsed if t.get("import_hash") in existing_hashes]
-        new  = [t for t in parsed if t.get("import_hash") not in existing_hashes]
+        dups, fixes, new = [], [], []
+        for t in parsed:
+            if t.get("import_hash") in existing_hashes:
+                dups.append(t)
+            elif t.get("_legacy_hash") and t["_legacy_hash"] in existing_hashes:
+                fixes.append(t)
+            else:
+                new.append(t)
 
         # Auto-apply rules to new transactions
         self.db.apply_rules(new)
 
         self._parsed = new
-        self._render_preview(new, dups)
+        self._fixes = fixes
+        self._render_preview(new, dups, fixes)
+        self._render_summary(parsed, res)
 
         matched   = [t for t in new if t.get("category_id") or t.get("_transfer_to")]
         unmatched = [t for t in new if not (t.get("category_id") or t.get("_transfer_to"))]
@@ -180,19 +277,50 @@ class ImportPage(QWidget):
             status_parts.append(f"{len(matched)} auto-categorized")
         if unmatched:
             status_parts.append(f"{len(unmatched)} need an account")
+        if fixes:
+            status_parts.append(f"{len(fixes)} earlier imports get their sign corrected")
         if dups:
             status_parts.append(f"{len(dups)} duplicates skipped")
         if warnings:
             status_parts.append(f"{len(warnings)} parse warnings")
+        if res:
+            status_parts.extend(res.notes)
         self._status_label.setText("   |   ".join(status_parts) or "No transactions found")
-        self._import_btn.setEnabled(bool(new))
+        self._import_btn.setEnabled(bool(new or fixes))
 
-        if warnings:
+        if warnings and not from_toggle:
             QMessageBox.warning(self, "Parse Warnings",
                 "\n".join(warnings[:10]) +
                 ("\n…and more" if len(warnings) > 10 else ""))
 
-    def _render_preview(self, new_txns, dup_txns):
+    def _render_summary(self, parsed, res):
+        label = res.format_label if res else "OFX / QFX statement"
+        self._format_label.setText(f"Detected format: <b>{label}</b>")
+        ins  = [float(t["amount"]) for t in parsed if float(t.get("amount") or 0) > 0]
+        outs = [float(t["amount"]) for t in parsed if float(t.get("amount") or 0) < 0]
+        self._totals_label.setText(
+            f"<span style='color:{SUCCESS}'>Money in: {len(ins)} · {_money(sum(ins))}</span>"
+            f"&nbsp;&nbsp;&nbsp;"
+            f"<span style='color:#c9363b'>Money out: {len(outs)} · {_money(sum(outs))}</span>")
+
+        reasons = []
+        if res is not None and res.looks_reversed:
+            reasons.append(
+                "These signs look reversed for a credit card: most purchases come in as "
+                "money in" + (" and card payments as money out" if any(
+                    "PAYMENT" in (t.get("payee") or "").upper() for t in parsed) else "")
+                + ". Tick “Flip all signs” if so.")
+        if res is not None and res.type_mismatches:
+            reasons.append(
+                f"{res.type_mismatches} row(s) disagree with the file's own type column "
+                "(for example a “Debit” or “Sale” showing as money in). Check the signs — "
+                "“Flip all signs” may be needed.")
+        if res is not None and res.kind_mismatch:
+            reasons.append(res.kind_mismatch + " Check that the right account is selected.")
+        self._warn_label.setText("⚠  " + "\n⚠  ".join(reasons) if reasons else "")
+        self._warn_label.setVisible(bool(reasons))
+
+    def _render_preview(self, new_txns, dup_txns, fix_txns=()):
         cats = {c["id"]: c["name"] for c in self.db.get_categories()}
         accts = {a["id"]: a["name"] for a in self.db.get_accounts(active=None)}
 
@@ -205,28 +333,34 @@ class ImportPage(QWidget):
         matched   = sorted([t for t in new_txns if has_account(t)],  key=by_date)
         unmatched = sorted([t for t in new_txns if not has_account(t)], key=by_date)
         dups      = sorted(dup_txns, key=by_date)
+        fixes     = sorted(fix_txns, key=by_date)
 
-        # Build sections: (header_text, transactions, is_dup)
+        # Build sections: (header_text, transactions, tag, bg, fg)
         sections = []
         if matched:
             sections.append((
                 f"ACCOUNT SET BY RULES  —  {len(matched)} transaction(s)",
-                matched, False, "#e7f6ec", "#15803d"))
+                matched, "", "#e7f6ec", "#15803d"))
         if unmatched:
             sections.append((
                 f"NEEDS AN ACCOUNT  —  {len(unmatched)} transaction(s)",
-                unmatched, False, "#fff4e0", "#b45309"))
+                unmatched, "", "#fff4e0", "#b45309"))
+        if fixes:
+            sections.append((
+                f"IMPORTED EARLIER WITH THE WRONG SIGN (will be corrected, not added "
+                f"again)  —  {len(fixes)} transaction(s)",
+                fixes, "Fix sign", "#fff6d6", "#7a4b00"))
         if dups:
             sections.append((
                 f"DUPLICATES (already imported, will be skipped)  —  {len(dups)} transaction(s)",
-                dups, True, "#eef2f8", "#6b7a99"))
+                dups, "Duplicate", "#eef2f8", "#6b7a99"))
 
         total_rows = sum(1 + len(txns) for _, txns, _, _, _ in sections)
         self._table.clear_rows()
         self._table.setRowCount(total_rows)
 
         row = 0
-        for header_text, txns, is_dup, hdr_bg, hdr_fg in sections:
+        for header_text, txns, tag, hdr_bg, hdr_fg in sections:
             # Section header row — spans all columns
             self._table.setSpan(row, 0, 1, 5)
             hdr_item = QTableWidgetItem(f"  {header_text}")
@@ -246,27 +380,58 @@ class ImportPage(QWidget):
                 if t.get("_transfer_to"):
                     cat_name = "⇄ Transfer · " + accts.get(t["_transfer_to"], "account")
                 self._table.set_item(row, 0, t.get("date", ""))
-                self._table.set_item(row, 1, t.get("payee") or t.get("memo", "—"))
+                text = t.get("payee") or t.get("memo", "—")
+                if t.get("payee") and t.get("memo"):
+                    text = f"{t['payee']}  ·  {t['memo']}"
+                self._table.set_item(row, 1, text)
                 self._table.money_item(row, 2, float(t.get("amount") or 0))
                 if cat_name:
                     self._table.set_item(row, 3, cat_name, color=SUCCESS)
                 else:
                     self._table.set_item(row, 3, "—")
-                if is_dup:
-                    self._table.set_item(row, 4, "Duplicate", color=WARNING)
+                if tag:
+                    self._table.set_item(row, 4, tag, color=WARNING)
                 self._table.setRowHeight(row, 28)
                 row += 1
 
+    # ── importing ─────────────────────────────────────────────────────────────
+
     def _import(self):
-        if not self._parsed:
+        if not (self._parsed or self._fixes):
             return
+        acct_id = self._acct_combo.currentData()
         try:
-            saved = self.db.bulk_save_transactions(self._parsed)
-            QMessageBox.information(self, "Import Complete",
-                f"Successfully imported {len(saved)} transactions.")
+            rows = []
+            for t in self._parsed:
+                t = dict(t)
+                t.pop("_legacy_hash", None)
+                rows.append(t)
+            saved = self.db.bulk_save_transactions(rows)
+            outcome = {"fixed": 0, "locked": 0, "skipped": 0, "missing": 0}
+            for t in self._fixes:
+                outcome[self.db.fix_imported_sign(acct_id, t["_legacy_hash"],
+                                                  t["import_hash"])] += 1
+            if acct_id and self._format_id:
+                self.db.set_setting(self._flip_key(acct_id, self._format_id),
+                                    "1" if self._flip.isChecked() else "0")
+            msg = f"Successfully imported {len(saved)} transactions."
+            if outcome["fixed"]:
+                msg += (f"\n\nCorrected the sign of {outcome['fixed']} transaction(s) an "
+                        "earlier import had the wrong way round.")
+            left = outcome["locked"] + outcome["skipped"]
+            if left:
+                msg += (f"\n\n{left} earlier import(s) with the wrong sign were left alone "
+                        "(in a locked period, or a transfer / split). Review them with "
+                        "Settings → Check for Flipped Imported Transactions.")
+            QMessageBox.information(self, "Import Complete", msg)
             self._parsed = []
+            self._fixes = []
+            self._parsed_key = None
             self._table.clear_rows()
             self._import_btn.setEnabled(False)
-            self._status_label.setText(f"✓ Imported {len(saved)} transactions")
+            done = f"✓ Imported {len(saved)} transactions"
+            if outcome["fixed"]:
+                done += f", corrected {outcome['fixed']}"
+            self._status_label.setText(done)
         except Exception as e:
             QMessageBox.critical(self, "Import Failed", str(e))

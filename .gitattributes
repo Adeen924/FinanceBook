@@ -1,0 +1,1 @@
+tests/fixtures/bank_csv/*.csv -text

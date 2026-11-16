@@ -1,0 +1,7 @@
+Transaction Date,Clearing Date,Description,Merchant,Category,Type,Amount (USD),Purchased By
+10/30/2026,10/31/2026,"TRADER JOE'S #021 8657 VILLA LA JOLLA DR SAN DIEGO 92037 CA USA","Trader Joe's","Grocery","Purchase","42.18","Jordan Patel"
+10/29/2026,10/29/2026,"ACH DEPOSIT INTERNET TRANSFER FROM ACCOUNT ENDING IN 9921","Ach Deposit Internet Transfer From Account Ending In 9921","Payment","Payment","-500.00","Jordan Patel"
+10/27/2026,10/28/2026,"AMAZON MKTPL*ZX81Q2 Amzn.com/bill WA","Amazon Marketplace","Other","Credit","-18.99","Jordan Patel"
+10/25/2026,10/25/2026,"APPLE ONLINE STORE CUPERTINO CA","Apple","Installment","Installment","83.25","Jordan Patel"
+10/24/2026,10/25/2026,"UBER *TRIP HELP.UBER.COM CA USA","Uber","Transportation","Purchase","23.41","Jordan Patel"
+10/31/2026,10/31/2026,"MONTHLY INTEREST CHARGED","Apple Card","Interest","Interest","6.12","Jordan Patel"
