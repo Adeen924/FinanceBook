@@ -58,9 +58,12 @@ sheets/
 
 parsers/
   qfx.py                 Parses .qfx / .qbo (OFX) bank export files
-  spreadsheet.py         Parses .csv / .xlsx with auto column detection;
-                         also parse_qb_multi_account_excel() for QB Transaction
-                         Detail by Account reports
+  spreadsheet.py         Parses .csv / .xlsx: known bank formats first, then
+                         generic column detection (analyze_spreadsheet /
+                         parse_spreadsheet); also parse_qb_multi_account_excel()
+                         for QB Transaction Detail by Account reports
+  bank_formats.py        Registry of known bank CSV exports (v1.16) and the
+                         generator for docs/BANK_FORMATS.md
   iif.py                 Parses QuickBooks IIF exports — returns 4-tuple
                          (accounts, categories, transactions, warnings)
 
@@ -85,7 +88,8 @@ ui/
     loans.py             Loan list + amortization schedule viewer
     transactions.py      Full transaction list with filters, quick-categorize
     transfers.py         Auto-detect & link transfers between own accounts
-    import_page.py       File import (QFX/QBO/CSV/XLSX) with rule auto-apply
+    import_page.py       File import (QFX/QBO/CSV/XLSX) with rule auto-apply; detected bank
+                         format, money in/out totals, Flip all signs
     rules.py             Bank rules list (conditions text, double-click to edit)
     categories.py        CategoryDialog, ClassDialog, ClassesPanel (no page of its own
                          since v1.14 — the old "Categories" id is an alias of Accounts)
@@ -592,6 +596,73 @@ Every dropdown is set up centrally in `ui/styles.py`; a new `QComboBox`,
   the open Match / Money out-in / Account popups to `tests/artifacts/`,
   git-ignored; `tests/__init__.py` points offscreen Qt at the Windows fonts
   folder so text renders), `test_rules_any_default.py`.
+
+## Bank CSV formats (v1.16, no schema change)
+
+`parsers/bank_formats.py` holds `REGISTRY`, one `BankFormat` per bank + account
+kind: the normalized header signature, which columns are date / payee / memo /
+amount / debit / credit / type / category / check #, date formats, the **sign
+style** (`SIGNED`, `DEBIT_CREDIT`, `TYPE_DECIDES` = unsigned amount + Debit/Credit
+words, `PURCHASES_POSITIVE` = card files with purchases positive), memo junk
+regexes, a blank-payee template, quirks (for the docs), `verified` and `fixture`.
+
+- **Detection** (`bank_formats.detect`): the first of the top 25 rows whose
+  `header_signature()` (lower-cased, spaces collapsed, empty cells dropped —
+  Chase's trailing comma) equals a registry entry; else a header-less shape
+  (`_SHAPES`: Wells Fargo's `date,amount,*,check #,description`). Formats with
+  identical layouts (U.S. Bank, Wells Fargo checking vs card) are told apart
+  by the account being imported into (`spreadsheet.account_kind_for(type)`).
+- **`spreadsheet.analyze_spreadsheet()`** builds a `_Plan` (column indexes +
+  rules) from the format, or generically (`_plan_generic`: the old column
+  guessing plus a Type / Details column — it decides the sign when every
+  amount is unsigned, otherwise it only checks it). One row loop handles both
+  and returns a `ParseResult`: rows, warnings, notes, format, `type_mismatches`,
+  `looks_reversed` (card sanity check), `kind_mismatch`, `skipped_zero`.
+  `parse_spreadsheet()` is the old `(rows, warnings)` wrapper.
+- **Text clean-up:** `clean_text` (HTML unescape, collapse spaces) on payees and
+  memos; `clean_memo` drops a format's junk regexes, keeps only the lettered
+  parts of `;`-separated reference strings and drops bare long numbers. $0.00
+  rows are skipped (a note, not a warning). Blank payees never stay blank.
+- **The duplicate key stays v1.15-compatible.** `import_hash` still hashes
+  `account|date|amount|payee` with the payee and amount **as v1.15's generic
+  detection read them** (`_Plan.legacy_*`: the raw payee; Debit/Credit files
+  keep `credit - debit` as written), so cleaning a payee never changes the key.
+  Where v1.15 got the sign wrong (Capital One checking), the key uses the
+  corrected amount and the row carries `_legacy_hash` (v1.15's key). The Import
+  page lists those rows under "imported earlier with the wrong sign" and on
+  import calls `Database.fix_imported_sign()` — a flip through
+  `flip_transaction_signs` (respects the lock date, skips transfers / splits)
+  plus a re-key — instead of adding them. `tests/legacy_spreadsheet_v115.py` is
+  a frozen copy of the v1.15.1 parser used as the compatibility oracle; don't
+  edit it.
+- **Import page:** detected format + money in / out totals, a yellow banner
+  (`_warn_label`) for `looks_reversed` / `type_mismatches` / `kind_mismatch`,
+  and **Flip all signs** (re-parses on toggle; `reverse_signs` negates every
+  amount, Debit/Credit files too). The flip choice is saved on import in
+  `settings` as `import_flip|<account id>|<format id>` (`generic` for unknown
+  CSVs, `ofx` for OFX) and pre-set the next time that account + format is
+  parsed. *Supported banks…* opens `ui/dialogs/supported_banks_dialog.py`.
+
+### Adding a bank format
+
+1. Export a CSV from the bank and **anonymize** it: replace people's names,
+   account / card / reference numbers and balances with fake ones; keep the
+   header row, column order, quoting, date format, sign style, line endings,
+   trailing commas, merchant names and every kind of row (purchase, payment,
+   refund, fee, $0.00, blank description). Never commit the original.
+2. Save it as `tests/fixtures/bank_csv/<bank>_<checking|credit>.csv`
+   (`.gitattributes` marks these `-text` so line endings stay byte-exact).
+3. Add a `BankFormat` to `REGISTRY` (header names normalized: lower case, single
+   spaces). Set `verified=True` only when the fixture came from a real export.
+4. Add the expected rows — `(date, amount, payee, memo)` for every row — to
+   `FIXTURE_EXPECTATIONS` in `tests/test_bank_formats.py`.
+5. Run `python app/parsers/bank_formats.py --write` to regenerate
+   `docs/BANK_FORMATS.md`, then the tests. `RegistryTests` fail if an entry has
+   no fixture or expectation, a fixture isn't registered, or the doc is stale.
+
+Tests: `test_bank_formats.py` (fixtures, registry, doc, generic fallback, card
+sanity check, v1.15 key compatibility), `test_import_page_ui.py` (preview, flip
+memory, warnings, re-import, correcting v1.15 Capital One imports).
 
 ## Known issues / things to watch
 

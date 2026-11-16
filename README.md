@@ -12,6 +12,41 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New in v1.16: bank CSV formats, Capital One fix, Flip signs
+
+No database upgrade in this release.
+
+- **FinanceBook now knows your bank's CSV export.** Capital One, Chase,
+  U.S. Bank and Wells Fargo (checking and credit card) are recognised from the
+  file's header row and read the way each bank writes them — including Wells
+  Fargo's export with no header row. Bank of America and Apple Card are
+  supported from their published layouts too. Any other CSV or Excel file still
+  imports with automatic column detection, which now also understands a
+  *Type* / *Details* column holding Debit / Credit, Withdrawal / Deposit or
+  Sale / Payment / Return.
+- **Capital One checking imports the right way round.** Its export writes every
+  amount as a positive number with a separate Debit / Credit column; before
+  1.16 every row came in as money **in**. If you imported one of those files
+  before, just import it again: the rows already in your books are **corrected
+  in place** (not added a second time), and the preview tells you how many.
+- **Cleaner payees and memos.** “BEST PIZZA &amp;amp; BREW” now reads “BEST
+  PIZZA & BREW”, repeated spaces are trimmed, U.S. Bank's “Download from
+  usbank.com.” and reference-number memos are dropped, Capital One card lines
+  with a blank description get a payee such as “Capital One purchase (Dining)”,
+  and $0.00 lines (a waived annual fee) are skipped.
+- **A clearer import preview.** Step 3 shows the detected format (“Chase credit
+  card”, or “Unknown — generic”) and how many rows are money in and money out,
+  with their totals. A yellow warning appears when a credit-card file looks
+  reversed (purchases as money in, payments as money out), when the file's own
+  type column disagrees with the signs, or when a card export is going into a
+  checking account.
+- **Flip all signs.** One tick reverses every amount in the preview. FinanceBook
+  remembers the choice for that account and bank format, so the next import is
+  right without thinking about it.
+- **Supported banks list.** *Import → Supported banks…* shows every known
+  export, its account kind and whether it has been checked against a real
+  file. The same list is in [docs/BANK_FORMATS.md](docs/BANK_FORMATS.md).
+
 ## New in v1.15.1: rules match Any by default, easier dropdowns
 
 No database upgrade in this release.

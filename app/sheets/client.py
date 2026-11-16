@@ -1273,6 +1273,27 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             flipped += 1
         return flipped, locked
 
+    def fix_imported_sign(self, account_id: str, legacy_hash: str, new_hash: str) -> str:
+        """v1.16: an earlier import stored this bank line with the wrong sign
+        (e.g. Capital One checking before 1.16 read every row as money in).
+        Flip that transaction and give it the corrected duplicate key, instead
+        of importing the line a second time. Returns "fixed", "locked" (date in
+        a locked period), "skipped" (a transfer or split line — left alone) or
+        "missing"."""
+        with self._conn() as c:
+            row = c.execute("SELECT id FROM transactions WHERE account_id=? AND import_hash=?",
+                            (account_id, legacy_hash)).fetchone()
+        if not row:
+            return "missing"
+        flipped, locked = self.flip_transaction_signs([row["id"]])
+        if locked:
+            return "locked"
+        if not flipped:
+            return "skipped"
+        with self._conn() as c:
+            c.execute("UPDATE transactions SET import_hash=? WHERE id=?", (new_hash, row["id"]))
+        return "fixed"
+
     # ── categories ────────────────────────────────────────────────────────────
 
     def get_categories(self) -> list[dict]:
