@@ -40,3 +40,6 @@ app_backup/
 
 # Real receipts used for parser development (contain personal data)
 _private_samples/
+
+# Screenshots written by the UI tests (tests/test_dropdowns_ui.py)
+tests/artifacts/

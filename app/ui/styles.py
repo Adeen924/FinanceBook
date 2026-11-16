@@ -35,6 +35,11 @@ BLUE_EDGE_HI   = "rgba(47, 107, 255, 0.32)"
 HOVER          = "rgba(47, 107, 255, 0.06)"
 SELECTED       = "rgba(47, 107, 255, 0.13)"
 DIVIDER        = "rgba(15, 27, 61, 0.07)"
+# Dropdown lists (combo boxes, type-to-search popups) — solid colours, so the
+# row under the mouse and the chosen row are easy to tell apart.
+POPUP_BORDER   = "#b8c8ea"
+POPUP_HOVER    = "#eef3ff"
+POPUP_SELECTED = "#dbe6ff"
 
 RADIUS_CARD    = 20
 RADIUS_PANEL   = 16
@@ -438,7 +443,11 @@ QComboBox QLineEdit, QAbstractSpinBox QLineEdit {{
     padding: 0;
     min-height: 0;
 }}
-QComboBox {{ min-width: 140px; padding-right: 28px; }}
+/* combobox-popup: 0 drops every list down BELOW its box as a plain list,
+   instead of Fusion's menu that opens on top of the box with the current
+   item under the mouse. The popup's delegate, width and row height are set
+   up by _AppFilter / setup_combo() (bottom of this file). */
+QComboBox {{ min-width: 140px; padding-right: 28px; combobox-popup: 0; }}
 QComboBox:focus {{ padding-right: 27px; }}
 QComboBox::drop-down {{
     subcontrol-origin: padding;
@@ -447,16 +456,41 @@ QComboBox::drop-down {{
     border: none;
 }}
 QComboBox::down-arrow {{ image: {url("chevron_down")}; width: 12px; height: 12px; }}
-QComboBox QAbstractItemView {{
+QComboBoxPrivateContainer {{ background: #ffffff; border: none; padding: 0; margin: 0; }}
+QComboBox QAbstractItemView, QListView#ComboPopup {{
     background: #ffffff;
-    border: 1px solid {BLUE_EDGE_HI};
-    border-radius: 10px;
-    padding: 4px;
-    selection-background-color: {SELECTED};
+    alternate-background-color: #ffffff;
+    color: {TEXT};
+    border: 1px solid {POPUP_BORDER};
+    border-radius: 0;
+    padding: 2px 0;
+    selection-background-color: {POPUP_SELECTED};
     selection-color: {TEXT};
     outline: 0;
 }}
-QComboBox QAbstractItemView::item {{ min-height: 26px; padding: 0 8px; border-radius: 6px; }}
+QComboBox QAbstractItemView::item, QListView#ComboPopup::item {{
+    min-height: 20px;
+    padding: 6px 12px 6px 9px;
+    border: none;
+    border-left: 3px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: {TEXT};
+}}
+QComboBox QAbstractItemView::item:hover, QListView#ComboPopup::item:hover {{
+    background: {POPUP_HOVER};
+    color: {TEXT};
+}}
+QComboBox QAbstractItemView::item:selected, QListView#ComboPopup::item:selected {{
+    background: {POPUP_SELECTED};
+    color: {PRIMARY_DARK};
+    border-left: 3px solid {PRIMARY};
+}}
+QComboBox QAbstractItemView::item:disabled, QListView#ComboPopup::item:disabled {{
+    background: transparent;
+    color: {SUBTLE};
+    border-left: 3px solid transparent;
+}}
 QSpinBox::up-button, QDoubleSpinBox::up-button, QDateEdit::up-button,
 QSpinBox::down-button, QDoubleSpinBox::down-button, QDateEdit::down-button {{
     background: transparent;
@@ -699,8 +733,10 @@ QComboBox#DbSelector {{
     font-size: 12px;
     font-weight: 600;
     min-width: 0;
+    combobox-popup: 0;
 }}
 QComboBox#DbSelector:hover {{ border-color: {BLUE_EDGE_HI}; }}
+QComboBox#DbSelector QAbstractItemView {{ font-size: 13px; font-weight: 400; }}
 NavButton {{
     background: transparent;
     color: {MUTED};
@@ -785,11 +821,14 @@ def apply_theme(app) -> None:
 
     try:
         global _title_tint
-        _title_tint = _TitleBarTint(app)
-        app.installEventFilter(_title_tint)
-        # A Python event filter must not outlive the event loop: during
-        # interpreter teardown it can be called after Python objects are gone.
-        app.aboutToQuit.connect(lambda: app.removeEventFilter(_title_tint))
+        # One app-wide filter: tints title bars and sets up every dropdown's
+        # popup (see _AppFilter). Installed once even if apply_theme runs again.
+        if _title_tint is None:
+            _title_tint = _TitleBarTint(app)
+            app.installEventFilter(_title_tint)
+            # A Python event filter must not outlive the event loop: during
+            # interpreter teardown it can be called after Python objects are gone.
+            app.aboutToQuit.connect(lambda: app.removeEventFilter(_title_tint))
     except Exception:
         pass
 
@@ -828,24 +867,194 @@ def tint_title_bar(widget) -> None:
 _title_tint = None
 
 
+# ── Dropdown popups ──────────────────────────────────────────────────────────
+#
+# Every QComboBox in the app (and the type-to-search popup of FilterComboBox /
+# AccountPicker, or any QLineEdit with a QCompleter) is set up here, once,
+# when Qt polishes the widget — so a new dropdown gets it without any code:
+#   * the QSS above drops the list below the box (combobox-popup: 0);
+#   * ComboItemDelegate (a QStyledItemDelegate) draws the rows, so the
+#     `::item`, `::item:hover` and `::item:selected` rules apply (Fusion's
+#     menu-style QComboMenuDelegate and QCompleter's delegate ignore them);
+#   * the popup is made at least as wide as the box and wide enough for the
+#     longest item (capped at POPUP_MAX_WIDTH), and kept on screen.
+
+POPUP_MIN_ROW = 32          # px, row height in every dropdown list
+POPUP_MAX_WIDTH = 560       # px, widest a dropdown list grows for long items
+COMBO_POPUP_NAME = "ComboPopup"     # objectName given to completer popups
+
+
+def _combo_delegate_class():
+    from PyQt6.QtCore import Qt, QSize
+    from PyQt6.QtWidgets import QStyledItemDelegate
+    from PyQt6.QtGui import QPen, QColor
+
+    class ComboItemDelegate(QStyledItemDelegate):
+        """Rows of a dropdown list, drawn through the stylesheet's ::item rules.
+        Also draws QComboBox.insertSeparator() rows as a thin line."""
+
+        @staticmethod
+        def _is_separator(index) -> bool:
+            return index.data(Qt.ItemDataRole.AccessibleDescriptionRole) == "separator"
+
+        def sizeHint(self, option, index):
+            size = super().sizeHint(option, index)
+            if self._is_separator(index):
+                return QSize(size.width(), 9)
+            return QSize(size.width(), max(size.height(), POPUP_MIN_ROW))
+
+        def paint(self, painter, option, index):
+            if self._is_separator(index):
+                r = option.rect
+                painter.save()
+                painter.setPen(QPen(QColor(POPUP_BORDER), 1))
+                y = r.center().y()
+                painter.drawLine(r.left() + 8, y, r.right() - 8, y)
+                painter.restore()
+                return
+            super().paint(painter, option, index)
+
+    return ComboItemDelegate
+
+
+_ComboItemDelegate = None
+
+
+def combo_item_delegate_class():
+    """The QStyledItemDelegate subclass every dropdown list uses."""
+    global _ComboItemDelegate
+    if _ComboItemDelegate is None:
+        _ComboItemDelegate = _combo_delegate_class()
+    return _ComboItemDelegate
+
+
+# Strong references to the delegates made here, dropped when Qt deletes them.
+# Without this, a delegate whose view's Python wrapper is garbage-collected
+# (e.g. a QCompleter's popup, which no Python code holds) loses its Python
+# half and falls back to a bare QStyledItemDelegate.
+_live_delegates: set = set()
+
+
+def _new_delegate(view):
+    d = combo_item_delegate_class()(view)
+    _live_delegates.add(d)
+    d.destroyed.connect(lambda *_a, d=d: _live_delegates.discard(d))
+    return d
+
+
+def setup_combo(combo) -> None:
+    """Give one QComboBox the app's dropdown delegate (and its completer popup
+    the dropdown look). Safe to call more than once; the app-wide filter calls
+    it for every combo when Qt polishes or shows it."""
+    if not isinstance(combo.itemDelegate(), combo_item_delegate_class()):
+        combo.setItemDelegate(_new_delegate(combo.view()))
+    comp = combo.completer()
+    if comp is not None:
+        setup_completer_popup(comp)
+
+
+def setup_completer_popup(completer) -> None:
+    """Give a QCompleter's popup the same look as a combo's dropdown list."""
+    pop = completer.popup()
+    if pop.objectName() != COMBO_POPUP_NAME:
+        pop.setObjectName(COMBO_POPUP_NAME)
+    if not isinstance(pop.itemDelegate(), combo_item_delegate_class()):
+        pop.setItemDelegate(_new_delegate(pop))
+    pop.setMouseTracking(True)
+
+
+def _popup_width(view, base_width: int, rows: int, max_rows: int) -> int:
+    """Width for a dropdown list: the box's width, or the longest item's."""
+    try:
+        want = view.sizeHintForColumn(0)
+    except Exception:
+        want = 0
+    want += 2 * view.frameWidth() + 8
+    if rows > max_rows:
+        want += view.verticalScrollBar().sizeHint().width()
+    return max(base_width, min(want, max(base_width, POPUP_MAX_WIDTH)))
+
+
+def _fit_on_screen(popup, width: int, anchor) -> None:
+    """Widen popup to width (if narrower) and keep it on anchor's screen."""
+    g = popup.geometry()
+    if g.width() < width:
+        g.setWidth(width)
+    screen = anchor.screen() if anchor is not None else None
+    if screen is not None:
+        avail = screen.availableGeometry()
+        if g.width() > avail.width():
+            g.setWidth(avail.width())
+        if g.right() > avail.right():
+            g.moveRight(avail.right())
+        if g.left() < avail.left():
+            g.moveLeft(avail.left())
+    if g != popup.geometry():
+        popup.setGeometry(g)
+
+
+def _size_combo_popup(container, combo) -> None:
+    if combo.modelColumn() != 0:
+        return
+    w = _popup_width(combo.view(), combo.width(), combo.count(), combo.maxVisibleItems())
+    container.setMinimumWidth(w)
+    _fit_on_screen(container, w, combo)
+
+
+def _size_completer_popup(popup) -> None:
+    from PyQt6.QtWidgets import QComboBox
+    anchor = popup.parentWidget()
+    combo = anchor
+    while combo is not None and not isinstance(combo, QComboBox):
+        combo = combo.parentWidget()
+    box = combo or anchor
+    base = box.width() if box is not None else popup.width()
+    if combo is not None:       # size from the full list, not the filtered one
+        width = _popup_width(combo.view(), base, combo.count(), 7)
+    else:
+        width = _popup_width(popup, base, popup.model().rowCount(), 7)
+    popup.setMinimumWidth(width)
+    _fit_on_screen(popup, width, box)
+
+
 def _make_title_tint_class():
     from PyQt6.QtCore import QObject, QEvent, Qt
+    from PyQt6.QtWidgets import QComboBox, QLineEdit, QListView
 
-    class _Tint(QObject):
-        """Tints the title bar of every top-level window the first time it shows."""
+    SHOW, POLISH = QEvent.Type.Show, QEvent.Type.Polish
+
+    class _AppFilter(QObject):
+        """App-wide: tints the title bar of every top-level window the first
+        time it shows, and sets up every dropdown (see the notes above)."""
         def eventFilter(self, obj, event):
             try:
-                if (event.type() == QEvent.Type.Show and obj.isWidgetType()
-                        and obj.isWindow()
-                        and obj.windowType() in (Qt.WindowType.Window, Qt.WindowType.Dialog)
-                        and not obj.property("_fb_tinted")):
-                    obj.setProperty("_fb_tinted", True)
-                    tint_title_bar(obj)
+                t = event.type()
+                if t == POLISH or (t == SHOW and isinstance(obj, (QComboBox, QLineEdit))):
+                    # Also on Show: a combo can be polished while it is still
+                    # being built (setEditable), before e.g. FilterComboBox
+                    # swaps in its own QCompleter.
+                    if isinstance(obj, QComboBox):
+                        setup_combo(obj)
+                    elif isinstance(obj, QLineEdit) and obj.completer() is not None:
+                        setup_completer_popup(obj.completer())
+                elif t == SHOW and obj.isWidgetType():
+                    if obj.inherits("QComboBoxPrivateContainer"):
+                        combo = obj.parentWidget()
+                        if isinstance(combo, QComboBox):
+                            _size_combo_popup(obj, combo)
+                    elif (isinstance(obj, QListView)
+                          and obj.objectName() == COMBO_POPUP_NAME):
+                        _size_completer_popup(obj)
+                    elif (obj.isWindow()
+                          and obj.windowType() in (Qt.WindowType.Window, Qt.WindowType.Dialog)
+                          and not obj.property("_fb_tinted")):
+                        obj.setProperty("_fb_tinted", True)
+                        tint_title_bar(obj)
             except Exception:
                 pass
             return False
 
-    return _Tint
+    return _AppFilter
 
 
 def _TitleBarTint(parent):
