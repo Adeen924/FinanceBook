@@ -34,8 +34,8 @@ class RulesPage(QWidget):
 
         info = QLabel(
             "Rules set the account on transactions when you import them. A rule can "
-            "match All or Any of several conditions (payee, memo, amount, date, money "
-            "in / out, bank account). Higher priority rules run first — first match "
+            "match Any or All of several conditions (payee, memo, amount, date, money "
+            "in / out, bank account); new rules match Any. Higher priority rules run first — first match "
             "wins. Transactions that already have an account are never changed. "
             "Double-click a rule to edit it.")
         info.setObjectName("Muted")

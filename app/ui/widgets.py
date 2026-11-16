@@ -248,6 +248,10 @@ class FilterComboBox(QComboBox):
         completer.setFilterMode(Qt.MatchFlag.MatchContains)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.setCompleter(completer)
+        # Same dropdown look as every combo's list (the app-wide filter in
+        # styles.py also does this when the combo is shown; doing it here
+        # covers combos that stay hidden until later).
+        S.setup_completer_popup(completer)
 
     def add_option(self, text: str, data) -> None:
         self.addItem(text, data)

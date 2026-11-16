@@ -12,6 +12,21 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New in v1.15.1: rules match Any by default, easier dropdowns
+
+No database upgrade in this release.
+
+- **New rules match Any of their conditions.** When you add a rule, *Match* now
+  starts on **Any**, so a rule like *Payee contains CHIPOTLE / PANERA / SUBWAY*
+  catches each of those restaurants without changing anything. Pick **All**
+  when every condition must hold. Your existing rules keep the mode they were
+  saved with, and the payee rules made during an import also match Any.
+- **Dropdowns are easier to read and click, everywhere.** Lists now drop down
+  below the box instead of opening on top of it, rows are taller, the row under
+  the mouse is clearly highlighted, and the list is wide enough for long
+  account names. That fixes the hard-to-pick second choice in the rule window's
+  *Match* box and the transaction window's *Money out / Money in* box.
+
 ## New in v1.15: money in / out, sub-accounts, rule and filter fixes
 
 > **This release upgrades the database format — update every computer that
@@ -88,12 +103,13 @@ Sheet reports.
 - **Fixed Assets and Other Assets** account types for things you own and track
   by hand. (Equipment you add on the *Fixed Assets* page is already on the
   balance sheet — don't also move it into one of these accounts.)
-- **Rules with several conditions.** A rule can now match **All** or **Any** of
+- **Rules with several conditions.** A rule can now match **Any** or **All** of
   a list of conditions — payee, memo, amount, date, **money in / money out** and
   **which bank account** — just like QuickBooks bank rules (for example *Payee
   contains COSTCO AND Amount > 50*). Every rule must set an account, and a rule
   that sets one of your own accounts records the matches as transfers. Your
   existing rules carry over automatically. Double-click a rule to edit it.
+  (Since v1.15.1, new rules start on **Any**.)
 - **Faster date typing.** Type `11/5` (or `11-5`) and press Tab: FinanceBook
   fills in this year. Two-digit years work too (`11/5/26`).
 - **The register stays put.** After you edit, split or re-file a transaction,
