@@ -12,6 +12,51 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New in v1.17: the Match column on imports
+
+No database upgrade in this release.
+
+When you import a bank or card file, FinanceBook now checks every new row
+against what's already in your books — the way QuickBooks' "Match" works — so
+the same money is never recorded twice.
+
+- **A new Match column in the import preview.** Rows that match something
+  already in FinanceBook are grouped under **MATCHED** at the top, and the line
+  above the preview counts them, e.g. *12 new · 5 matched · 3 duplicates
+  skipped*. Hover a match to see the entry it found (date, payee, amount,
+  account).
+- **What each match means:**
+  - **⇄ Transfer · Checking 11/05/2026** — the opposite side of a transfer is
+    already in another of your accounts (same amount, opposite direction, within
+    3 days). Both are linked as one transfer, filed under *Account Transfers* and
+    left out of Profit & Loss. Example: the card's *+400.00 ONLINE PAYMENT THANK
+    YOU* links to the checking account's *−400.00 ONLINE TRANSFER … TO VISA*.
+  - **✓ Matches your entry · 11/04/2026** — you typed this one in by hand (same
+    account, same amount, within 3 days). The bank's row merges into your entry:
+    your category, class, payee, notes and attachments stay, the bank's date is
+    used, and the bank's description goes into an empty memo. Nothing is added
+    twice. The before values are kept in the Audit Log.
+  - **✓ Replaces transfer side · Savings** — FinanceBook created this side when
+    you recorded a transfer; the bank's row takes its place.
+  - **⇄ Transfer (rule) · Savings** — one of your rules sends this row to a
+    balance-sheet account. If the other side is already there it's linked;
+    otherwise FinanceBook records it, as before.
+  - **2 possible matches ▾** — more than one entry fits. Pick the right one from
+    the dropdown, or choose *Don't match*.
+- **Each entry is matched once.** Four −7,500.00 transfers on nearby days each
+  pair with a different +7,500.00 (closest date first). Reconciled entries,
+  split lines, anything in a locked period, and rows already imported are never
+  matched.
+- **To unmatch before importing,** untick the box (or choose *Don't match*): the
+  row is imported as an ordinary new transaction.
+- **To undo a transfer link afterwards,** right-click either side in
+  Transactions → **Unlink Transfer** (or use ✕ in Transfers → Linked
+  Transfers). Both entries stay, as ordinary uncategorized transactions.
+- **All or nothing.** An import is saved in one step: if anything goes wrong,
+  nothing from that file is saved or half-linked.
+- **Transfers → Potential Transfers uses the same rules,** so it suggests the
+  same pairs the import would, each entry once.
+
 ## New in v1.16: bank CSV formats, Capital One fix, Flip signs
 
 No database upgrade in this release.

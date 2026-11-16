@@ -70,6 +70,8 @@ parsers/
 utils/
   chart_of_accounts.py   Qt-free: account groups/order, "New Account" types, the
                          unified Account picker entries ("acct:<id>" = account)
+  matching.py            Qt-free: import Match engine (mirror / manual / transfer),
+                         one-to-one; also Transfers → Potential Transfers
   rules.py               Qt-free: rule condition fields/operators, matching, text
   loan.py                Pure amortization math — no DB/UI imports.
                          calc_monthly_payment(), amortization_schedule(),
@@ -313,7 +315,9 @@ Rules are applied:
 ## Transfers
 
 Transfers between own accounts are detected automatically (same absolute amount,
-opposite sign, ≤3 days apart, different accounts). Linked transfers set
+opposite sign, ≤3 days apart, different accounts; since v1.17 by
+`utils/matching.find_transfer_pairs`, one-to-one, skipping reconciled / split /
+locked entries). Linked transfers set
 `is_transfer=1` on both sides and are excluded from P&L / Balance Sheet.
 
 Since v1.14 a transfer is usually made by picking a balance-sheet account in the
@@ -330,11 +334,81 @@ Account menu, or a rule):
   and left uncategorized; a mirror FinanceBook made is deleted.
 - `bulk_save_transactions` lets an imported row adopt a FinanceBook-made mirror
   (same account and amount, ≤3 days, no import_hash) instead of duplicating it.
+  Since v1.17 that check is the matching engine's MIRROR kind; the Import page
+  uses `import_transactions` (see *Import matching* below).
 - Split lines may carry `transfer_to`; each destination gets its own mirror and
   transfer_pair_id. `get_transfer_partner` prefers a row in another account (a
   split's lines to the same destination share a pair id).
 - The register's Account column shows "⇄ <other account>" for transfers
   (`transfer_partner_accounts`, one query).
+
+---
+
+## Import matching (v1.17, no schema change)
+
+One Qt-free engine, `app/utils/matching.py`, decides what an imported bank row
+matches. Three callers, so they always agree:
+- **Import page** (`ui/pages/import_page.py`): `_parse` → `find_matches(db,
+  new_rows, account_id)` after rules run; the preview's Match column (col 5)
+  shows a checkbox (one candidate, pre-ticked) or a dropdown (several, nothing
+  picked; placeholder "N possible matches", last item "Don't match").
+  `_choice[i]` holds the picked txn id; `_set_choice` keeps it one-to-one (a row
+  that had the same entry lets go). `import_rows()` puts
+  `_match={"kind", "id"}` on each picked row.
+- **`Database.import_transactions(rows)`** (sheets/client.py) applies exactly
+  what the preview says — it never matches anything itself: `mirror` →
+  `_adopt_mirror` (import hash + date onto the FinanceBook-made side);
+  `manual` → `_merge_import` (keeps the entry's id, category, class, payee,
+  memo, notes, attachments; takes date + import hash; bank text into an empty
+  memo; the audit trigger logs the before values); `transfer` /
+  `rule_transfer` → new row + `link_transfer` (both sides `is_transfer=1`,
+  shared pair id, Account Transfers category). No `_match` + `_transfer_to` →
+  `save_transfer_pair(keep_sign=True)` (new mirror). `_check_import_match`
+  raises ValueError if a matched entry changed since the preview; the same id
+  twice also raises. Returns counts (new / adopted / merged / linked /
+  rule_transfers).
+- **`bulk_save_transactions`** (no preview: QuickBooks import, tests) still
+  auto-adopts mirrors, now via `find_matches(..., kinds=(MIRROR,))`, and keeps
+  `match_existing=True` for rule transfers.
+- **Transfers page** `_detect` → `find_transfer_pairs(db)` (same rules as the
+  TRANSFER kind, one-to-one; `txn_a` is the money-out side).
+
+Engine rules (`find_matches`):
+- Kinds in order: MIRROR (same account, same signed amount, `is_transfer=1`,
+  pair id, no import hash) → MANUAL (same account, same signed amount, not a
+  transfer, no import hash) → TRANSFER (another account, exact opposite amount,
+  not a transfer). A row with `_transfer_to` (a rule's balance-sheet account)
+  gets RULE instead of TRANSFER and only that account is searched; with no
+  candidate it's informational (the rule makes a new mirror on import).
+- Window `MATCH_DAYS` = 3 (= `Database.TRANSFER_MATCH_DAYS`), exact amount (to
+  the cent). Candidate pool (`_pool`): not reconciled, not a split line, dated
+  after `lock_date`, in an existing account, non-zero. Rows whose import_hash
+  is already in the DB (or repeats an earlier row in the file), undated rows and
+  rows on/before the lock date get no match.
+- Ranking: every (row, candidate) edge sorted by (kind rank, days apart, −hints,
+  row index, candidate date/created/id) and assigned greedily: each candidate
+  to one row, each row one candidate. Hints (0–2, `hint_count`): a transfer word
+  (transfer, xfer, payment, thank you, autopay, zelle) in either description; the
+  other account's name word (not generic: checking, card, savings …) or a
+  4-digit run from its name (last 4) in the description. `score` (0–100, shown
+  in the tooltip) = 100 − 15·days + 10·hints.
+- `RowMatch.candidates` = same-kind candidates not claimed by another row;
+  `chosen` is set only when there's exactly one (`confident`).
+
+`Database.atomic()`: everything inside shares ONE connection (`_conn()` returns
+a `_SharedConnection` whose `with` doesn't commit/close); committed at the end,
+rolled back on any exception; nested blocks join. The Import page wraps
+`import_transactions` + sign fixes + the flip setting in one `atomic()`.
+
+`link_transfer` now also files both sides under Account Transfers;
+`unlink_transfer` clears that category (an entry with another category keeps
+it). The register's context menu has **Unlink Transfer** for a linked,
+non-split transfer.
+
+Tests: `tests/test_import_match.py` (engine + apply, all-or-nothing),
+`tests/test_import_match_ui.py` (Wells Fargo fixtures end to end, checkbox,
+dropdown, Don't match, re-import), `tests/test_dropdowns_ui.py` (the Match
+dropdown drops below with the app styling; PNGs in tests/artifacts/).
 
 ---
 

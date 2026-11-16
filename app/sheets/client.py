@@ -8,6 +8,7 @@ No external services or credentials required.
 import os
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from sheets import backup as _backup
@@ -300,6 +301,23 @@ class _ClosingConnection(sqlite3.Connection):
             self.close()
 
 
+class _SharedConnection:
+    """What _conn() hands out inside Database.atomic(): the one open connection,
+    whose `with` neither commits nor closes — atomic() does that once at the
+    end (or rolls everything back)."""
+    def __init__(self, conn: sqlite3.Connection):
+        self._c = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._c, name)
+
+
 class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryMixin,
                PayrollMixin, TaxMixin, AdminMixin):
     def __init__(self, db_path: str, book_type: str | None = None,
@@ -315,6 +333,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         another computer holds the database's lock.
         """
         self.db_path = db_path
+        self._atomic_conn = None
         self.last_migration_backup = ""
         self.session_user = ""
         self.read_only = read_only
@@ -340,6 +359,8 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
     # ── internal ──────────────────────────────────────────────────────────────
 
     def _conn(self) -> sqlite3.Connection:
+        if self._atomic_conn is not None:
+            return _SharedConnection(self._atomic_conn)
         conn = sqlite3.connect(self.db_path, factory=_ClosingConnection)
         conn.row_factory = sqlite3.Row
         if self.read_only:
@@ -356,6 +377,31 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                 pass
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
+
+    @contextmanager
+    def atomic(self):
+        """
+        Run everything inside as ONE database transaction: every _conn() call
+        shares one connection, committed when the block ends and rolled back
+        entirely if anything raises (so an import never leaves half its rows
+        saved or a transfer half-linked). Nested atomic() blocks join the outer.
+        """
+        if self._atomic_conn is not None:
+            yield self
+            return
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        self._atomic_conn = conn
+        try:
+            yield self
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            self._atomic_conn = None
+            conn.close()
 
     def close(self):
         """
@@ -705,49 +751,155 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
 
     def bulk_save_transactions(self, rows: list[dict]) -> list[dict]:
         """
-        Save imported rows. An imported row that is the bank's copy of a transfer
-        FinanceBook already recorded (a mirror it created: same account, same
-        amount, within a few days, no import hash yet) takes that mirror's place
-        instead of becoming a duplicate. Rows a rule sent to a balance-sheet
-        account ("_transfer_to") become transfers, linking the other side when
-        it was already imported.
+        Save imported rows (callers with no preview, e.g. the QuickBooks
+        import). An imported row that is the bank's copy of a transfer
+        FinanceBook already recorded (the matching engine's "mirror": same
+        account, same amount, within a few days, no import hash yet) takes that
+        mirror's place instead of becoming a duplicate. Rows a rule sent to a
+        balance-sheet account ("_transfer_to") become transfers, linking the
+        other side when it was already imported. All in one DB transaction.
+
+        The Import page uses import_transactions() instead, which applies
+        exactly the matches its preview showed.
         """
+        from utils.matching import find_matches, MIRROR
         saved = []
-        for data in rows:
-            dest = data.pop("_transfer_to", "")
-            adopted = self._adopt_mirror(data) if data.get("import_hash") else None
-            if adopted:
-                saved.append(adopted)
-                continue
-            data["id"] = self._new_id()
-            data["created_at"] = self._now()
-            row = self.save_transaction(data)
-            if dest and dest != row.get("account_id"):
-                row = self.save_transfer_pair(row, dest, keep_sign=True, match_existing=True)
-            saved.append(row)
+        with self.atomic():
+            for data in rows:
+                dest = data.pop("_transfer_to", "")
+                if data.get("import_hash"):
+                    m = find_matches(self, [data], data.get("account_id", ""),
+                                     kinds=(MIRROR,))[0]
+                    if m.kind == MIRROR and m.candidates:
+                        saved.append(self._adopt_mirror(m.candidates[0].id, data))
+                        continue
+                data["id"] = self._new_id()
+                data["created_at"] = self._now()
+                row = self.save_transaction(data)
+                if dest and dest != row.get("account_id"):
+                    row = self.save_transfer_pair(row, dest, keep_sign=True,
+                                                  match_existing=True)
+                saved.append(row)
         return saved
 
-    def _adopt_mirror(self, data: dict) -> dict | None:
-        from datetime import date as _date
-        try:
-            d0 = _date.fromisoformat(data.get("date", ""))
-        except (TypeError, ValueError):
-            return None
-        lo = (d0 - timedelta(days=self.TRANSFER_MATCH_DAYS)).isoformat()
-        hi = (d0 + timedelta(days=self.TRANSFER_MATCH_DAYS)).isoformat()
+    def import_transactions(self, rows: list[dict]) -> dict:
+        """
+        Save rows from the Import page exactly as its preview decided - nothing
+        is matched or re-decided here. Each row may carry:
+          _match = {"kind": "mirror"|"manual"|"transfer"|"rule_transfer",
+                    "id": existing transaction id}
+            mirror         the bank row takes the FinanceBook-made transfer
+                           side's place (gets its import hash and date)
+            manual         merged into the hand-entered row: the user's
+                           category, class, payee, memo, notes and attachments
+                           stay; the bank's date and import hash are added
+            transfer /
+            rule_transfer  saved and linked with the other account's entry as
+                           one transfer (both filed under Account Transfers)
+          _transfer_to     (no _match) a rule's account: a new transfer whose
+                           other side FinanceBook creates
+        Anything else is saved as a new transaction. Everything happens in one
+        DB transaction: if one row fails, nothing is saved. Raises ValueError
+        if a matched transaction changed since the preview (parse again).
+
+        Returns {"saved": [...], "new", "adopted", "merged", "linked",
+        "rule_transfers"} - counts of what was done.
+        """
+        out = {"saved": [], "new": 0, "adopted": 0, "merged": 0, "linked": 0,
+               "rule_transfers": 0}
+        claimed = set()
+        with self.atomic():
+            for data in rows:
+                data = dict(data)
+                data.pop("_legacy_hash", None)
+                dest = data.pop("_transfer_to", "")
+                match = data.pop("_match", None) or {}
+                kind, cid = match.get("kind", ""), match.get("id", "")
+                cand = None
+                if kind:
+                    if not cid or cid in claimed:
+                        raise ValueError("Two rows were matched to the same transaction. "
+                                         "Parse the file again.")
+                    claimed.add(cid)
+                    cand = self.get_transaction(cid)
+                    self._check_import_match(kind, cand, data)
+                if kind == "mirror":
+                    out["saved"].append(self._adopt_mirror(cid, data))
+                    out["adopted"] += 1
+                elif kind == "manual":
+                    out["saved"].append(self._merge_import(cand, data))
+                    out["merged"] += 1
+                elif kind in ("transfer", "rule_transfer"):
+                    data.update({"id": self._new_id(), "created_at": self._now(),
+                                 "category_id": self.get_transfer_category_id()})
+                    row = self.save_transaction(data)
+                    self.link_transfer(row["id"], cid)
+                    out["saved"].append(self.get_transaction(row["id"]))
+                    out["linked"] += 1
+                else:
+                    data["id"] = self._new_id()
+                    data["created_at"] = self._now()
+                    row = self.save_transaction(data)
+                    if dest and dest != row.get("account_id"):
+                        row = self.save_transfer_pair(row, dest, keep_sign=True)
+                        out["rule_transfers"] += 1
+                    else:
+                        out["new"] += 1
+                    out["saved"].append(self.get_transaction(row["id"]) or row)
+        return out
+
+    def _check_import_match(self, kind: str, cand: dict | None, data: dict):
+        """Refuse a preview's match whose transaction changed since then."""
+        stale = ValueError("A transaction this import was matched to has changed "
+                           "since the preview. Parse the file again.")
+        if (cand is None or str(cand.get("reconciled", "0")) == "1"
+                or cand.get("split_group_id")):
+            raise stale
+        amt, camt = float(data.get("amount") or 0), float(cand.get("amount") or 0)
+        same = cand.get("account_id") == data.get("account_id")
+        linked = str(cand.get("is_transfer", "0")) == "1"
+        if kind == "mirror":
+            ok = same and linked and not cand.get("import_hash") and abs(amt - camt) < 0.005
+        elif kind == "manual":
+            ok = same and not linked and not cand.get("import_hash") and abs(amt - camt) < 0.005
+        else:
+            ok = not same and not linked and abs(amt + camt) < 0.005
+        if not ok:
+            raise stale
+
+    def _adopt_mirror(self, mirror_id: str, data: dict) -> dict:
+        """The bank's row replaces a transfer side FinanceBook made: the mirror
+        keeps its link and gets the bank's import hash and date."""
         with self._conn() as c:
-            row = c.execute(
-                "SELECT * FROM transactions WHERE account_id=? AND date BETWEEN ? AND ? "
-                "AND is_transfer=1 AND transfer_pair_id!='' AND import_hash='' "
-                "AND reconciled=0 AND COALESCE(split_group_id,'')='' "
-                "AND ABS(amount - ?) < 0.005 ORDER BY date LIMIT 1",
-                (data.get("account_id", ""), lo, hi,
-                 float(data.get("amount") or 0))).fetchone()
-            if not row:
-                return None
             c.execute("UPDATE transactions SET import_hash=?, date=? WHERE id=?",
-                      (data["import_hash"], data.get("date", ""), row["id"]))
-        return self.get_transaction(row["id"])
+                      (data["import_hash"], data.get("date", ""), mirror_id))
+        return self.get_transaction(mirror_id)
+
+    def _merge_import(self, cand: dict, data: dict) -> dict:
+        """
+        Merge a bank row into the user's own entry for it. The user's category,
+        class, payee, memo, notes and attachments stay (the entry keeps its id);
+        it takes the bank's date and import hash, and fills in whatever the user
+        left blank. When the user typed their own payee, the bank's description
+        goes into an empty memo so it can still be searched. The audit log keeps
+        the entry's values from before the merge.
+        """
+        payee = cand.get("payee") or data.get("payee", "")
+        memo = cand.get("memo") or data.get("memo", "")
+        bank_payee = data.get("payee") or ""
+        if (not cand.get("memo") and cand.get("payee") and bank_payee
+                and bank_payee != cand.get("payee")):
+            memo = bank_payee
+        with self._conn() as c:
+            c.execute(
+                "UPDATE transactions SET date=?, import_hash=?, payee=?, memo=?, "
+                "category_id=?, class_id=?, updated_at=? WHERE id=?",
+                (data.get("date") or cand.get("date", ""), data.get("import_hash", ""),
+                 payee, memo,
+                 cand.get("category_id") or data.get("category_id", ""),
+                 cand.get("class_id") or data.get("class_id", ""),
+                 self._now(), cand["id"]))
+        return self.get_transaction(cand["id"])
 
     def delete_transaction(self, txn_id: str):
         with self._conn() as c:
@@ -773,21 +925,29 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                 c.execute("DELETE FROM transactions WHERE id=?", (txn["id"],))
 
     def link_transfer(self, id_a: str, id_b: str):
+        """Make two existing entries one transfer: a shared pair id, both
+        flagged is_transfer (so P&L leaves them out) and filed under Account
+        Transfers."""
         pair_id = self._new_id()
+        tcat = self.get_transfer_category_id()
         with self._conn() as c:
             c.execute(
-                "UPDATE transactions SET is_transfer=1, transfer_pair_id=? WHERE id IN (?,?)",
-                (pair_id, id_a, id_b))
+                "UPDATE transactions SET is_transfer=1, transfer_pair_id=?, category_id=? "
+                "WHERE id IN (?,?)", (pair_id, tcat, id_a, id_b))
 
     def unlink_transfer(self, txn_id: str):
+        """Split a transfer pair back into ordinary entries (both kept). An entry
+        filed under Account Transfers goes back to uncategorized."""
+        tcat = self.get_transfer_category_id()
         with self._conn() as c:
             row = c.execute(
                 "SELECT transfer_pair_id FROM transactions WHERE id=?",
                 (txn_id,)).fetchone()
             if row and row["transfer_pair_id"]:
                 c.execute(
-                    "UPDATE transactions SET is_transfer=0, transfer_pair_id='' "
-                    "WHERE transfer_pair_id=?", (row["transfer_pair_id"],))
+                    "UPDATE transactions SET is_transfer=0, transfer_pair_id='', "
+                    "category_id=CASE WHEN category_id=? THEN '' ELSE category_id END "
+                    "WHERE transfer_pair_id=?", (tcat, row["transfer_pair_id"]))
 
     def get_transfer_partner(self, txn: dict) -> dict | None:
         """The other transaction in a transfer pair, or None."""

@@ -230,6 +230,33 @@ class DropdownTests(unittest.TestCase):
         self.assertEqual(pop.objectName(), "ComboPopup")
         self.assertIsInstance(pop.itemDelegate(), combo_item_delegate_class())
 
+    def test_import_match_dropdown_is_styled_and_drops_below(self):
+        """v1.17: the Import page's "2 possible matches" dropdown."""
+        from ui.pages.import_page import ImportPage
+        from ui.styles import combo_item_delegate_class
+        for d in ("2026-11-03", "2026-11-06"):
+            self.db.save_transaction({"date": d, "account_id": self.chk,
+                                      "payee": "Rent", "amount": "-565"})
+        page = ImportPage(self.db)
+        page.resize(1200, 600)          # leaves room below the combo on the 800 px offscreen screen
+        page.refresh()
+        page._acct_combo.setCurrentIndex(page._acct_combo.findData(self.chk))
+        path = os.path.join(os.path.dirname(__file__), "fixtures", "bank_csv",
+                            "wellsfargo_checking.csv")
+        with open(path, "rb") as f:
+            page.set_file(f.read(), "wellsfargo_checking.csv")
+        page._parse()
+        # The offscreen screen is only 800 px tall; without the column-mapping
+        # box the preview table sits mid-screen, as it does on a real monitor.
+        page._col_grp.hide()
+        self._show(page)
+        combos = [w for w in page._match_widgets.values() if isinstance(w, QComboBox)]
+        self.assertEqual(len(combos), 1)
+        cb = combos[0]
+        self.assertIsInstance(cb.itemDelegate(), combo_item_delegate_class())
+        self._snap(page, "import_match_preview.png")
+        self._check_open_popup(cb, "import_match_popup.png")
+
 
 if __name__ == "__main__":
     unittest.main()
