@@ -609,6 +609,7 @@ class ImportDialog(QDialog):
                         "operator":    "contains",
                         "value":       payee,
                         "value2":      "",
+                        "match_mode":  "any",
                         "category_id": cat_id,
                         "class_id":    "",
                         "priority":    50,

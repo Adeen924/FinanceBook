@@ -2,7 +2,8 @@
 Bank-rule conditions — Qt-free so matching and the rule text are unit-tested.
 
 A rule has one or more conditions and a match mode: "all" (every condition must
-hold) or "any" (at least one). Conditions are stored in the rule_conditions
+hold) or "any" (at least one). New rules default to "any"; a blank stored mode
+means "all". Conditions are stored in the rule_conditions
 table as {field, operator, value, value2}. Rules saved before v1.14 had a
 single condition in the rules row itself; the schema-12 migration copies it
 into one rule_conditions row, and legacy_condition() rebuilds it for a rule
@@ -42,6 +43,10 @@ _SHORT_FIELD = {"payee": "Payee", "memo": "Memo", "amount": "Amount", "date": "D
                 "direction": "Money", "account": "Bank account"}
 
 MATCH_MODES = ("all", "any")
+# A rule made from now on (the rule dialog, import's payee rules) matches Any of
+# its conditions. A stored rule with a blank match_mode — saved before v1.14 —
+# still means "all" (see rule_matches and Database.get_rules / save_rule).
+DEFAULT_NEW_MATCH_MODE = "any"
 
 
 def legacy_condition(rule: dict) -> dict:

@@ -147,10 +147,15 @@ class RuleDialog(QDialog):
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("Match"))
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem("All", "all")
         self.mode_combo.addItem("Any", "any")
-        self.mode_combo.setCurrentIndex(max(self.mode_combo.findData(
-            self.rule.get("match_mode") or "all"), 0))
+        self.mode_combo.addItem("All", "all")
+        # A new rule matches Any (v1.15.1). An existing rule keeps its saved mode;
+        # one saved before v1.14 (or with a blank mode) means All.
+        if self.rule:
+            mode = self.rule.get("match_mode") or "all"
+        else:
+            mode = RL.DEFAULT_NEW_MATCH_MODE
+        self.mode_combo.setCurrentIndex(max(self.mode_combo.findData(mode), 0))
         mode_row.addWidget(self.mode_combo)
         mode_row.addWidget(QLabel("of these conditions:"))
         mode_row.addStretch()
@@ -281,7 +286,7 @@ class RuleDialog(QDialog):
         data.update({
             "name":        self.name_edit.text().strip(),
             "conditions":  conds,
-            "match_mode":  self.mode_combo.currentData() or "all",
+            "match_mode":  self.mode_combo.currentData() or RL.DEFAULT_NEW_MATCH_MODE,
             "field":       first.get("field", "payee"),
             "operator":    first.get("operator", "contains"),
             "value":       first.get("value", ""),
