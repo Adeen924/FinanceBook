@@ -29,6 +29,8 @@ class ImportPage(QWidget):
         self._choice: dict = {}            # _parsed index → matched txn id ("" = don't)
         self._match_widgets: dict = {}     # _parsed index → its checkbox / dropdown
         self._dup_count = 0
+        self._dup_box = None               # the "duplicates found" popup, once per parse
+        self.dup_popups_shown = 0
         self._extra_status: list[str] = []
         self._fixes: list[dict] = []       # earlier imports whose sign gets corrected
         self._file_bytes = b""
@@ -300,10 +302,53 @@ class ImportPage(QWidget):
         self._update_status()
         self._import_btn.setEnabled(bool(new or fixes))
 
+        if dups and not from_toggle:
+            # Once per parse (Parse File); Flip all signs re-renders silently.
+            self._show_duplicates(dups, nothing_new=not (new or fixes))
+
         if warnings and not from_toggle:
             QMessageBox.warning(self, "Parse Warnings",
                 "\n".join(warnings[:10]) +
                 ("\n…and more" if len(warnings) > 10 else ""))
+
+    def duplicate_report(self, dups, nothing_new: bool) -> tuple[str, str]:
+        """(message, details) for the duplicates popup: one details line per
+        row already imported — date, payee, amount and the account it's in."""
+        n = len(dups)
+        if nothing_new:
+            text = (f"Nothing new to import — all {n} transaction"
+                    f"{'s were' if n != 1 else ' was'} already imported.")
+        else:
+            text = f"{n} duplicate transaction(s) were found and won't be imported."
+        found = self.db.transactions_by_import_hash([t.get("import_hash") for t in dups])
+        names = {a["id"]: a["name"] for a in self.db.get_accounts(active=None)}
+        lines = []
+        for t in sorted(dups, key=lambda t: t.get("date", "")):
+            amt = float(t.get("amount") or 0)
+            where = found.get(t.get("import_hash"), {}).get("account_id") or t.get("account_id")
+            payee = t.get("payee") or t.get("memo") or "—"
+            lines.append(f"{fmt_date(t.get('date', ''))}  ·  {payee}  ·  "
+                         f"{'-' if amt < 0 else ''}{_money(amt)}  ·  "
+                         f"already in {names.get(where, 'another account')}")
+        return text, "\n".join(lines)
+
+    def _show_duplicates(self, dups, nothing_new: bool):
+        text, details = self.duplicate_report(dups, nothing_new)
+        if self._dup_box is not None:
+            self._dup_box.close()
+            self._dup_box.deleteLater()
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("Nothing New to Import" if nothing_new else "Duplicates Found")
+        box.setText(text)
+        box.setInformativeText("They match rows imported earlier (same date, amount and "
+                               "description in this account). Click “Show Details…” "
+                               "to see them.")
+        box.setDetailedText(details)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        self._dup_box = box
+        self.dup_popups_shown += 1
+        box.open()              # window-modal; the preview stays behind it
 
     def _render_summary(self, parsed, res):
         label = res.format_label if res else "OFX / QFX statement"
@@ -584,6 +629,9 @@ class ImportPage(QWidget):
             saved = res["saved"]
             self.last_result = res
             msg = f"Successfully imported {len(saved)} transactions."
+            if self._dup_count:
+                msg += (f"\n\n{self._dup_count} duplicate"
+                        f"{'s' if self._dup_count != 1 else ''} skipped (already imported).")
             done_bits = []
             if res["new"] or res["rule_transfers"]:
                 done_bits.append(f"{res['new'] + res['rule_transfers']} new")

@@ -1534,6 +1534,20 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         if self.is_business():
             self.ensure_business_setup()
 
+    def transactions_by_import_hash(self, hashes) -> dict:
+        """{import_hash: the transaction already imported with it} (the
+        Import page's duplicate list says where each one is)."""
+        hashes = [h for h in dict.fromkeys(hashes or ()) if h]
+        out: dict = {}
+        with self._conn() as c:
+            for i in range(0, len(hashes), 500):
+                chunk = hashes[i:i + 500]
+                for r in c.execute(
+                        "SELECT * FROM transactions WHERE import_hash IN "
+                        f"({','.join('?' * len(chunk))}) ORDER BY created_at", chunk):
+                    out.setdefault(r["import_hash"], _to_dict(r))
+        return out
+
     def get_existing_hashes(self) -> set:
         with self._conn() as c:
             rows = c.execute(
