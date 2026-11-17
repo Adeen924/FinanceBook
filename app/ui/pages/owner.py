@@ -145,7 +145,7 @@ class OwnerInvestmentPage(QWidget):
         self._kpi_drawn.set_values(fmt(r["drawn"]), "in range", None, "taken out")
 
         self._items = r["items"]
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         accts = {a["id"]: a for a in self.db.get_accounts(active=None)}
         self._table.clear_rows()
         self._table.setRowCount(len(self._items))
@@ -221,7 +221,7 @@ class OwnerInvestmentPage(QWidget):
         if not path:
             return
         r = self._report()
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         accts = {a["id"]: a for a in self.db.get_accounts(active=None)}
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:

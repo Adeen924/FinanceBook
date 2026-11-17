@@ -1,23 +1,32 @@
-"""Extra report tabs for the Reports page (grids built from utils.reports)."""
+"""Extra report tabs for the Reports page (grids built from utils.reports).
+
+v1.18: By Class / Project, By Vendor and Cash Flow take the Reports page's
+"Columns:" choice (supports_period); P&L-shaped grids list sub-accounts
+indented under their parent. The first column stays put while the amounts
+scroll sideways. The old By Month tab is now the P&L's Month columns.
+"""
 import csv
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QHeaderView, QDialog,
-                             QFormLayout, QDoubleSpinBox, QDialogButtonBox, QScrollArea,
-                             QPushButton)
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHeaderView, QDialog,
+                             QFormLayout, QDoubleSpinBox, QDialogButtonBox, QScrollArea)
 from PyQt6.QtCore import Qt
 
-from ui.widgets import DataTable, SecondaryButton
-from ui.styles import SUCCESS, DANGER, MUTED
-from utils.money import fmt, D, ZERO
+from ui.widgets import DataTable, SecondaryButton, FrozenColumn
+from ui.styles import DANGER, MUTED
+from utils.money import fmt, ZERO
 from utils import reports as RP
 
 RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+INDENT = "    "
+# pnl_lines() kinds drawn in bold.
+_BOLD_KINDS = ("section", "section_total", "summary", "total", "group", "parent")
 
 
 class GridTab(QWidget):
-    """A titled table + note; subclasses fill self.header/self.rows in build()."""
+    """A titled table + note; subclasses fill self.header / self.rows (and the
+    row numbers to draw bold in self.bold) in build()."""
     note = ""
+    supports_period = False
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -30,108 +39,145 @@ class GridTab(QWidget):
         lay.addWidget(self.summary)
         self.table = DataTable(["—"])
         lay.addWidget(self.table, 1)
+        self._frozen = FrozenColumn(self.table)
         if self.note:
             n = QLabel(self.note)
             n.setObjectName("Muted")
             n.setWordWrap(True)
             lay.addWidget(n)
-        self.header, self.rows = [], []
+        self.header, self.rows, self.bold = [], [], set()
 
-    def run(self, start, end, cls=""):
-        self.header, self.rows = [], []
-        self.build(start, end, cls)
+    def run(self, start, end, cls="", period="total"):
+        self.header, self.rows, self.bold = [], [], set()
+        if self.supports_period:
+            self.build(start, end, cls, period)
+        else:
+            self.build(start, end, cls)
         t = self.table
         t.clear()
         t.setColumnCount(len(self.header))
         t.setHorizontalHeaderLabels([h.upper() for h in self.header])
         t.setRowCount(len(self.rows))
-        t.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        wide = len(self.header) > 6
+        hdr = t.horizontalHeader()
+        hdr.setStretchLastSection(not wide)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive if wide
+                                 else QHeaderView.ResizeMode.Stretch)
+        if wide:
+            t.setColumnWidth(0, 300)
         for c in range(1, len(self.header)):
-            t.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+            hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
             t.setColumnWidth(c, 104)
         for r, row in enumerate(self.rows):
-            bold = str(row[0]).startswith(("Total", "Net", "Ending", "Beginning")) or \
-                str(row[0]).isupper()
+            first = str(row[0])
+            bold = r in self.bold or first.startswith(
+                ("Total", "Net", "Ending", "Beginning")) or bool(first.isupper() and first.strip())
             for c, v in enumerate(row):
                 if isinstance(v, (int, float)) or hasattr(v, "quantize"):
                     t.set_item(r, c, fmt(v) if v else "—", align=RIGHT, bold=bold,
                                color=(DANGER if v < 0 else None) if v else MUTED)
                 else:
-                    t.set_item(r, c, str(v), bold=bold)
+                    t.set_item(r, c, "" if v is None else str(v), bold=bold)
+        self._frozen.sync(enabled=wide)
 
-    def build(self, start, end, cls):   # pragma: no cover — overridden
+    def build(self, start, end, cls, period="total"):   # pragma: no cover — overridden
         pass
 
     def export(self, path):
+        """The grid as on screen (same columns), amounts with 2 decimals."""
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(self.header)
             for row in self.rows:
-                w.writerow([f"{v:.2f}" if hasattr(v, "quantize") else v for v in row])
+                w.writerow([f"{v:.2f}" if hasattr(v, "quantize") else
+                            ("" if v is None else v) for v in row])
 
-    def _rows(self, start, end, cls):
-        rows = self.db.report_rows(start, end, with_computed=not cls)
+    def _rows(self, start, end, cls, period="total"):
+        rows = self.db.report_rows(start, end, with_computed=not cls, period=period)
         return [r for r in rows if not cls or r["class_id"] == cls]
 
-
-class ByMonthTab(GridTab):
-    note = "Profit & loss by month. Expenses are negative; computed lines (depreciation, COGS) " \
-           "are placed in the last month of the range."
-
-    def build(self, start, end, cls):
-        rows = self._rows(start, end, cls)
-        months = RP.months_between(start, end)
-        g = RP.pivot(rows, lambda r: (RP.pnl_section_label(r), r["group"]), lambda r: r["month"])
-        self.header = ["Account"] + [f"{MONTHS[int(m[5:]) - 1]} {m[2:4]}" for m in months] + ["Total"]
-        has_other = any(k[0].startswith("Other") for k in g if k != "__total__")
-        for sec in RP.PNL_SECTION_ORDER:
-            keys = sorted(k for k in g if k != "__total__" and k[0] == sec)
-            if sec == "Other Income" and has_other:
-                op = RP.pivot([r for r in rows if not r.get("other")], lambda r: "op",
-                              lambda r: r["month"]).get("op", {})
-                self.rows.append(["Net operating income"] + [op.get(m, ZERO) for m in months]
-                                 + [op.get("__total__", ZERO)])
-            if keys:
-                self.rows.append([{"Expense": "EXPENSES"}.get(sec, sec.upper())]
-                                 + [""] * (len(months) + 1))
-            for k in keys:
-                self.rows.append([k[1]] + [g[k].get(m, ZERO) for m in months] + [g[k]["__total__"]])
-        tot = g.get("__total__", {})
-        self.rows.append(["Net income"] + [tot.get(m, ZERO) for m in months] + [tot.get("__total__", ZERO)])
-        self.summary.setText(f"<b>Net income for the period:</b> {fmt(tot.get('__total__', 0))}")
+    def add_pnl_lines(self, lines, columns):
+        """Append pnl_lines() rows: the account indented by its level, one
+        amount per column (blank for a heading)."""
+        for ln in lines:
+            label = INDENT * ln["depth"] + ln["label"]
+            if ln["amounts"] is None:
+                vals = [""] * len(columns)
+            else:
+                vals = [ln["amounts"].get(c, ZERO) for c in columns]
+            if ln["kind"] in _BOLD_KINDS:
+                self.bold.add(len(self.rows))
+            self.rows.append([label] + vals)
 
 
 class ByClassTab(GridTab):
-    note = "Profit & loss by class / project / marketing campaign (set on each transaction or " \
-           "receipt line). ROI = income ÷ spend for classes that have both."
+    note = ("Profit & loss by class / project / marketing campaign (set on each transaction "
+            "or receipt line). With Total, each class is a column; with Day … Year, each "
+            "class gets its own block of period columns. Sub-accounts are indented under "
+            "their parent. Expenses are shown as positive amounts.")
+    supports_period = True
 
-    def build(self, start, end, cls):
-        rows = self.db.report_rows(start, end, with_computed=False)
+    def build(self, start, end, cls, period="total"):
+        rows = self.db.report_rows(start, end, with_computed=False, period=period)
         names = {c["id"]: c["name"] for c in self.db.get_classes()}
+        cats = self.db.category_map()
+        keys = sorted({r["class_id"] or "" for r in rows},
+                      key=lambda k: (k == "", names.get(k, "~").lower()))
+
+        def name(k):
+            return names.get(k, "(no class)") if k else "(no class)"
+        if period == "total":
+            rep = RP.pnl_report(rows, cats, keys, lambda r: r["class_id"] or "")
+            self.header = ["Account"] + [name(k) for k in keys] + ["Total"]
+            self.add_pnl_lines(RP.pnl_lines(rep), rep["columns"])
+        else:
+            buckets = RP.period_buckets(start, end, period)
+            self.header = ["Account"] + [b.label for b in buckets] + ["Total"]
+            col_keys = [b.key for b in buckets]
+            for k in keys:
+                mine = [r for r in rows if (r["class_id"] or "") == k]
+                rep = RP.pnl_report(mine, cats, col_keys,
+                                    lambda r: RP.period_key(r["date"], period))
+                self.bold.add(len(self.rows))
+                self.rows.append([name(k).upper()] + [""] * (len(col_keys) + 1))
+                self.add_pnl_lines(RP.pnl_lines(rep), rep["columns"])
         g = RP.pivot(rows, lambda r: r["class_id"] or "", lambda r: r["section"])
-        self.header = ["Class / project / campaign", "Income", "Spend", "Net", "ROI"]
-        for k in sorted((k for k in g if k != "__total__"), key=lambda k: (k == "", names.get(k, "~"))):
-            inc, exp = g[k].get("income", ZERO), -g[k].get("expense", ZERO)
-            roi = f"{(inc / exp):.1f}×" if inc and exp else "—"
-            self.rows.append([names.get(k, "(no class)") if k else "(no class)", inc, exp,
-                              g[k]["__total__"], roi])
-        self.summary.setText("Tag spend with a class (e.g. a campaign name) to see what each one "
-                             "costs and earns.")
+        roi = []
+        for k in keys:
+            inc, exp = g.get(k, {}).get("income", ZERO), -g.get(k, {}).get("expense", ZERO)
+            if inc and exp:
+                roi.append(f"{name(k)}: {inc / exp:.1f}×")
+        self.summary.setText(
+            ("<b>ROI</b> (income ÷ spend): " + " · ".join(roi)) if roi else
+            "Tag spend with a class (e.g. a campaign name) to see what each one costs and earns.")
 
 
 class ByVendorTab(GridTab):
-    note = "Money out by vendor (contact, or payee when no contact is set) and money in by customer."
+    note = "Money out by vendor (contact, or payee when no contact is set) and money in by " \
+           "customer. With Day … Year columns each period shows the net (money in − out)."
+    supports_period = True
 
-    def build(self, start, end, cls):
-        rows = self._rows(start, end, cls)
+    def build(self, start, end, cls, period="total"):
+        rows = [r for r in self._rows(start, end, cls) if r.get("payee") != "(computed)"]
         names = {c["id"]: c["name"] for c in self.db.get_contacts(active_only=False)}
         key = lambda r: names.get(r["contact_id"]) or (r["payee"] or "(no payee)")  # noqa: E731
-        g = RP.pivot([r for r in rows if r.get("payee") != "(computed)"], key, lambda r: r["section"])
-        self.header = ["Vendor / customer", "Spent", "Received", "Net"]
+        g = RP.pivot(rows, key, lambda r: r["section"])
         items = sorted(((k, v) for k, v in g.items() if k != "__total__"),
                        key=lambda kv: kv[1].get("expense", ZERO))
-        for k, v in items:
-            self.rows.append([k, -v.get("expense", ZERO), v.get("income", ZERO), v["__total__"]])
+        if period == "total":
+            self.header = ["Vendor / customer", "Spent", "Received", "Net"]
+            for k, v in items:
+                self.rows.append([k, -v.get("expense", ZERO), v.get("income", ZERO),
+                                  v["__total__"]])
+        else:
+            buckets = RP.period_buckets(start, end, period)
+            per = RP.pivot(rows, key, lambda r: RP.period_key(r["date"], period))
+            self.header = (["Vendor / customer"] + [b.label for b in buckets]
+                           + ["Spent", "Received", "Net"])
+            for k, v in items:
+                self.rows.append([k] + [per[k].get(b.key, ZERO) for b in buckets]
+                                 + [-v.get("expense", ZERO), v.get("income", ZERO),
+                                    v["__total__"]])
         self.summary.setText(f"{len(items)} vendors / customers in this period.")
 
 
@@ -161,12 +207,13 @@ class ByPersonTab(GridTab):
 
 class ScheduleCTab(GridTab):
     note = "Schedule C (Form 1040) estimate from your categories' tax lines; meals at their " \
-           "deductible %. Bookkeeping aid only — confirm with your accountant."
+           "deductible %. Cost of Goods Sold accounts go on line 4. Bookkeeping aid only — " \
+           "confirm with your accountant."
 
     def build(self, start, end, cls):
         from business_categories import TAX_LINES
         from reports_export import _line_sort
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         sc = RP.schedule_c(self.db.report_rows(start, end), cats)
         self.header = ["Schedule C line", "Book amount", "Deductible"]
         for code, v in sorted(sc["lines"].items(), key=lambda kv: _line_sort(kv[0])):
@@ -182,27 +229,40 @@ class ScheduleCTab(GridTab):
 
 class CashFlowTab(GridTab):
     note = "Direct method, cash accounts only (bank, cash, petty cash). Card purchases count when " \
-           "the card is paid."
+           "the card is paid. With Day … Year columns each period begins where the one before " \
+           "it ended."
+    supports_period = True
 
-    def build(self, start, end, cls):
-        cats = {c["id"]: c for c in self.db.get_categories()}
-        cf = RP.cash_flow(self.db.get_accounts(active=None), self.db.get_transactions(), cats,
-                          start, end)
-        self.header = ["Cash flow", "Amount"]
-        self.rows.append(["Beginning cash", cf["begin"]])
+    def build(self, start, end, cls, period="total"):
+        cats = self.db.category_map()
+        accts, txns = self.db.get_accounts(active=None), self.db.get_transactions()
+        tot = RP.cash_flow(accts, txns, cats, start, end)
+        if period == "total":
+            parts, labels = [tot], ["Amount"]
+        else:
+            buckets = RP.period_buckets(start, end, period)
+            parts = [RP.cash_flow(accts, txns, cats, b.start, b.end) for b in buckets] + [tot]
+            labels = [b.label for b in buckets] + ["Total"]
+        self.header = ["Cash flow"] + labels
+        self.rows.append(["Beginning cash"] + [p["begin"] for p in parts])
+        order = {lbl: i for i, lbl in enumerate(RP.CASH_FLOW_LINE_ORDER)}
         for sec, title in (("operating", "OPERATING"), ("investing", "INVESTING"),
                            ("financing", "FINANCING")):
-            self.rows.append([title, ""])
-            for label, v in cf["sections"][sec].items():
-                self.rows.append(["    " + label, v])
-            self.rows.append([f"Net {sec}", cf["totals"][sec]])
-        self.rows.append(["Ending cash", cf["end"]])
-        self.summary.setText(f"<b>Net change in cash:</b> {fmt(cf['net_change'])}")
+            self.rows.append([title] + [""] * len(parts))
+            lines = sorted({lbl for p in parts for lbl in p["sections"][sec]},
+                           key=lambda lbl: (order.get(lbl, len(order)), lbl))
+            for lbl in lines:
+                self.rows.append([INDENT + lbl] + [p["sections"][sec].get(lbl, ZERO)
+                                                   for p in parts])
+            self.rows.append([f"Net {sec}"] + [p["totals"][sec] for p in parts])
+        self.rows.append(["Ending cash"] + [p["end"] for p in parts])
+        self.summary.setText(f"<b>Net change in cash:</b> {fmt(tot['net_change'])}")
 
 
 class BudgetTab(GridTab):
-    note = "Monthly budgets per top-level category. Variance: positive is good (under budget for " \
-           "expenses, over budget for income)."
+    note = "Monthly budgets per top-level account; its sub-accounts are listed under it " \
+           "(their actuals roll up). Variance: positive is good (under budget for expenses, " \
+           "over budget for income)."
 
     def __init__(self, db, parent=None):
         super().__init__(db, parent)
@@ -213,12 +273,19 @@ class BudgetTab(GridTab):
 
     def build(self, start, end, cls):
         self._last = (start, end, cls)
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         out = RP.budget_vs_actual(self._rows(start, end, cls), self.db.get_budgets(), cats, start, end)
         self.header = ["Category", "Budget", "Actual", "Variance", "% used"]
+        nested = any(r.get("depth") for r in out)
         for r in out:
-            pct = f"{r['pct']:.0f}%" if r["pct"] is not None else "—"
-            self.rows.append([r["name"], r["budget"], r["actual"], r["variance"], pct])
+            depth = r.get("depth", 0)
+            if depth == 0:
+                pct = f"{r['pct']:.0f}%" if r["pct"] is not None else "—"
+                if nested:
+                    self.bold.add(len(self.rows))
+                self.rows.append([r["name"], r["budget"], r["actual"], r["variance"], pct])
+            else:
+                self.rows.append([INDENT * depth + r["name"], None, r["actual"], None, ""])
         if not self.db.get_budgets():
             self.summary.setText("No budgets yet — click <b>Edit Budgets…</b>.")
         else:
@@ -235,16 +302,17 @@ class BudgetTab(GridTab):
         f = QFormLayout(holder)
         budgets = self.db.get_budgets()
         spins = {}
-        for c in self.db.get_categories():
-            if c.get("parent_id") or c.get("type") not in ("income", "expense",
-                                                             "other_income", "other_expense"):
-                continue
+        prefix = {"income": "Income · ", "cogs": "Cost of goods · ",
+                  "other_income": "Other income · ", "other_expense": "Other expense · "}
+        rank = {"income": 0, "cogs": 1, "expense": 2, "other_income": 3, "other_expense": 4}
+        cats = [c for c in self.db.get_categories()
+                if not c.get("parent_id") and c.get("type") in rank]
+        for c in sorted(cats, key=lambda c: (rank[c["type"]], c["name"].lower())):
             s = QDoubleSpinBox()
             s.setRange(0, 9_999_999)
             s.setPrefix("$")
             s.setValue(budgets.get(c["id"], 0))
-            f.addRow({"income": "Income · ", "other_income": "Other income · ",
-                      "other_expense": "Other expense · "}.get(c["type"], "") + c["name"], s)
+            f.addRow(prefix.get(c["type"], "") + c["name"], s)
             spins[c["id"]] = s
         sa.setWidget(holder)
         lay.addWidget(sa)
@@ -260,8 +328,7 @@ class BudgetTab(GridTab):
 
 
 def extra_tabs(db) -> list[tuple[str, type]]:
-    tabs = [("By Month", ByMonthTab), ("By Class / Project", ByClassTab),
-            ("By Vendor", ByVendorTab)]
+    tabs = [("By Class / Project", ByClassTab), ("By Vendor", ByVendorTab)]
     if db.is_business():
         tabs += [("By Person", ByPersonTab), ("Schedule C", ScheduleCTab)]
     tabs += [("Cash Flow", CashFlowTab), ("Budget vs Actual", BudgetTab)]

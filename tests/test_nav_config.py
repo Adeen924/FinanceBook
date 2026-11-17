@@ -10,8 +10,9 @@ import tests  # noqa: F401
 from utils import nav_config as NC
 from sheets.client import Database
 
-# The sidebar a Personal book has always had — it must never change.
-PERSONAL_ORDER = ["Dashboard", "Accounts", "Transactions", "Transfers", "Import",
+# The sidebar a Personal book has always had (v1.18: minus Transfers, now the
+# Find Transfers… button on Transactions).
+PERSONAL_ORDER = ["Dashboard", "Accounts", "Transactions", "Import",
                   "Reconcile", "Loans", "Recurring", "Rules", "Reports"]
 
 
@@ -70,7 +71,7 @@ class PersonalTests(unittest.TestCase):
 
     def test_icons_unchanged(self):
         self.assertEqual([it.icon for it in NC.visible_items("personal")],
-                         ["dashboard", "accounts", "transactions", "transfers", "import",
+                         ["dashboard", "accounts", "transactions", "import",
                           "reconcile", "loans", "calendar", "rules", "reports"])
 
 
@@ -143,7 +144,7 @@ class LayoutTests(unittest.TestCase):
     def test_hubs(self):
         items = {it.id: it for it in NC.visible_items("business")}
         self.assertEqual(items["Transactions"].pages,
-                         ("Transactions", "Import", "Reconcile", "Transfers", "Recurring"))
+                         ("Transactions", "Import", "Reconcile", "Recurring"))
         self.assertEqual(items["Accounts"].pages, ("Accounts", "Loans"))
         self.assertEqual(items["Invoices & Bills"].pages, ("Invoices & Bills", "Contacts"))
         self.assertEqual(items["Rules"].pages, ("Rules",))

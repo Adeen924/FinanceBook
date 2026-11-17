@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (QPushButton, QLabel, QFrame, QTableWidget,
                               QWidget, QSizePolicy, QLineEdit, QCalendarWidget,
                               QComboBox, QCompleter, QAbstractItemView, QScroller,
                               QToolTip)
-from PyQt6.QtCore import Qt, QSize, QDate, QRectF, QPointF, QLineF, pyqtSignal
+from PyQt6.QtCore import (Qt, QSize, QDate, QRectF, QPointF, QLineF, pyqtSignal,
+                          QObject, QEvent)
 from PyQt6.QtGui import (QColor, QFont, QPainter, QPainterPath, QPen, QBrush,
                          QIcon, QPixmap, QLinearGradient, QRadialGradient,
                          QFontMetrics, QTextCharFormat)
@@ -638,6 +639,128 @@ class DataTable(QTableWidget):
 
     def clear_rows(self):
         self.setRowCount(0)
+
+
+class FrozenColumn(QObject):
+    """
+    Keeps column 0 (the account names) of a wide QTreeView / QTableView in
+    place while the other columns scroll sideways — Qt's "frozen column"
+    pattern: a second view of the same model and selection, showing only
+    column 0, laid over the first. Scrolling, row heights, the column width and
+    (for trees) expand / collapse are kept in step. Call sync() after the
+    columns change; sync(enabled=False) hides it (nothing to scroll past).
+    """
+    def __init__(self, view):
+        super().__init__(view)
+        from PyQt6.QtWidgets import QTreeView, QTableView, QAbstractItemView
+        self.base = view
+        self.is_tree = isinstance(view, QTreeView)
+        self.enabled = True
+        f = QTreeView(view) if self.is_tree else QTableView(view)
+        self.view = f
+        f.setObjectName("FrozenColumn")
+        f.setModel(view.model())
+        f.setSelectionModel(view.selectionModel())
+        f.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        f.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        f.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        f.setFrameShape(QFrame.Shape.NoFrame)
+        f.setSelectionBehavior(view.selectionBehavior())
+        f.setSelectionMode(view.selectionMode())
+        f.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        f.setAlternatingRowColors(view.alternatingRowColors())
+        # Opaque, so the columns scrolling underneath don't show through.
+        f.setStyleSheet(f"QTreeView#FrozenColumn, QTableView#FrozenColumn "
+                        f"{{ background: {S.CARD_BG}; border: none; "
+                        f"border-right: 1px solid {S.BORDER}; }}")
+        f.setAutoFillBackground(True)
+        f.viewport().setAutoFillBackground(True)
+        for v in (view, f):
+            v.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        view.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        if self.is_tree:
+            f.setRootIsDecorated(view.rootIsDecorated())
+            f.setIndentation(view.indentation())
+            f.setUniformRowHeights(view.uniformRowHeights())
+            f.setItemsExpandable(view.itemsExpandable())
+            f.header().setStretchLastSection(False)
+            f.header().setDefaultAlignment(view.header().defaultAlignment())
+            view.expanded.connect(f.expand)
+            view.collapsed.connect(f.collapse)
+            f.expanded.connect(view.expand)
+            f.collapsed.connect(view.collapse)
+            view.header().sectionResized.connect(self._resized)
+        else:
+            f.verticalHeader().hide()
+            f.verticalHeader().setDefaultSectionSize(view.verticalHeader().defaultSectionSize())
+            f.horizontalHeader().setDefaultAlignment(
+                view.horizontalHeader().defaultAlignment())
+            f.horizontalHeader().setFont(view.horizontalHeader().font())
+            f.setShowGrid(view.showGrid())
+            f.setWordWrap(view.wordWrap())
+            view.horizontalHeader().sectionResized.connect(self._resized)
+            view.verticalHeader().sectionResized.connect(self._row_resized)
+        f.verticalScrollBar().valueChanged.connect(view.verticalScrollBar().setValue)
+        view.verticalScrollBar().valueChanged.connect(f.verticalScrollBar().setValue)
+        view.viewport().stackUnder(f)
+        view.installEventFilter(self)
+        self.sync()
+
+    def eventFilter(self, obj, ev):
+        if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.LayoutRequest):
+            self._geometry()
+        return False
+
+    def _resized(self, logical, _old, new):
+        if logical == 0:
+            self.view.setColumnWidth(0, new)
+            self._geometry()
+
+    def _row_resized(self, row, _old, new):
+        self.view.setRowHeight(row, new)
+
+    def sync(self, enabled: bool = None):
+        """Show only column 0, at the base view's width, in the same place."""
+        if enabled is not None:
+            self.enabled = enabled
+        f, base = self.view, self.base
+        n = base.model().columnCount() if base.model() is not None else 0
+        for c in range(n):
+            f.setColumnHidden(c, c != 0)
+        f.setColumnWidth(0, base.columnWidth(0))
+        if self.is_tree:
+            f.header().setVisible(not base.isHeaderHidden())
+            if base.header().height():
+                f.header().setFixedHeight(base.header().height())
+            self._copy_expansion()
+        else:
+            f.horizontalHeader().setFixedHeight(base.horizontalHeader().height())
+            for r in range(base.model().rowCount() if base.model() is not None else 0):
+                f.setRowHeight(r, base.rowHeight(r))
+        f.verticalScrollBar().setValue(base.verticalScrollBar().value())
+        f.setVisible(self.enabled and n > 1)
+        self._geometry()
+
+    def _copy_expansion(self):
+        model = self.base.model()
+        stack = [model.index(r, 0) for r in range(model.rowCount())]
+        while stack:
+            ix = stack.pop()
+            if model.rowCount(ix):
+                self.view.setExpanded(ix, self.base.isExpanded(ix))
+                stack.extend(model.index(r, 0, ix) for r in range(model.rowCount(ix)))
+
+    def _geometry(self):
+        base, f = self.base, self.view
+        fw = base.frameWidth()
+        if self.is_tree:
+            x = fw
+            h = base.viewport().height() + (base.header().height()
+                                            if not base.isHeaderHidden() else 0)
+        else:
+            x = fw + (base.verticalHeader().width() if base.verticalHeader().isVisible() else 0)
+            h = base.viewport().height() + base.horizontalHeader().height()
+        f.setGeometry(x, fw, base.columnWidth(0), h)
 
 
 # ── Charts (QPainter only) ───────────────────────────────────────────────────

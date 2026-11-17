@@ -32,7 +32,7 @@ from ui.dialogs import receipt_dialog as RD
 
 YES, NO, OK = (QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No,
                QMessageBox.StandardButton.Ok)
-PERSONAL_SIDEBAR = ["Dashboard", "Accounts", "Transactions", "Transfers", "Import", "Reconcile",
+PERSONAL_SIDEBAR = ["Dashboard", "Accounts", "Transactions", "Import", "Reconcile",
                     "Loans", "Recurring", "Rules", "Reports", "Settings"]
 OLD_PAGE_NAMES = ["Dashboard", "Accounts", "Transactions", "Transfers", "Import", "Reconcile",
                   "Loans", "Recurring", "Rules", "Categories", "Owner Investment", "Receipts",
@@ -204,7 +204,7 @@ class NavigateTests(NavCase):
         self.assertEqual(w._current_page, "Loans")
         w._nav_to("Transactions")
         self.assertEqual(w._stack.currentWidget().tab_labels(),
-                         ["Transactions", "Import", "Reconcile", "Transfers", "Recurring"])
+                         ["Transactions", "Import", "Reconcile", "Recurring"])
 
     def test_open_account_transactions(self):
         path = self.make_db()

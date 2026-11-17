@@ -25,7 +25,6 @@ def _page_constructors() -> dict:
     from ui.pages.accounts     import AccountsPage
     from ui.pages.loans        import LoansPage
     from ui.pages.transactions import TransactionsPage
-    from ui.pages.transfers    import TransfersPage
     from ui.pages.import_page  import ImportPage
     from ui.pages.rules        import RulesPage
     from ui.pages.reconcile    import ReconcilePage
@@ -42,7 +41,7 @@ def _page_constructors() -> dict:
     from ui.pages.recurring    import RecurringPage
     return {
         "Dashboard": DashboardPage, "Accounts": AccountsPage, "Loans": LoansPage,
-        "Transactions": TransactionsPage, "Transfers": TransfersPage,
+        "Transactions": TransactionsPage,
         "Import": ImportPage, "Rules": RulesPage,
         "Reconcile": ReconcilePage, "Reports": ReportsPage,
         "Settings": SettingsPage, "Owner Investment": OwnerInvestmentPage,

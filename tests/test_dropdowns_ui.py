@@ -147,6 +147,16 @@ class DropdownTests(unittest.TestCase):
         self._check_open_popup(dlg._rows[0].field_combo)
         self._check_open_popup(dlg._rows[1].choice_combo)
 
+    def test_report_columns_dropdown(self):
+        """v1.18: the Reports page's Columns: dropdown uses the shared look."""
+        from ui.pages.reports import ReportsPage
+        from ui.styles import combo_item_delegate_class
+        page = ReportsPage(self.db)
+        page.resize(1200, 700)
+        self._show(page)
+        self.assertIsInstance(page._period_combo.itemDelegate(), combo_item_delegate_class())
+        self._check_open_popup(page._period_combo, "report_columns_popup.png")
+
     def test_money_in_out_and_bank_account_popups(self):
         dlg = self._txn_dialog()
         self._check_open_popup(dlg.direction_combo, "txn_money_in_out_popup.png")

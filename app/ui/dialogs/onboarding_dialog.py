@@ -28,7 +28,8 @@ STEPS = [
      "• <b>Accounts</b> — your bank, credit-card, loan and cash accounts<br>"
      "• <b>Transactions</b> — every entry, with search and filters<br>"
      "• <b>Import</b> — bring in bank/QuickBooks files<br>"
-     "• <b>Categories, Rules, Transfers, Reconcile, Reports</b> — organize and review<br>"
+     "• <b>Rules, Reconcile, Reports</b> — organize and review "
+     "(<b>Find Transfers…</b> is on Transactions)<br>"
      "• <b>Settings</b> (bottom) — database name, migration wizard, and more"),
 
     ("🏦", "Step 1 — Add your accounts",

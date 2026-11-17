@@ -67,7 +67,7 @@ class RulesPage(QWidget):
             "Set the account on every uncategorized transaction using your active rules.")
         rules = self.db.get_rules()
         self._rules = rules
-        cats  = {c["id"]: c["name"] for c in self.db.get_categories()}
+        cats  = {c["id"]: c["name"] for c in self.db.get_categories(include_inactive=True)}
         accts = {a["id"]: a["name"] for a in self.db.get_accounts(active=None)}
 
         self._table.clear_rows()

@@ -95,7 +95,7 @@ class TaxesPage(QWidget):
             self.db.set_setting("tax_w2_wages", str(self._wages.value()))
         today = date.today()
         from utils.reports import schedule_c
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         sc = schedule_c(self.db.report_rows(f"{today.year}-01-01", today.isoformat()), cats)
         t = self._tables(today.year)
         e = TX.estimated_tax(t, sc["net_profit"], today.isoformat(), self._filing.currentData(),
@@ -342,7 +342,7 @@ class TaxesPage(QWidget):
                      ("ho_expenses", self._ho_exp)):
             self.db.set_setting(k, str(s.value()))
         from utils.reports import schedule_c
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         rows = [r for r in self.db.report_rows(f"{y}-01-01", f"{y}-12-31")
                 if (self.db.get_category(r["category_id"]) or {}).get("name") != "Home Office"]
         limit = max(schedule_c(rows, cats)["net_profit"], D(0))

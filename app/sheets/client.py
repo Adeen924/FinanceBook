@@ -439,6 +439,10 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         self._install_triggers()
         if is_new and book_type in (BOOK_PERSONAL, BOOK_BUSINESS):
             self.set_setting("book_type", book_type)
+        if is_new:
+            self.set_setting("inactive_categories_repaired", "1")
+        else:
+            self.repair_deleted_categories()
         if self.is_business():
             self.ensure_business_setup()
         else:
@@ -669,9 +673,159 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                 "SELECT * FROM accounts WHERE role=? ORDER BY active DESC, created_at LIMIT 1",
                 (role,)).fetchone())
 
-    def delete_account(self, account_id: str):
+    # ── usage, inactive, delete (v1.18) ───────────────────────────────────────
+    # Delete is real now: only an account / category nothing refers to can be
+    # deleted. One that is in use can be made inactive instead (kept, with its
+    # name on every transaction and report, but left out of pickers and the
+    # Chart of Accounts). Before 1.18 "delete" only set active=0.
+
+    # (key, singular, plural) in the order describe_usage() lists them.
+    _USAGE_WORDS = (
+        ("transactions", "transaction", "transactions"),
+        ("rules", "bank rule", "bank rules"),
+        ("recurring", "recurring item", "recurring items"),
+        ("loans", "loan", "loans"),
+        ("contacts", "contact default", "contact defaults"),
+        ("budgets", "budget", "budgets"),
+        ("inventory", "inventory item", "inventory items"),
+        ("assets", "fixed asset", "fixed assets"),
+        ("lines", "receipt / invoice / bill line", "receipt / invoice / bill lines"),
+        ("payments", "invoice / bill / payroll payment", "invoice / bill / payroll payments"),
+        ("reconciliations", "reconciliation", "reconciliations"),
+        ("sub_accounts", "sub-account", "sub-accounts"),
+    )
+
+    @staticmethod
+    def usage_total(usage: dict) -> int:
+        return sum(int(v or 0) for v in usage.values())
+
+    @classmethod
+    def describe_usage(cls, usage: dict) -> str:
+        """e.g. "12 transactions, 2 bank rules and 1 sub-account"."""
+        parts = [f"{usage[k]} {one if usage[k] == 1 else many}"
+                 for k, one, many in cls._USAGE_WORDS if usage.get(k)]
+        if len(parts) > 1:
+            return ", ".join(parts[:-1]) + " and " + parts[-1]
+        return parts[0] if parts else "nothing"
+
+    @staticmethod
+    def _count(c, sql: str, params=()) -> int:
+        try:
+            return int(c.execute(sql, params).fetchone()[0] or 0)
+        except sqlite3.OperationalError:     # a table an older file doesn't have yet
+            return 0
+
+    def _recurring_refs(self, c, key: str, ident: str) -> int:
+        import json
+        n = 0
+        try:
+            rows = c.execute("SELECT template FROM recurring").fetchall()
+        except sqlite3.OperationalError:
+            return 0
+        for r in rows:
+            try:
+                t = json.loads(r[0] or "{}")
+            except (ValueError, TypeError):
+                continue
+            if isinstance(t, dict) and t.get(key) == ident:
+                n += 1
+        return n
+
+    def account_usage(self, account_id: str) -> dict:
+        """{what: count} of everything that refers to this balance-sheet account:
+        its transactions (transfer sides and split lines are rows of their
+        own), bank rules (a transfer action or an Account condition), recurring
+        items, loans, invoice / bill / payroll payments, reconciliations and its
+        sub-accounts (active or not)."""
         with self._conn() as c:
-            c.execute("UPDATE accounts SET active=0 WHERE id=?", (account_id,))
+            n = self._count
+            return {
+                "transactions": n(c, "SELECT COUNT(*) FROM transactions WHERE account_id=?",
+                                  (account_id,)),
+                "rules": n(c, "SELECT COUNT(*) FROM rules WHERE transfer_account_id=? OR id IN "
+                              "(SELECT rule_id FROM rule_conditions WHERE field='account' "
+                              "AND value=?)", (account_id, account_id)),
+                "recurring": self._recurring_refs(c, "account_id", account_id),
+                "loans": n(c, "SELECT COUNT(*) FROM loans WHERE account_id=?", (account_id,)),
+                "payments": n(c, "SELECT COUNT(*) FROM doc_payments WHERE account_id=?",
+                              (account_id,))
+                            + n(c, "SELECT COUNT(*) FROM payroll_runs WHERE account_id=?",
+                                (account_id,)),
+                "reconciliations": n(c, "SELECT COUNT(*) FROM reconciliations "
+                                        "WHERE account_id=?", (account_id,)),
+                "sub_accounts": n(c, "SELECT COUNT(*) FROM accounts WHERE parent_id=? AND id!=?",
+                                  (account_id, account_id)),
+            }
+
+    def category_usage(self, cat_id: str) -> dict:
+        """{what: count} of everything that refers to this income / expense
+        account: transactions (split lines included; transfers are filed under
+        Account Transfers), bank rules, recurring items, loans (interest),
+        contacts' default account, budgets, inventory items, fixed assets,
+        receipt / invoice / bill lines and its sub-accounts (active or not)."""
+        with self._conn() as c:
+            n = self._count
+            return {
+                "transactions": n(c, "SELECT COUNT(*) FROM transactions WHERE category_id=?",
+                                  (cat_id,)),
+                "rules": n(c, "SELECT COUNT(*) FROM rules WHERE category_id=?", (cat_id,)),
+                "recurring": self._recurring_refs(c, "category_id", cat_id),
+                "loans": n(c, "SELECT COUNT(*) FROM loans WHERE interest_category_id=?",
+                           (cat_id,)),
+                "contacts": n(c, "SELECT COUNT(*) FROM contacts WHERE default_category_id=?",
+                              (cat_id,)),
+                "budgets": n(c, "SELECT COUNT(*) FROM budgets WHERE category_id=? "
+                                "AND monthly != 0", (cat_id,)),
+                "inventory": n(c, "SELECT COUNT(*) FROM items WHERE income_category_id=?",
+                               (cat_id,)),
+                "assets": n(c, "SELECT COUNT(*) FROM assets WHERE expense_category_id=?",
+                            (cat_id,)),
+                "lines": sum(n(c, f"SELECT COUNT(*) FROM {t} WHERE category_id=?", (cat_id,))
+                             for t in ("receipt_items", "invoice_lines", "bill_lines")),
+                "sub_accounts": n(c, "SELECT COUNT(*) FROM categories WHERE parent_id=? "
+                                     "AND id!=?", (cat_id, cat_id)),
+            }
+
+    def active_sub_accounts(self, kind: str, ident: str) -> list[dict]:
+        """Active sub-accounts of an account ("account") or category ("category")."""
+        table = "accounts" if kind == "account" else "categories"
+        with self._conn() as c:
+            return _to_dicts(c.execute(
+                f"SELECT * FROM {table} WHERE parent_id=? AND id!=? AND active=1 ORDER BY name",
+                (ident, ident)).fetchall())
+
+    def _check_no_active_subs(self, kind: str, ident: str, name: str, doing: str):
+        subs = self.active_sub_accounts(kind, ident)
+        if subs:
+            names = ", ".join(f"“{s.get('name', '')}”" for s in subs)
+            raise ValueError(
+                f"“{name}” has active sub-account{'s' if len(subs) != 1 else ''}: {names}. "
+                f"Move {'them' if len(subs) != 1 else 'it'} to another account or make "
+                f"{'them' if len(subs) != 1 else 'it'} inactive first, then {doing} "
+                f"“{name}”.")
+
+    def make_account_inactive(self, account_id: str):
+        """Hide a balance-sheet account (its transactions and balance stay).
+        Raises ValueError while it has active sub-accounts."""
+        acct = self.get_account(account_id) or {}
+        self._check_no_active_subs("account", account_id, acct.get("name", ""),
+                                   "make inactive")
+        self.set_account_active(account_id, False)
+
+    def delete_account(self, account_id: str):
+        """Delete an account nothing refers to. Raises ValueError (saying what
+        uses it) otherwise — make it inactive instead."""
+        acct = self.get_account(account_id)
+        if not acct:
+            return
+        self._check_no_active_subs("account", account_id, acct.get("name", ""), "delete")
+        usage = self.account_usage(account_id)
+        if self.usage_total(usage):
+            raise ValueError(f"“{acct.get('name', '')}” is used by "
+                             f"{self.describe_usage(usage)}, so it can't be deleted. "
+                             "Make it inactive instead.")
+        with self._conn() as c:
+            c.execute("DELETE FROM accounts WHERE id=?", (account_id,))
 
     # ── transactions ──────────────────────────────────────────────────────────
 
@@ -1380,6 +1534,20 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         if self.is_business():
             self.ensure_business_setup()
 
+    def transactions_by_import_hash(self, hashes) -> dict:
+        """{import_hash: the transaction already imported with it} (the
+        Import page's duplicate list says where each one is)."""
+        hashes = [h for h in dict.fromkeys(hashes or ()) if h]
+        out: dict = {}
+        with self._conn() as c:
+            for i in range(0, len(hashes), 500):
+                chunk = hashes[i:i + 500]
+                for r in c.execute(
+                        "SELECT * FROM transactions WHERE import_hash IN "
+                        f"({','.join('?' * len(chunk))}) ORDER BY created_at", chunk):
+                    out.setdefault(r["import_hash"], _to_dict(r))
+        return out
+
     def get_existing_hashes(self) -> set:
         with self._conn() as c:
             rows = c.execute(
@@ -1393,7 +1561,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
     # flipped automatically — a real refund looks the same — so these list the
     # suspects for the user to review.
 
-    _SPENDING_TYPES = ("expense", "other_expense", "debt_repayment")
+    _SPENDING_TYPES = ("expense", "cogs", "other_expense", "debt_repayment")
     _INCOME_TYPES = ("income", "other_income")
 
     def find_flipped_imports(self) -> list[dict]:
@@ -1456,10 +1624,20 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
 
     # ── categories ────────────────────────────────────────────────────────────
 
-    def get_categories(self) -> list[dict]:
+    def get_categories(self, include_inactive: bool = False) -> list[dict]:
+        """Active categories (what pickers offer). include_inactive=True adds the
+        inactive ones — use it wherever an id is turned into a name or a type
+        for display (register, reports, exports): an inactive account's
+        transactions still belong to it."""
+        q = "SELECT * FROM categories"
+        if not include_inactive:
+            q += " WHERE active=1"
         with self._conn() as c:
-            return _to_dicts(c.execute(
-                "SELECT * FROM categories WHERE active=1 ORDER BY name").fetchall())
+            return _to_dicts(c.execute(q + " ORDER BY name").fetchall())
+
+    def category_map(self) -> dict:
+        """{id: category} for every category, active or not (display lookups)."""
+        return {c["id"]: c for c in self.get_categories(include_inactive=True)}
 
     def personal_default_category_ids(self) -> set:
         """
@@ -1490,6 +1668,16 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         transaction, listed in keep_ids, or "Show personal categories" is on.
         """
         cats = self.get_categories()
+        # An inactive account listed in keep_ids (e.g. the one an existing
+        # transaction is filed under) stays offered, marked, so editing that
+        # transaction never drops it.
+        have = {c["id"] for c in cats}
+        for cid in keep_ids or ():
+            if cid and cid not in have:
+                old = self.get_category(cid)
+                if old and str(old.get("active", "1")) == "0":
+                    cats.append(dict(old, name=f"{old.get('name', '')} (inactive)"))
+                    have.add(cid)
         if not self.is_business():
             return cats
         if include_personal is None:
@@ -1616,9 +1804,63 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                           (data.get("type") or "expense", data["id"], data["id"]))
         return data
 
-    def delete_category(self, cat_id: str):
+    def get_inactive_categories(self) -> list[dict]:
         with self._conn() as c:
-            c.execute("UPDATE categories SET active=0 WHERE id=?", (cat_id,))
+            return _to_dicts(c.execute(
+                "SELECT * FROM categories WHERE active=0 ORDER BY name").fetchall())
+
+    def set_category_active(self, cat_id: str, active: bool):
+        """Make an income / expense account inactive (hidden from pickers and the
+        Chart of Accounts; its transactions keep it and show its name) or active
+        again. Raises ValueError when making a parent with active sub-accounts
+        inactive. Reactivating a sub-account reactivates its parent too."""
+        cat = self.get_category(cat_id)
+        if not cat:
+            raise ValueError("That account doesn't exist.")
+        if not active:
+            self._check_no_active_subs("category", cat_id, cat.get("name", ""),
+                                       "make inactive")
+        with self._conn() as c:
+            c.execute("UPDATE categories SET active=? WHERE id=?", (1 if active else 0, cat_id))
+            pid = cat.get("parent_id") or ""
+            if active and pid and pid != cat_id:
+                c.execute("UPDATE categories SET active=1 WHERE id=?", (pid,))
+
+    def delete_category(self, cat_id: str):
+        """Delete an income / expense account nothing refers to. Raises
+        ValueError (saying what uses it) otherwise — make it inactive instead."""
+        cat = self.get_category(cat_id)
+        if not cat:
+            return
+        self._check_no_active_subs("category", cat_id, cat.get("name", ""), "delete")
+        usage = self.category_usage(cat_id)
+        if self.usage_total(usage):
+            raise ValueError(f"“{cat.get('name', '')}” is used by "
+                             f"{self.describe_usage(usage)}, so it can't be deleted. "
+                             "Make it inactive instead.")
+        self._delete_category_row(cat_id)
+
+    def _delete_category_row(self, cat_id: str):
+        with self._conn() as c:
+            c.execute("DELETE FROM categories WHERE id=?", (cat_id,))
+            try:        # learned receipt suggestions are only hints
+                c.execute("UPDATE vendor_memory SET category_id='' WHERE category_id=?",
+                          (cat_id,))
+            except sqlite3.OperationalError:
+                pass
+
+    def repair_deleted_categories(self):
+        """One-time (v1.18): before 1.18, deleting a category only set active=0,
+        so its transactions showed as Uncategorized. Those that are still used
+        stay as inactive accounts (their name shows again everywhere); those
+        nothing refers to are deleted for real, as the user asked. Transactions
+        are never changed."""
+        if self.read_only or self.get_setting("inactive_categories_repaired") == "1":
+            return
+        for cat in self.get_inactive_categories():
+            if not self.usage_total(self.category_usage(cat["id"])):
+                self._delete_category_row(cat["id"])
+        self.set_setting("inactive_categories_repaired", "1")
 
     # ── classes ───────────────────────────────────────────────────────────────
 
@@ -1882,9 +2124,10 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
 
     def uncategorized_txns(self, include_transfers: bool = False) -> list[dict]:
         """Transactions that still need an account (see ledger.is_uncategorized:
-        an empty category, or one that no longer exists)."""
+        an empty category, or one that no longer exists — an inactive account
+        still exists)."""
         from utils.ledger import is_uncategorized
-        ids = {c["id"] for c in self.get_categories()}
+        ids = {c["id"] for c in self.get_categories(include_inactive=True)}
         return [t for t in self.get_transactions(include_transfers=include_transfers)
                 if is_uncategorized(t, ids)]
 
@@ -2014,6 +2257,32 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                                    "institution": "Built-in (no bank)"})
         self.owner_person_id()
         self.get_transfer_category_id()
+        self.convert_cogs_categories()
+
+    def convert_cogs_categories(self) -> int:
+        """
+        One-time (v1.18) upgrade of a business book: the built-in "Cost of Goods
+        Sold" category tree (Materials, Purchases for Resale, Freight-in, and any
+        sub-account added under it) becomes the new "cogs" account type —
+        only the rows still typed "expense", so a type the user chose is kept.
+        Net income doesn't change (cogs is spending in net income, like
+        expense); the P&L shows it in its own section above Gross Profit.
+        Done once (setting cogs_type_converted), so changing it back later
+        sticks. Returns how many categories were converted.
+        """
+        if self.read_only or self.get_setting("cogs_type_converted") == "1":
+            return 0
+        from business_categories import COGS_ROOT
+        n = 0
+        with self._conn() as c:
+            roots = [r["id"] for r in c.execute(
+                "SELECT id FROM categories WHERE name=? AND COALESCE(parent_id,'')='' "
+                "AND type='expense'", (COGS_ROOT,)).fetchall()]
+            for rid in roots:
+                n += c.execute("UPDATE categories SET type='cogs' WHERE type='expense' AND "
+                               "(id=? OR parent_id=?)", (rid, rid)).rowcount
+        self.set_setting("cogs_type_converted", "1")
+        return n
 
     def seed_business_categories(self):
         """

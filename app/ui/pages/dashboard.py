@@ -358,7 +358,7 @@ class DashboardPage(QWidget):
         today = date.today()
         self._subtitle.setText("Here's where your money stands · "
                                f"{today.strftime('%A')}, {MONTHS[today.month - 1]} {today.day}")
-        self._cats = {c["id"]: c for c in self.db.get_categories()}
+        self._cats = self.db.category_map()
         # Owner equity accounts (business books) are not money you have or
         # owe, so they stay out of net worth and the accounts list.
         self._accounts = [a for a in self.db.get_accounts()

@@ -1,11 +1,30 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QComboBox, QLineEdit, QMessageBox, QCheckBox,
-                              QLabel, QHeaderView, QMenu)
+                              QLabel, QHeaderView, QMenu, QDialog, QDialogButtonBox)
 from PyQt6.QtCore import Qt, QDate, QTimer
 from PyQt6.QtGui import QAction
 from ui.widgets import (PageTitle, DataTable, SecondaryButton, DangerButton,
                         DateField, fmt_date)
 from ui.styles  import SUCCESS, DANGER, WARNING
+
+
+class FindTransfersDialog(QDialog):
+    """Transfers already in the books: pairs the matching engine thinks are one
+    transfer (Potential Transfers → Link) and the linked ones (Unlink). The
+    TransfersPage widgets, shown from the Transactions page (v1.18)."""
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        from ui.pages.transfers import TransfersPage
+        self.setWindowTitle("Find Transfers")
+        self.resize(1000, 620)
+        lay = QVBoxLayout(self)
+        self.transfers = TransfersPage(db, self, embedded=True)
+        lay.addWidget(self.transfers, 1)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(self.reject)
+        btns.accepted.connect(self.accept)
+        lay.addWidget(btns)
+        self.transfers.refresh()
 
 
 class TransactionsPage(QWidget):
@@ -43,6 +62,15 @@ class TransactionsPage(QWidget):
         self._sort_btn.setProperty("hasMenu", True)
         self._build_sort_menu()
         hdr.addWidget(self._sort_btn)
+
+        self._find_transfers_btn = QPushButton("Find Transfers…")
+        self._find_transfers_btn.setObjectName("Secondary")
+        self._find_transfers_btn.setToolTip(
+            "Find pairs already in your books that are one transfer between your own "
+            "accounts (same amount, opposite direction, ≤3 days apart) and link them; "
+            "see or unlink linked transfers.")
+        self._find_transfers_btn.clicked.connect(self._find_transfers)
+        hdr.addWidget(self._find_transfers_btn)
 
         self._add_btn = QPushButton("+ Add Transaction")
         self._add_btn.clicked.connect(self._add)
@@ -213,7 +241,7 @@ class TransactionsPage(QWidget):
                                          include_transfers=show_transfers)
         if cat_id == self.UNCATEGORIZED:
             from utils.ledger import is_uncategorized
-            ids = {c["id"] for c in self.db.get_categories()}
+            ids = {c["id"] for c in self.db.get_categories(include_inactive=True)}
             txns = [t for t in txns if is_uncategorized(t, ids)]
         elif cat_id:
             txns = [t for t in txns if t.get("category_id") == cat_id]
@@ -225,6 +253,19 @@ class TransactionsPage(QWidget):
 
         self._txns = txns
         self._sort_and_render(keep=keep)
+
+    # ── transfers ─────────────────────────────────────────────────────────────
+
+    def make_find_transfers_dialog(self) -> FindTransfersDialog:
+        return FindTransfersDialog(self.db, self)
+
+    def _find_transfers(self):
+        dlg = self.make_find_transfers_dialog()
+        dlg.exec()
+        changed = dlg.transfers.links_changed
+        dlg.deleteLater()
+        if changed:
+            self._apply_filter()
 
     # ── sorting ───────────────────────────────────────────────────────────────
 
@@ -259,7 +300,7 @@ class TransactionsPage(QWidget):
                         else labels[key])
 
     def _sort_txns(self):
-        cats  = {c["id"]: c for c in self.db.get_categories()}
+        cats  = self.db.category_map()
         accts = {a["id"]: a for a in self.db.get_accounts()}
 
         def acct_name(t):
@@ -360,7 +401,7 @@ class TransactionsPage(QWidget):
         return self.db.transfer_partner_accounts(self._txns)
 
     def _render_table(self):
-        cats   = {c["id"]: c for c in self.db.get_categories()}
+        cats   = self.db.category_map()
         accts  = {a["id"]: a for a in self.db.get_accounts(active=None)}
         others = self._transfer_targets()
 

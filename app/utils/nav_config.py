@@ -128,9 +128,11 @@ def dump_modules(enabled, previous_raw: str = "") -> str:
     by a newer version on the other laptop) so they survive a round trip."""
     enabled = set(enabled) & ALL_MODULES
     prev = _parse(previous_raw) or {}
-    foreign_on = {m for m in prev.get("enabled", []) if isinstance(m, str)} - ALL_MODULES
+    foreign_on = ({m for m in prev.get("enabled", []) if isinstance(m, str)}
+                  - ALL_MODULES - RETIRED_NAMES)
     prev_known = prev.get("known") if isinstance(prev.get("known"), list) else []
-    foreign_known = {m for m in prev_known if isinstance(m, str)} - ALL_MODULES
+    foreign_known = ({m for m in prev_known if isinstance(m, str)}
+                     - ALL_MODULES - RETIRED_NAMES)
     return json.dumps({
         "version": _FORMAT_VERSION,
         "preset": preset_for(enabled),
@@ -189,13 +191,13 @@ def _plain(name, icon, label=None):
     return NavItem(name, label or name, icon, ((name, name),))
 
 
-# Personal books: exactly the list they have always had.
+# Personal books: the list they have always had, minus Transfers (v1.18 —
+# "Find Transfers…" on the Transactions page now opens that view).
 _PERSONAL = (
     ("OVERVIEW", (_plain("Dashboard", "dashboard"),)),
     ("MONEY", (
         _plain("Accounts", "accounts"),
         _plain("Transactions", "transactions"),
-        _plain("Transfers", "transfers"),
         _plain("Import", "import"),
         _plain("Reconcile", "reconcile"),
         _plain("Loans", "loans"),
@@ -208,18 +210,24 @@ _PERSONAL = (
 # Every page the app can show (Settings lives in the sidebar footer).
 ALL_PAGES = (
     "Dashboard", "Accounts", "Loans", "Transactions", "Import", "Reconcile",
-    "Transfers", "Recurring", "Receipts", "Invoices & Bills", "Contacts",
+    "Recurring", "Receipts", "Invoices & Bills", "Contacts",
     "Inventory", "Assets", "People & Payroll", "Owner Investment", "Taxes",
     "Reports", "Rules", "Settings",
 )
 
 # Old page / sidebar names that still work: Categories became part of the
-# Accounts page (Chart of Accounts) in v1.14, and the Business "Categories &
-# Rules" hub became plain "Rules". Saved links, the tour and code may use them.
+# Accounts page (Chart of Accounts) in v1.14, the Business "Categories &
+# Rules" hub became plain "Rules", and in v1.18 the Transfers page became the
+# "Find Transfers…" dialog on Transactions. Saved links, the tour and code may
+# use them.
 PAGE_ALIASES = {
     "Categories": "Accounts",
     "Categories & Rules": "Rules",
+    "Transfers": "Transactions",
 }
+
+# Page names that are gone; never kept in a saved setting.
+RETIRED_NAMES = frozenset({"Transfers"})
 
 
 def visible_sections(book_type: str, enabled=ALL_MODULES) -> list:
@@ -236,8 +244,7 @@ def visible_sections(book_type: str, enabled=ALL_MODULES) -> list:
         NavItem("Accounts", "Accounts", "accounts", tuple(accounts_tabs)),
         NavItem("Transactions", "Transactions", "transactions", (
             ("Transactions", "Transactions"), ("Import", "Import"),
-            ("Reconcile", "Reconcile"), ("Transfers", "Transfers"),
-            ("Recurring", "Recurring"))),
+            ("Reconcile", "Reconcile"), ("Recurring", "Recurring"))),
     ]
 
     business = []

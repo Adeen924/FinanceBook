@@ -43,7 +43,7 @@ class TransactionDialog(QDialog):
         form.setSpacing(10)
         # Loaded once up front so _category_sign() works before the category
         # combo is built (the amount field needs it to decide its display sign).
-        self._cats = self.db.get_categories()
+        self._cats = self.db.get_categories(include_inactive=True)
 
         # Date
         self.date_edit = DateField()
@@ -597,7 +597,7 @@ class TransactionDialog(QDialog):
         if not self._pending_splits:
             self._split_summary.setText("No split defined yet.")
             return
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         accts = {a["id"]: a for a in self.db.get_accounts(active=None)}
         parts = []
         for s in self._pending_splits:
