@@ -9,9 +9,11 @@ from ui.widgets import PageTitle, SecondaryButton, DangerButton, MutedLabel
 
 # The category types a user can choose, as (display label, stored value).
 # "debt_repayment" is reported in its own P&L section, excluded from Net Income.
+# "cogs" (v1.18) has its own section above Gross Profit and is in Net Income.
 CATEGORY_TYPES = [
     ("Expense", "expense"),
     ("Income", "income"),
+    ("Cost of Goods Sold", "cogs"),
     ("Other Expense", "other_expense"),
     ("Other Income", "other_income"),
     ("Debt Repayment", "debt_repayment"),
@@ -127,8 +129,9 @@ class CategoryDialog(QDialog):
         lay.addWidget(btns)
 
     def _default_tax_line(self, *_):
-        if self.type_combo.currentData() == "other_income" and not self.tax_combo.currentData():
-            self.tax_combo.setCurrentIndex(max(self.tax_combo.findData("6"), 0))
+        line = {"other_income": "6", "cogs": "4"}.get(self.type_combo.currentData())
+        if line and not self.tax_combo.currentData():
+            self.tax_combo.setCurrentIndex(max(self.tax_combo.findData(line), 0))
 
     def _on_parent_changed(self):
         has_parent = bool(self.parent_combo.currentData())

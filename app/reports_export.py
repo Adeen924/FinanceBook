@@ -24,14 +24,21 @@ def _money(v) -> str:
 
 
 def pnl_csv_rows(rows) -> list:
-    """P&L lines in report order: Income, Expense, then (when there is any) Net
-    operating income and the Other Income / Other Expense section, then Net
-    income. rows are utils.reports.pnl_rows() rows."""
-    from utils.reports import pivot, pnl_section_label, PNL_SECTION_ORDER
+    """P&L lines in report order: Income, Cost of Goods Sold and Gross profit
+    (when there is any COGS), Expense, then (when there is any) Net operating
+    income and the Other Income / Other Expense section, then Net income. rows
+    are utils.reports.pnl_rows() rows."""
+    from utils.reports import pivot, pnl_section_label, PNL_SECTION_ORDER, COGS_LABEL
     g = pivot(rows, lambda r: (pnl_section_label(r), r["group"]), lambda r: "total")
     has_other = any(r.get("other") for r in rows)
+    has_cogs = any(r.get("cogs") for r in rows)
     out = []
     for sec in PNL_SECTION_ORDER:
+        if sec == "Expense" and has_cogs:
+            gp = sum((r["amount"] for r in rows
+                      if not r.get("other") and (r.get("cogs") or r["section"] == "income")),
+                     D(0))
+            out.append(["", "Gross profit", _money(gp)])
         if sec == "Other Income" and has_other:
             op = sum((r["amount"] for r in rows if not r.get("other")), D(0))
             out.append(["", "Net operating income", _money(op)])

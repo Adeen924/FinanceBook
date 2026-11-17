@@ -90,8 +90,16 @@ BUSINESS_CATEGORIES = {
         ("Bank Fees", "27b", 100, []),
         ("Education & Training", "27b", 100, []),
         ("Home Office", "30", 100, []),
-        ("Cost of Goods Sold", "4", 100,
-         ["Materials", "Purchases for Resale", "Freight-in"]),
         ("Other Business Expenses", "27b", 100, []),
     ],
+    # v1.18: its own account type (books seeded earlier are converted once —
+    # Database.convert_cogs_categories).
+    "cogs": [
+        ("Cost of Goods Sold", "4", 100,
+         ["Materials", "Purchases for Resale", "Freight-in"]),
+    ],
 }
+
+# The built-in Cost of Goods Sold tree that business books seeded before v1.18
+# filed as "expense".
+COGS_ROOT = "Cost of Goods Sold"

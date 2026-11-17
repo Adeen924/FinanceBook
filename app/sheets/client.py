@@ -1547,7 +1547,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
     # flipped automatically — a real refund looks the same — so these list the
     # suspects for the user to review.
 
-    _SPENDING_TYPES = ("expense", "other_expense", "debt_repayment")
+    _SPENDING_TYPES = ("expense", "cogs", "other_expense", "debt_repayment")
     _INCOME_TYPES = ("income", "other_income")
 
     def find_flipped_imports(self) -> list[dict]:
@@ -2243,6 +2243,32 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                                    "institution": "Built-in (no bank)"})
         self.owner_person_id()
         self.get_transfer_category_id()
+        self.convert_cogs_categories()
+
+    def convert_cogs_categories(self) -> int:
+        """
+        One-time (v1.18) upgrade of a business book: the built-in "Cost of Goods
+        Sold" category tree (Materials, Purchases for Resale, Freight-in, and any
+        sub-account added under it) becomes the new "cogs" account type —
+        only the rows still typed "expense", so a type the user chose is kept.
+        Net income doesn't change (cogs is spending in net income, like
+        expense); the P&L shows it in its own section above Gross Profit.
+        Done once (setting cogs_type_converted), so changing it back later
+        sticks. Returns how many categories were converted.
+        """
+        if self.read_only or self.get_setting("cogs_type_converted") == "1":
+            return 0
+        from business_categories import COGS_ROOT
+        n = 0
+        with self._conn() as c:
+            roots = [r["id"] for r in c.execute(
+                "SELECT id FROM categories WHERE name=? AND COALESCE(parent_id,'')='' "
+                "AND type='expense'", (COGS_ROOT,)).fetchall()]
+            for rid in roots:
+                n += c.execute("UPDATE categories SET type='cogs' WHERE type='expense' AND "
+                               "(id=? OR parent_id=?)", (rid, rid)).rowcount
+        self.set_setting("cogs_type_converted", "1")
+        return n
 
     def seed_business_categories(self):
         """

@@ -23,10 +23,13 @@ def _cat_path(cat_id, cats):
 
 def pnl_rows(txns, cats, computed_lines=()) -> list[dict]:
     """
-    [{date, month, section 'income'|'expense', other, group, category_id, amount,
-      class_id, contact_id, payee, paid_by, charged_to}] — transfers and non-P&L
-    categories dropped. other=True for "Other Income / Other Expense" categories
-    (section still says which side, so totals and net income are unchanged). computed_lines (depreciation, COGS…) are added on their period's last date.
+    [{date, month, section 'income'|'expense', other, cogs, group, category_id,
+      amount, class_id, contact_id, payee, paid_by, charged_to}] — transfers and
+    non-P&L categories dropped. other=True for "Other Income / Other Expense"
+    categories, cogs=True for Cost of Goods Sold (a "cogs" category or the
+    inventory module's computed COGS); section still says which side, so totals
+    and net income are unchanged. computed_lines (depreciation, COGS…) carry
+    the date they belong to (their period's last day).
     """
     out = []
     for t in txns:
@@ -39,6 +42,7 @@ def pnl_rows(txns, cats, computed_lines=()) -> list[dict]:
         cat, parent = _cat_path(t.get("category_id"), cats)
         out.append({"date": t.get("date", ""), "month": (t.get("date") or "")[:7], "section": b,
                     "other": sec in ("other_income", "other_expense"),
+                    "cogs": sec == "cogs",
                     "group": parent.get("name") or cat.get("name") or "Uncategorized",
                     "category_id": t.get("category_id", ""), "amount": D(t.get("amount")),
                     "class_id": t.get("class_id", ""), "contact_id": t.get("contact_id", ""),
@@ -46,7 +50,8 @@ def pnl_rows(txns, cats, computed_lines=()) -> list[dict]:
                     "charged_to": t.get("charged_to", "")})
     for ln in computed_lines:
         out.append({"date": ln.get("date", ""), "month": (ln.get("date") or "")[:7],
-                    "section": ln["section"], "other": False, "group": ln["group"],
+                    "section": ln["section"], "other": False,
+                    "cogs": ln.get("computed") == "cogs", "group": ln["group"],
                     "category_id": ln.get("category_id", ""), "amount": D(ln["amount"]),
                     "class_id": "", "contact_id": "", "payee": "(computed)", "paid_by": "",
                     "charged_to": "", "computed": ln.get("computed", "")})
@@ -100,6 +105,9 @@ def schedule_c(rows, cats) -> dict:
     for r in rows:
         if r.get("computed") == "cogs":
             line, pct = "4", D(1)
+        elif r.get("cogs"):
+            line, pct = tax_line_for(r["category_id"], cats)
+            line = line or "4"          # a Cost of Goods Sold account is line 4
         elif r.get("computed") == "depreciation":
             line, pct = "13", D(1)
         elif r.get("computed") == "gain":
@@ -193,11 +201,16 @@ def cash_flow(accounts, txns, cats, start: str, end: str) -> dict:
                 sec, label = "financing", "Debt repayment"
             elif ctype == "inventory":
                 sec, label = "operating", "Inventory purchases"
+            elif ctype == "cogs":
+                sec, label = "operating", "Cash paid for cost of goods sold"
             elif pnl_bucket(t, cats) == "income":
                 sec, label = "operating", "Cash received from customers"
             else:
                 sec, label = "operating", "Cash paid for expenses"
         sections[sec][label] = sections[sec].get(label, ZERO) + amt
+    order = {label: i for i, label in enumerate(CASH_FLOW_LINE_ORDER)}
+    sections = {k: dict(sorted(v.items(), key=lambda kv: order.get(kv[0], len(order))))
+                for k, v in sections.items()}
     totals = {k: cents(sum(v.values(), ZERO)) for k, v in sections.items()}
     net = cents(sum(totals.values(), ZERO))
     return {"begin": cents(begin), "sections": {k: {l: cents(a) for l, a in v.items()}
@@ -205,15 +218,28 @@ def cash_flow(accounts, txns, cats, start: str, end: str) -> dict:
             "totals": totals, "net_change": net, "end": cents(begin + net)}
 
 
+# Cash-flow lines in statement order (same order as the P&L: money in, cost of
+# goods, expenses); anything else keeps its place after these.
+CASH_FLOW_LINE_ORDER = (
+    "Cash received from customers", "Cash paid for cost of goods sold",
+    "Inventory purchases", "Cash paid for expenses", "Credit card payments",
+    "Taxes remitted / withheld", "Fixed assets bought / sold", "Owner contributions & loans",
+    "Owner draws", "Loans", "Debt repayment", "Other transfers")
+
+
 def pnl_section_label(row) -> str:
     """Report heading for a pnl_rows() row."""
     if row.get("other"):
         return "Other Income" if row["section"] == "income" else "Other Expense"
+    if row.get("cogs"):
+        return COGS_LABEL
     return "Income" if row["section"] == "income" else "Expense"
 
 
-# Order of P&L sections on screen and in exports.
-PNL_SECTION_ORDER = ("Income", "Expense", "Other Income", "Other Expense")
+COGS_LABEL = "Cost of Goods Sold"
+# Order of P&L sections on screen and in exports: Income, Cost of Goods Sold
+# (→ Gross Profit), Expense (→ Net Operating Income), Other Income / Expense.
+PNL_SECTION_ORDER = ("Income", COGS_LABEL, "Expense", "Other Income", "Other Expense")
 
 
 def budget_vs_actual(rows, budgets: dict, cats, start: str, end: str) -> list[dict]:
@@ -239,5 +265,7 @@ def budget_vs_actual(rows, budgets: dict, cats, start: str, end: str) -> list[di
         out.append({"category_id": cid, "name": cat.get("name", "Uncategorized"),
                     "income": income, "budget": b, "actual": a, "variance": variance,
                     "pct": (a / b * 100) if b else None})
-    out.sort(key=lambda x: (not x["income"], x["name"].lower()))
+    rank = {"income": 0, "cogs": 1, "expense": 2, "other_income": 3, "other_expense": 4}
+    out.sort(key=lambda x: (rank.get(cats.get(x["category_id"], {}).get("type"),
+                                     0 if x["income"] else 2), x["name"].lower()))
     return out

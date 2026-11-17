@@ -35,6 +35,11 @@ ASSET_TYPES = ("checking", "savings", "cash", "gift card", "investment",
 # below operating income.
 INCOME_CATEGORY_TYPES = ("income", "other_income")
 OTHER_PNL_TYPES = ("other_income", "other_expense")
+# "cogs" (v1.18): Cost of Goods Sold — spending, in net income, reported in its
+# own section between Income and Expenses (Gross Profit = Income − COGS). An
+# older app reads the unknown type as "expense", which keeps net income the same.
+COGS_TYPE = "cogs"
+SPENDING_TYPES = ("expense", "other_expense", "debt_repayment", COGS_TYPE)
 
 # Category types that never appear on the P&L. "debt_repayment" moves principal,
 # "asset" capitalises a fixed-asset purchase (expensed later as depreciation),
@@ -71,8 +76,9 @@ def is_income_type(ctype: str) -> bool:
 
 def category_sign(ctype: str) -> int:
     """Sign an amount typed as a positive number takes for this category type:
-    -1 for spending (expense, other expense, debt repayment), +1 otherwise."""
-    return -1 if (ctype or "") in ("expense", "other_expense", "debt_repayment") else 1
+    -1 for spending (expense, cost of goods sold, other expense, debt repayment),
+    +1 otherwise."""
+    return -1 if (ctype or "") in SPENDING_TYPES else 1
 
 
 def is_uncategorized(txn: dict, category_ids) -> bool:
@@ -95,19 +101,20 @@ def pnl_bucket(txn: dict, cats: dict) -> str:
     section = pnl_section(txn, cats)
     if section == "other_income":
         return "income"
-    if section == "other_expense":
+    if section in ("other_expense", COGS_TYPE):
         return "expense"
     return section
 
 
 def pnl_section(txn: dict, cats: dict) -> str:
-    """Like pnl_bucket but keeps the "Other Income / Other Expense" section apart:
-    'income', 'expense', 'other_income', 'other_expense' or 'excluded'."""
+    """Like pnl_bucket but keeps the Cost of Goods Sold and "Other Income / Other
+    Expense" sections apart: 'income', 'cogs', 'expense', 'other_income',
+    'other_expense' or 'excluded'."""
     cat = cats.get(txn.get("category_id", "") or "", {}) or {}
     ctype = cat.get("type", "expense") if cat else ""
     if ctype in NON_PNL_CATEGORY_TYPES:
         return "excluded"
-    if ctype in ("income", "other_income", "other_expense"):
+    if ctype in ("income", "other_income", "other_expense", COGS_TYPE):
         return ctype
     if not cat and D(txn.get("amount")) > 0:
         return "income"
