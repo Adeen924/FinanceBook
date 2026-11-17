@@ -28,14 +28,28 @@ CREATE TABLE IF NOT EXISTS budgets (
 class TaxMixin:
     # ── report data ──────────────────────────────────────────────────────────
 
-    def report_rows(self, start: str, end: str, with_computed: bool = True) -> list[dict]:
-        """Normalised P&L rows (see utils.reports.pnl_rows) for [start, end]."""
-        from utils.reports import pnl_rows
+    def report_rows(self, start: str, end: str, with_computed: bool = True,
+                    period: str = "total") -> list[dict]:
+        """Normalised P&L rows (see utils.reports.pnl_rows) for [start, end].
+        Computed lines (depreciation, gains, inventory COGS) are dated at the end
+        of the period they belong to, for the Columns choice `period`: each
+        column's own amounts (depreciation by calendar month for Day / Week
+        columns, as it is worked out by whole month). Their total is the same
+        whatever the period."""
+        from utils.reports import pnl_rows, period_buckets, computed_segments
         cats = self.category_map()
         computed = []
         if with_computed:
-            for ln in self.computed_pnl_lines(start, end):
-                computed.append(dict(ln, date=end))
+            if period == "total":
+                parts = [((start, end), self.COMPUTED_KINDS)]
+            else:
+                parts = [((b.start, b.end), ("gain", "cogs"))
+                         for b in period_buckets(start, end, period)]
+                parts += [(seg, ("depreciation",))
+                          for seg in computed_segments(start, end, period)]
+            for (s, e), kinds in parts:
+                for ln in self.computed_pnl_lines(s, e, kinds):
+                    computed.append(dict(ln, date=e))
         return pnl_rows(self.get_transactions(start=start, end=end, include_transfers=False),
                         cats, computed)
 

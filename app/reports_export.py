@@ -23,33 +23,48 @@ def _money(v) -> str:
     return f"{cents(v):.2f}"
 
 
-def pnl_csv_rows(rows) -> list:
+_SUMMARY_CSV = {"Gross Profit": "Gross profit", "Net Operating Income": "Net operating income",
+                "Net Income": "Net income"}
+
+
+def pnl_csv_rows(rows, cats=None) -> list:
     """P&L lines in report order: Income, Cost of Goods Sold and Gross profit
     (when there is any COGS), Expense, then (when there is any) Net operating
-    income and the Other Income / Other Expense section, then Net income. rows
-    are utils.reports.pnl_rows() rows."""
-    from utils.reports import pivot, pnl_section_label, PNL_SECTION_ORDER, COGS_LABEL
-    g = pivot(rows, lambda r: (pnl_section_label(r), r["group"]), lambda r: "total")
-    has_other = any(r.get("other") for r in rows)
-    has_cogs = any(r.get("cogs") for r in rows)
+    income and the Other Income / Other Expense section, then Net income.
+    rows are utils.reports.pnl_rows() rows; with cats, sub-accounts are listed
+    indented under their parent ("    Sub"), followed by "<Parent> (other)" for
+    the parent's own rows and "Total <Parent>". Amounts are signed (money out
+    negative)."""
+    from utils.reports import pnl_report, pnl_lines, TOTAL
+    rep = pnl_report(rows, cats or {}, [], lambda r: TOTAL, signed=True)
     out = []
-    for sec in PNL_SECTION_ORDER:
-        if sec == "Expense" and has_cogs:
-            gp = sum((r["amount"] for r in rows
-                      if not r.get("other") and (r.get("cogs") or r["section"] == "income")),
-                     D(0))
-            out.append(["", "Gross profit", _money(gp)])
-        if sec == "Other Income" and has_other:
-            op = sum((r["amount"] for r in rows if not r.get("other")), D(0))
-            out.append(["", "Net operating income", _money(op)])
-        for k in sorted(k for k in g if k != "__total__" and k[0] == sec):
-            out.append([sec, k[1], _money(g[k]["total"])])
-    out.append(["", "Net income", _money(g.get("__total__", {}).get("__total__", 0))])
+    for ln in pnl_lines(rep):
+        if ln["kind"] == "summary":
+            out.append(["", _SUMMARY_CSV.get(ln["label"], ln["label"]),
+                        _money(ln["amounts"].get(TOTAL, 0))])
+        elif ln["kind"] in ("leaf", "parent", "other", "total"):
+            indent = "    " * ln.get("level", 0)
+            amt = "" if ln["amounts"] is None else _money(ln["amounts"].get(TOTAL, 0))
+            out.append([ln["section"], indent + ln["label"], amt])
+    return out
+
+
+def pnl_grid_rows(lines, columns) -> list:
+    """[label (indented), amount per column…] for pnl_lines() rows: what the
+    Reports page's P&L shows, for CSV files. Headings have blank amounts."""
+    out = []
+    for ln in lines:
+        label = "    " * ln["depth"] + ln["label"]
+        if ln["amounts"] is None:
+            out.append([label] + [""] * len(columns))
+        else:
+            out.append([label] + [_money(ln["amounts"].get(c, 0)) if ln["amounts"].get(c)
+                                  else "" for c in columns])
     return out
 
 
 def export_year_end(db, year: int, folder: str) -> list[str]:
-    from utils.reports import pivot, months_between, schedule_c, cash_flow
+    from utils.reports import schedule_c, cash_flow
     from utils.ledger import balance_sheet, owner_investment
     from utils import depreciation as dep
     from utils.inventory import run_costing
@@ -67,13 +82,17 @@ def export_year_end(db, year: int, folder: str) -> list[str]:
     rows = db.report_rows(start, end)
 
     files.append(_write(p(f"profit_and_loss_{year}.csv"), ["Section", "Account", "Amount"],
-                        pnl_csv_rows(rows)))
+                        pnl_csv_rows(rows, cats)))
 
-    months = months_between(start, end)
-    gm = pivot(rows, lambda r: r["group"], lambda r: r["month"])
-    files.append(_write(p(f"profit_and_loss_by_month_{year}.csv"), ["Category"] + months + ["Total"],
-                        [[k] + [_money(v.get(m, 0)) for m in months] + [_money(v["__total__"])]
-                         for k, v in sorted(gm.items()) if k != "__total__"]))
+    # By month: the same accounts (sub-accounts indented) with computed lines
+    # (depreciation, COGS) in the month they belong to.
+    from utils.reports import period_buckets, period_key, pnl_report, pnl_lines
+    buckets = period_buckets(start, end, "month")
+    mrows = db.report_rows(start, end, period="month")
+    rep = pnl_report(mrows, cats, [b.key for b in buckets], lambda r: period_key(r["date"], "month"))
+    files.append(_write(p(f"profit_and_loss_by_month_{year}.csv"),
+                        ["Account"] + [b.label for b in buckets] + ["Total"],
+                        pnl_grid_rows(pnl_lines(rep), rep["columns"])))
 
     bs = balance_sheet(accounts, db.get_transactions(end=end), cats, end, start,
                        **db.balance_sheet_extras(end, start))

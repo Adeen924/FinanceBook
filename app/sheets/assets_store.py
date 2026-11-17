@@ -168,16 +168,19 @@ class ComputedMixin:
             return None
         return portfolio(assets, as_of, start, self.usage_by_asset())
 
-    def computed_pnl_lines(self, start: str, end: str) -> list[dict]:
+    COMPUTED_KINDS = ("depreciation", "gain", "cogs")
+
+    def computed_pnl_lines(self, start: str, end: str, kinds=COMPUTED_KINDS) -> list[dict]:
         """
-        [{section: 'expense'|'income', group, name, amount}] for [start, end].
-        Amounts are signed like transactions (expenses negative).
+        [{section: 'expense'|'income', group, name, amount, computed}] for
+        [start, end]; kinds picks depreciation / gain / cogs. Amounts are signed
+        like transactions (expenses negative). Depreciation counts whole months.
         """
         lines = []
-        p = self._asset_portfolio(end, start)
+        p = self._asset_portfolio(end, start) if {"depreciation", "gain"} & set(kinds) else None
         if p:
             cats = self.category_map()
-            for cat_id, amt in p["by_category"].items():
+            for cat_id, amt in (p["by_category"].items() if "depreciation" in kinds else ()):
                 cat = cats.get(cat_id, {})
                 parent = cats.get(cat.get("parent_id", ""), {})
                 group = parent.get("name") or cat.get("name") or "Depreciation"
@@ -185,10 +188,11 @@ class ComputedMixin:
                 lines.append({"section": "expense", "group": group,
                               "name": (name + " (computed)") if name else "",
                               "amount": -amt, "computed": "depreciation"})
-            if p["gain_in_range"]:
+            if p["gain_in_range"] and "gain" in kinds:
                 lines.append({"section": "income", "group": "Gain / (Loss) on Asset Sales",
                               "name": "", "amount": p["gain_in_range"], "computed": "gain"})
-        inv = self.inventory_totals(end, start) if hasattr(self, "inventory_totals") else None
+        inv = (self.inventory_totals(end, start)
+               if "cogs" in kinds and hasattr(self, "inventory_totals") else None)
         if inv and inv["cogs"]:
             lines.append({"section": "expense", "group": "Cost of Goods Sold",
                           "name": "Inventory sold (computed)", "amount": -inv["cogs"],
