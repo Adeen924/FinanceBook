@@ -133,7 +133,7 @@ class ReportsPage(QWidget):
         if cls_filter:
             txns = [t for t in txns if t.get("class_id") == cls_filter]
 
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         income_groups: dict[str, dict] = {}
         expense_groups: dict[str, dict] = {}
         debt_groups: dict[str, dict] = {}
@@ -277,7 +277,7 @@ class ReportsPage(QWidget):
     def _balance_sheet(self, as_of: str) -> dict:
         """Balance sheet data from the shared, tested ledger math."""
         from utils.ledger import balance_sheet
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         fy_start = f"{as_of[:4]}-01-01"
         return balance_sheet(self.db.get_accounts(active=None),
                              self.db.get_transactions(end=as_of), cats, as_of, fy_start,
@@ -354,7 +354,7 @@ class ReportsPage(QWidget):
         start = self._date_from.date().toString("yyyy-MM-dd")
         end   = self._date_to.date().toString("yyyy-MM-dd")
         txns  = self.db.get_transactions(start=start, end=end, include_transfers=False)
-        cats  = {c["id"]: c for c in self.db.get_categories()}
+        cats  = self.db.category_map()
         with open(path, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["Date", "Bank / Card", "Payee", "Account", "Class", "Amount", "Section"])

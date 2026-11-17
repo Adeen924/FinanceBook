@@ -176,7 +176,7 @@ class ComputedMixin:
         lines = []
         p = self._asset_portfolio(end, start)
         if p:
-            cats = {c["id"]: c for c in self.get_categories()}
+            cats = self.category_map()
             for cat_id, amt in p["by_category"].items():
                 cat = cats.get(cat_id, {})
                 parent = cats.get(cat.get("parent_id", ""), {})

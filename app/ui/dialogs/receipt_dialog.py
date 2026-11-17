@@ -95,7 +95,7 @@ class ReceiptReviewDialog(QDialog):
         items = db.get_receipt_items(receipt["id"])
         keep = [i.get("category_id", "") for i in items]
         self._cats = db.get_categories_for_book(keep_ids=keep)
-        self._all_cats = db.get_categories()
+        self._all_cats = db.get_categories(include_inactive=True)
         self._inv_cat_ids = {c["id"] for c in self._all_cats if c.get("type") == "inventory"}
         self._classes = db.get_classes()
         self._people = db.get_people() if db.is_business() else []

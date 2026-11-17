@@ -361,7 +361,7 @@ class ApplyAllTests(unittest.TestCase):
         orphan = self.add("SHELL OIL", "-60", category_id=gone)
         xfer = self.add("XFER TO SAV", "-100")
         keep = self.add("SHELL OIL", "-50", category_id=self.food)        # already filed
-        self.db.delete_category(gone)                                     # now orphaned
+        self.db._delete_category_row(gone)       # now orphaned (a used one can only go inactive)
         self.db.set_lock_date("2025-12-31")
 
         result = self.db.apply_rules_to_all()

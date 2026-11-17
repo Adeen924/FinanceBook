@@ -31,7 +31,7 @@ class TaxMixin:
     def report_rows(self, start: str, end: str, with_computed: bool = True) -> list[dict]:
         """Normalised P&L rows (see utils.reports.pnl_rows) for [start, end]."""
         from utils.reports import pnl_rows
-        cats = {c["id"]: c for c in self.get_categories()}
+        cats = self.category_map()
         computed = []
         if with_computed:
             for ln in self.computed_pnl_lines(start, end):

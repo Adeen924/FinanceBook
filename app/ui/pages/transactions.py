@@ -213,7 +213,7 @@ class TransactionsPage(QWidget):
                                          include_transfers=show_transfers)
         if cat_id == self.UNCATEGORIZED:
             from utils.ledger import is_uncategorized
-            ids = {c["id"] for c in self.db.get_categories()}
+            ids = {c["id"] for c in self.db.get_categories(include_inactive=True)}
             txns = [t for t in txns if is_uncategorized(t, ids)]
         elif cat_id:
             txns = [t for t in txns if t.get("category_id") == cat_id]
@@ -259,7 +259,7 @@ class TransactionsPage(QWidget):
                         else labels[key])
 
     def _sort_txns(self):
-        cats  = {c["id"]: c for c in self.db.get_categories()}
+        cats  = self.db.category_map()
         accts = {a["id"]: a for a in self.db.get_accounts()}
 
         def acct_name(t):
@@ -360,7 +360,7 @@ class TransactionsPage(QWidget):
         return self.db.transfer_partner_accounts(self._txns)
 
     def _render_table(self):
-        cats   = {c["id"]: c for c in self.db.get_categories()}
+        cats   = self.db.category_map()
         accts  = {a["id"]: a for a in self.db.get_accounts(active=None)}
         others = self._transfer_targets()
 

@@ -42,7 +42,7 @@ class TransactionsFilterTests(unittest.TestCase):
         add(self.chk, "2026-03-10", "MYSTERY", "-5")                  # uncategorized
         add(self.card, "2026-03-11", "SHELL", "-30", self.gas)
         add(self.card, "2026-03-12", "OLD THING", "-9", gone)          # orphaned below
-        db.delete_category(gone)
+        db._delete_category_row(gone)      # orphaned: the id points nowhere
         db.save_transfer_pair({"date": "2026-03-15", "account_id": self.chk,
                                "payee": "TO SAVINGS", "amount": "100"}, self.sav)
 

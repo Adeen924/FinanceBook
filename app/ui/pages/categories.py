@@ -139,7 +139,7 @@ class CategoryDialog(QDialog):
     def _children(self) -> list:
         if not self.edit_cat:
             return []
-        return [c for c in self.db.get_categories()
+        return [c for c in self.db.get_categories(include_inactive=True)
                 if c.get("parent_id") == self.edit_cat.get("id")]
 
     def _sync_type(self, force_tax: bool = False):

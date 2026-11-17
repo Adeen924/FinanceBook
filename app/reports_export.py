@@ -54,7 +54,7 @@ def export_year_end(db, year: int, folder: str) -> list[str]:
     os.makedirs(out_dir, exist_ok=True)
     files = []
     p = lambda name: os.path.join(out_dir, name)  # noqa: E731
-    cats = {c["id"]: c for c in db.get_categories()}
+    cats = db.category_map()
     accounts = db.get_accounts(active=None)
     acct_names = {a["id"]: a["name"] for a in accounts}
     rows = db.report_rows(start, end)

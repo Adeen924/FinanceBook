@@ -2,18 +2,22 @@
 The "Accounts" page — a QuickBooks-style Chart of Accounts.
 
 One list grouped by type (Bank, Credit Card, … Equity, Income, Other Income,
-Expense, Other Expense, Debt Repayment, Asset / Inventory Purchase). Balance-
-sheet accounts live in the `accounts` table and P&L categories in `categories`
-(see utils/chart_of_accounts.py); this page only unifies how they are shown and
-edited. Tabs: Chart of Accounts, Inactive Accounts, Classes.
+Cost of Goods Sold, Expense, Other Expense, Debt Repayment, Asset / Inventory
+Purchase). Balance-sheet accounts live in the `accounts` table and P&L
+categories in `categories` (see utils/chart_of_accounts.py); this page only
+unifies how they are shown and edited. Tabs: Chart of Accounts, Inactive
+Accounts (balance-sheet accounts and income / expense accounts), Classes.
+
+Since v1.18 an account in use can't be deleted — it can be made inactive —
+the page stays on the row that was edited, and a search box filters the chart.
 """
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QMessageBox, QHeaderView, QLabel, QTabWidget,
                              QTreeWidget, QTreeWidgetItem, QDialog, QFormLayout,
                              QComboBox, QDialogButtonBox, QCheckBox, QMenu,
-                             QInputDialog)
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QColor, QFont
+                             QInputDialog, QLineEdit, QAbstractItemView)
+from PyQt6.QtCore import Qt, QSize, QTimer
+from PyQt6.QtGui import QColor, QFont, QShortcut, QKeySequence, QBrush
 from ui.widgets import PageTitle, DataTable, SecondaryButton
 from ui.styles import SUCCESS, DANGER, ACCENT, MUTED
 from utils import chart_of_accounts as COA
@@ -21,6 +25,8 @@ from utils import chart_of_accounts as COA
 ROW_H = 44  # px — tall enough for buttons + padding
 
 COL_NAME, COL_TYPE, COL_DETAIL, COL_BALANCE, COL_ACTIONS = range(5)
+
+NO_MATCH_TEXT = "No accounts match"
 
 
 class NewAccountTypeDialog(QDialog):
@@ -60,11 +66,20 @@ class NewAccountTypeDialog(QDialog):
         return COA.resolve_choice(self.type_combo.currentData())
 
 
+def _key(e) -> tuple:
+    """(kind, id) — what identifies a row across a rebuild."""
+    return (e["kind"], e["data"].get("id", "")) if e else None
+
+
 class AccountsPage(QWidget):
     def __init__(self, db, parent=None):
         super().__init__(parent)
         self.db = db
         self._anims = []
+        self._focus = None              # (kind, id) to land on after the next refresh
+        self._items: dict = {}          # (kind, id) → chart item
+        self._orig_fg: dict = {}        # id(item) → [QBrush per column] (search dimming)
+        self._inactive_rows: list = []  # entries on the Inactive tab, in row order
         self._build()
 
     def _build(self):
@@ -102,11 +117,33 @@ class AccountsPage(QWidget):
         self._tabs.addTab(self._classes, "Classes")
         lay.addWidget(self._tabs)
 
+        self._find_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), self)
+        self._find_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._find_shortcut.activated.connect(self.focus_search)
+
     def _build_chart_tab(self) -> QWidget:
         page = QWidget()
         pl = QVBoxLayout(page)
         pl.setContentsMargins(0, 8, 0, 0)
         pl.setSpacing(10)
+
+        search_row = QHBoxLayout()
+        search_row.setSpacing(6)
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Search accounts — name, type, institution or "
+                                        "Schedule C line  (Ctrl+F)")
+        self._search.setToolTip("Filters the Chart of Accounts as you type")
+        self._search.textChanged.connect(self._apply_search)
+        search_row.addWidget(self._search, 1)
+        self._search_clear = QPushButton("✕")
+        self._search_clear.setObjectName("Secondary")
+        self._search_clear.setToolTip("Clear the search")
+        self._search_clear.setFixedWidth(40)
+        self._search_clear.clicked.connect(self._search.clear)
+        self._search_clear.setVisible(False)
+        search_row.addWidget(self._search_clear)
+        pl.addLayout(search_row)
+
         bar = QHBoxLayout()
         self._show_personal = None
         if self.db.is_business():
@@ -142,6 +179,12 @@ class AccountsPage(QWidget):
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._context_menu)
         pl.addWidget(self._tree, 1)
+
+        self._no_match = QLabel(NO_MATCH_TEXT)
+        self._no_match.setObjectName("Muted")
+        self._no_match.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._no_match.setVisible(False)
+        pl.addWidget(self._no_match)
         return page
 
     def _make_inactive_tab(self):
@@ -149,15 +192,27 @@ class AccountsPage(QWidget):
         pl = QVBoxLayout(page)
         pl.setContentsMargins(0, 8, 0, 0)
         pl.setSpacing(10)
-        table = DataTable(["Name", "Type", "Institution", "Currency", "Balance", "Actions"])
+        note = QLabel("Inactive accounts are hidden from account lists and the Chart of "
+                      "Accounts. Their transactions keep them, by name, in the register "
+                      "and reports. Reactivate one to use it again.")
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        pl.addWidget(note)
+        table = DataTable(["Name", "Type", "Institution / Schedule C", "Currency", "Balance",
+                           "Actions"])
         table.setColumnWidth(0, 220)
-        table.setColumnWidth(1, 120)
+        table.setColumnWidth(1, 140)
         table.setColumnWidth(2, 200)
         table.setColumnWidth(3, 90)
         table.setColumnWidth(4, 150)
         table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         table.setColumnWidth(5, 190)
         table.verticalHeader().setDefaultSectionSize(ROW_H)
+        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        table.customContextMenuRequested.connect(self._inactive_menu)
+        table.cellDoubleClicked.connect(
+            lambda r, _c: self._edit_entry(self._inactive_rows[r])
+            if 0 <= r < len(self._inactive_rows) else None)
         pl.addWidget(table)
         total = QLabel("")
         total.setObjectName("Muted")
@@ -167,13 +222,60 @@ class AccountsPage(QWidget):
 
     # ── loading ────────────────────────────────────────────────────────────────
 
-    def refresh(self):
+    def refresh(self, focus=None):
+        """Rebuild every tab. The page stays where it was: the entry in `focus`
+        ((kind, id) — the one just edited / added / moved), else the selected
+        one, is re-selected and scrolled to the centre; when it's no longer in
+        the list the old scroll position is kept. The search filter stays."""
+        focus = focus or self._focus or _key(self._entry(self._tree.currentItem()))
+        self._focus = None
+        chart_scroll = self._tree.verticalScrollBar().value()
+        ina = self._inactive_table
+        ina_focus = focus if focus else (
+            _key(self._inactive_rows[ina.currentRow()])
+            if 0 <= ina.currentRow() < len(self._inactive_rows) else None)
+        ina_scroll = ina.verticalScrollBar().value()
+
         active = self.db.get_accounts(active=1)
         inactive = self.db.get_accounts(active=0)
+        inactive_cats = self.db.get_inactive_categories()
         self._fill_chart(active)
-        self._fill_inactive(inactive)
+        self._fill_inactive(inactive, inactive_cats)
         self._classes.refresh()
-        self._tabs.setTabText(1, f"Inactive Accounts ({len(inactive)})")
+        n = len(inactive) + len(inactive_cats)
+        self._tabs.setTabText(1, f"Inactive Accounts ({n})")
+        self._apply_search()
+        self._restore(focus, chart_scroll)
+        self._restore_inactive(ina_focus, ina_scroll)
+
+    def _restore(self, focus, scroll: int):
+        item = self._items.get(focus) if focus else None
+        if item is not None and not item.isHidden():
+            self._tree.setCurrentItem(item)
+            # The tree is laid out lazily; scroll once now and again when the
+            # event loop has sized it (a page that isn't shown yet).
+            self._tree.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+            QTimer.singleShot(0, lambda it=item: self._scroll_to(it))
+        else:
+            self._tree.setCurrentItem(None)
+            self._tree.verticalScrollBar().setValue(scroll)
+
+    def _scroll_to(self, item):
+        try:
+            self._tree.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+        except RuntimeError:
+            pass                                # rebuilt in the meantime
+
+    def _restore_inactive(self, focus, scroll: int):
+        t = self._inactive_table
+        row = next((i for i, e in enumerate(self._inactive_rows) if _key(e) == focus), -1) \
+            if focus else -1
+        if row >= 0:
+            t.selectRow(row)
+            t.scrollToItem(t.item(row, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
+        else:
+            t.clearSelection()
+            t.verticalScrollBar().setValue(scroll)
 
     def _toggle_personal(self, on: bool):
         self.db.set_setting("show_personal_categories", "1" if on else "0")
@@ -181,6 +283,8 @@ class AccountsPage(QWidget):
 
     def _fill_chart(self, accounts):
         self._tree.clear()
+        self._items = {}
+        self._orig_fg = {}
         cats = self.db.get_categories_for_book()
         business = self.db.is_business()
         from ui.pages.categories import type_label
@@ -202,6 +306,7 @@ class AccountsPage(QWidget):
             head.setFont(COL_NAME, f)
             head.setForeground(COL_NAME, QColor(MUTED))
             head.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            head.setData(COL_NAME, Qt.ItemDataRole.UserRole + 1, group.key)
             self._tree.addTopLevelItem(head)
             group_total = 0.0
             for e in entries:
@@ -236,9 +341,12 @@ class AccountsPage(QWidget):
                 item.setTextAlignment(COL_BALANCE, Qt.AlignmentFlag.AlignRight
                                       | Qt.AlignmentFlag.AlignVCenter)
                 item.setData(COL_NAME, Qt.ItemDataRole.UserRole, e)
+                item.setData(COL_NAME, Qt.ItemDataRole.UserRole + 1, group.key)
                 item.setSizeHint(COL_NAME, QSize(0, ROW_H))
                 self._tree.addTopLevelItem(item)
                 self._tree.setItemWidget(item, COL_ACTIONS, self._action_cell(e))
+                self._items[_key(e)] = item
+                self._orig_fg[id(item)] = [QBrush(item.foreground(c)) for c in range(5)]
             if group.kind == "account":
                 net += group_total
                 head.setText(COL_BALANCE, _money(group_total))
@@ -250,34 +358,57 @@ class AccountsPage(QWidget):
                                 f"{'s' if len(accounts) != 1 else ''}  —  "
                                 f"Net balance: {sign}{abs(net):,.2f}")
 
-    def _fill_inactive(self, accounts):
+    def _fill_inactive(self, accounts, categories=()):
+        from ui.pages.categories import type_label
         table = self._inactive_table
         table.clear_rows()
-        table.setRowCount(len(accounts))
-        for row, acct in enumerate(accounts):
-            bal = self.db.account_balance(acct["id"])
-            table.set_item(row, 0, acct.get("name", ""), bold=True)
-            table.set_item(row, 1, (acct.get("type") or "").title())
-            table.set_item(row, 2, acct.get("institution", "") or "—")
-            table.set_item(row, 3, acct.get("currency", "USD"),
-                           align=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
-            table.money_item(row, 4, bal)
+        entries = ([{"kind": "account", "data": a} for a in accounts]
+                   + [{"kind": "category", "data": c} for c in categories])
+        self._inactive_rows = entries
+        table.setRowCount(len(entries))
+        cat_names = {c["id"]: c.get("name", "") for c in
+                     self.db.get_categories(include_inactive=True)} if categories else {}
+        for row, e in enumerate(entries):
+            d = e["data"]
+            if e["kind"] == "account":
+                bal = self.db.account_balance(d["id"])
+                table.set_item(row, 0, d.get("name", ""), bold=True)
+                table.set_item(row, 1, (d.get("type") or "").title())
+                table.set_item(row, 2, d.get("institution", "") or "—")
+                table.set_item(row, 3, d.get("currency", "USD"),
+                               align=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+                table.money_item(row, 4, bal)
+            else:
+                parent = cat_names.get(d.get("parent_id") or "", "")
+                name = f"{parent} → {d.get('name', '')}" if parent else d.get("name", "")
+                table.set_item(row, 0, name, bold=True)
+                table.set_item(row, 1, type_label(d.get("type", "")))
+                line = d.get("tax_line") or ""
+                table.set_item(row, 2, f"Line {line}" if line else "—")
+                table.set_item(row, 3, "—",
+                               align=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+                table.set_item(row, 4, "—",
+                               align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             cell = QWidget()
             cl = QHBoxLayout(cell)
             cl.setContentsMargins(6, 5, 6, 5)
             cl.setSpacing(6)
             edit_btn = QPushButton("Edit")
             edit_btn.setObjectName("CellButton")
-            edit_btn.clicked.connect(lambda _, a=acct: self._edit_account(a))
+            edit_btn.clicked.connect(lambda _, x=e: self._edit_entry(x))
             cl.addWidget(edit_btn)
             react_btn = QPushButton("Reactivate")
             react_btn.setObjectName("CellSuccess")
-            react_btn.clicked.connect(lambda _, a=acct: self._reactivate(a))
+            react_btn.clicked.connect(lambda _, x=e: self._reactivate_entry(x))
             cl.addWidget(react_btn)
             table.setCellWidget(row, 5, cell)
             table.setRowHeight(row, ROW_H)
-        n = len(accounts)
+        n = len(entries)
         self._inactive_total.setText(f"{n} inactive account{'s' if n != 1 else ''}")
+
+    def inactive_entries(self) -> list:
+        """The entries listed on the Inactive Accounts tab ({"kind", "data"})."""
+        return list(self._inactive_rows)
 
     def _action_cell(self, entry) -> QWidget:
         cell = QWidget()
@@ -317,6 +448,85 @@ class AccountsPage(QWidget):
         r.setWidth(self._tree.columnWidth(COL_NAME))
         return QRect(self._tree.viewport().mapToGlobal(r.topLeft()), r.size())
 
+    # ── search ────────────────────────────────────────────────────────────────
+
+    def focus_search(self):
+        """Ctrl+F: show the chart and put the cursor in the search box."""
+        self._tabs.setCurrentIndex(0)
+        self._search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._search.selectAll()
+
+    @staticmethod
+    def _search_text(item) -> str:
+        return " ".join(item.text(c) for c in (COL_NAME, COL_TYPE, COL_DETAIL)).lower()
+
+    def _apply_search(self, *_):
+        """Show only rows matching the search (name, type, institution or
+        Schedule C line, case-insensitive). A matching sub-account keeps its
+        parents visible, dimmed, and its group header; with nothing matching
+        the list says so."""
+        q = self._search.text().strip().lower()
+        self._search_clear.setVisible(bool(q))
+        tree = self._tree
+        heads, rows = [], []
+        for i in range(tree.topLevelItemCount()):
+            it = tree.topLevelItem(i)
+            (rows if self._entry(it) else heads).append(it)
+        if not q:
+            for it in heads + rows:
+                it.setHidden(False)
+            for it in rows:
+                self._set_dim(it, False)
+            self._no_match.setVisible(False)
+            tree.setVisible(True)
+            return
+        show: dict = {}                          # id(item) → "match" | "context"
+        for it in rows:
+            if q in self._search_text(it):
+                show[id(it)] = "match"
+                e = self._entry(it)
+                pid = e.get("parent") or ""
+                seen = set()
+                while pid and pid not in seen:   # every displayed ancestor
+                    seen.add(pid)
+                    parent = self._items.get((e["kind"], pid))
+                    if parent is None:
+                        break
+                    show.setdefault(id(parent), "context")
+                    pid = self._entry(parent).get("parent") or ""
+        groups = set()
+        for it in rows:
+            state = show.get(id(it))
+            it.setHidden(state is None)
+            self._set_dim(it, state == "context")
+            if state:
+                groups.add(it.data(COL_NAME, Qt.ItemDataRole.UserRole + 1))
+        for it in heads:
+            it.setHidden(it.data(COL_NAME, Qt.ItemDataRole.UserRole + 1) not in groups)
+        nothing = not show
+        self._no_match.setVisible(nothing)
+        tree.setVisible(not nothing)
+
+    def _set_dim(self, item, dim: bool):
+        orig = self._orig_fg.get(id(item))
+        for c in range(5):
+            if dim:
+                item.setForeground(c, QColor(MUTED))
+            elif orig:
+                item.setForeground(c, orig[c])
+        item.setData(COL_NAME, Qt.ItemDataRole.UserRole + 2, dim)
+
+    def visible_entries(self) -> list:
+        """[(kind, name, dimmed)] of the chart rows on screen (for tests)."""
+        out = []
+        for i in range(self._tree.topLevelItemCount()):
+            it = self._tree.topLevelItem(i)
+            e = self._entry(it)
+            if e and not it.isHidden():
+                out.append((e["kind"], e["data"].get("name", ""),
+                            bool(it.data(COL_NAME, Qt.ItemDataRole.UserRole + 2))))
+        return out
+
     # ── actions ────────────────────────────────────────────────────────────────
 
     def _entry(self, item):
@@ -340,6 +550,26 @@ class AccountsPage(QWidget):
         else:
             self._edit_category(e["data"])
 
+    def _ask(self, title: str, text: str, buttons: list) -> str:
+        """A warning box with these button labels; returns the one clicked
+        (the last one — Cancel — if the box is closed)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning if buttons != ["Delete", "Cancel"]
+                    else QMessageBox.Icon.Question)
+        box.setWindowTitle(title)
+        box.setText(text)
+        made = {}
+        for label in buttons:
+            role = (QMessageBox.ButtonRole.RejectRole if label in ("Cancel", "OK")
+                    else QMessageBox.ButtonRole.AcceptRole)
+            made[box.addButton(label, role)] = label
+        cancel = next((b for b, lbl in made.items() if lbl in ("Cancel", "OK")), None)
+        if cancel is not None:
+            box.setEscapeButton(cancel)
+            box.setDefaultButton(cancel)
+        box.exec()
+        return made.get(box.clickedButton(), buttons[-1])
+
     # ── move to… ───────────────────────────────────────────────────────────────
 
     def move_options(self, e) -> list:
@@ -359,7 +589,8 @@ class AccountsPage(QWidget):
             from ui.pages.categories import type_label
             for c in sorted(self.db.get_categories_for_book(keep_ids=[d.get("parent_id", "")]),
                             key=lambda c: c.get("name", "").lower()):
-                if c["id"] != d["id"] and not c.get("parent_id"):
+                if c["id"] != d["id"] and not c.get("parent_id") \
+                        and str(c.get("active", "1")) == "1":
                     out.append((f"{c.get('name', '')}  ({type_label(c.get('type', ''))})",
                                 c["id"]))
         return out
@@ -388,7 +619,8 @@ class AccountsPage(QWidget):
                         if a.get("parent_id") == d["id"]]
                 parent = self.db.get_account(parent_id) or {}
             else:
-                kids = [c for c in self.db.get_categories() if c.get("parent_id") == d["id"]]
+                kids = [c for c in self.db.get_categories(include_inactive=True)
+                        if c.get("parent_id") == d["id"]]
                 parent = self.db.get_category(parent_id) or {}
                 if parent.get("type") and parent.get("type") != d.get("type"):
                     from ui.pages.categories import type_label
@@ -414,7 +646,7 @@ class AccountsPage(QWidget):
         except ValueError as err:
             QMessageBox.warning(self, "Can't Move", str(err))
             return
-        self.refresh()
+        self.refresh(focus=_key(e))
 
     def _context_menu(self, pos):
         item = self._tree.itemAt(pos)
@@ -432,14 +664,115 @@ class AccountsPage(QWidget):
         if cur:
             menu.addAction("Make Top-Level", lambda: self.move_entry(e, ""))
         menu.addSeparator()
+        menu.addAction("Make Inactive", lambda: self._make_inactive(e))
         menu.addAction("Delete…", lambda: self._delete_entry(e))
         menu.exec(self._tree.viewport().mapToGlobal(pos))
 
+    def _inactive_menu(self, pos):
+        row = self._inactive_table.rowAt(pos.y())
+        if not 0 <= row < len(self._inactive_rows):
+            return
+        e = self._inactive_rows[row]
+        menu = QMenu(self)
+        menu.addAction("Edit…", lambda: self._edit_entry(e))
+        menu.addAction("Reactivate", lambda: self._reactivate_entry(e))
+        menu.addAction("Delete…", lambda: self._delete_entry(e))
+        menu.exec(self._inactive_table.viewport().mapToGlobal(pos))
+
+    # ── inactive / delete ─────────────────────────────────────────────────────
+
+    def _usage(self, e) -> dict:
+        ident = e["data"]["id"]
+        return (self.db.account_usage(ident) if e["kind"] == "account"
+                else self.db.category_usage(ident))
+
+    def _blocked_by_subs(self, e, doing: str) -> bool:
+        """True (after saying which) when e has active sub-accounts."""
+        d = e["data"]
+        subs = self.db.active_sub_accounts(e["kind"], d["id"])
+        if not subs:
+            return False
+        names = ", ".join(f"“{s.get('name', '')}”" for s in subs)
+        n = len(subs)
+        them = "them" if n != 1 else "it"
+        self._ask(f"Can't {doing.title()}",
+                  f"“{d.get('name', '')}” has {n} active sub-account{'s' if n != 1 else ''}: "
+                  f"{names}.\n\nMove {them} to another account (Move…) or make {them} "
+                  f"inactive first, then {doing} “{d.get('name', '')}”.", ["OK"])
+        return True
+
     def _delete_entry(self, e):
+        """Delete an unused account (after confirming). One that is used can't
+        be deleted: say what uses it and offer Make Inactive instead."""
+        d = e["data"]
+        name = d.get("name", "")
+        if self._blocked_by_subs(e, "delete"):
+            return
+        usage = self._usage(e)
+        if self.db.usage_total(usage):
+            n = usage.get("transactions", 0)
+            lead = (f"{n} transaction{'s' if n != 1 else ''} use{'s' if n == 1 else ''} "
+                    f"“{name}”, so it can't be deleted." if n else
+                    f"“{name}” is in use, so it can't be deleted.")
+            others = {k: v for k, v in usage.items() if k != "transactions"}
+            more = (f" It's also used by {self.db.describe_usage(others)}."
+                    if self.db.usage_total(others) else "")
+            if str(d.get("active", "1")) == "0":
+                self._ask("Can't Delete Account", f"{lead}{more}\n\nIt is already inactive.",
+                          ["OK"])
+                return
+            choice = self._ask(
+                "Can't Delete Account",
+                f"{lead}{more}\n\nMake it inactive instead? It disappears from account "
+                "lists and the Chart of Accounts, but its transactions keep it — by name — "
+                "in the register and reports. You can reactivate it any time from the "
+                "Inactive Accounts tab.", ["Make Inactive", "Cancel"])
+            if choice == "Make Inactive":
+                self._make_inactive(e)
+            return
+        if self._ask("Delete Account",
+                     f"Delete “{name}”? Nothing uses it. This can't be undone.",
+                     ["Delete", "Cancel"]) != "Delete":
+            return
+        try:
+            if e["kind"] == "account":
+                self.db.delete_account(d["id"])
+            else:
+                self.db.delete_category(d["id"])
+        except ValueError as err:
+            QMessageBox.warning(self, "Can't Delete", str(err))
+        self.refresh()
+
+    def _make_inactive(self, e):
+        if self._blocked_by_subs(e, "make inactive"):
+            return
+        try:
+            if e["kind"] == "account":
+                self.db.make_account_inactive(e["data"]["id"])
+            else:
+                self.db.set_category_active(e["data"]["id"], False)
+        except ValueError as err:
+            QMessageBox.warning(self, "Can't Make Inactive", str(err))
+            return
+        self.refresh()
+
+    def _reactivate_entry(self, e):
         if e["kind"] == "account":
-            self._delete_account(e["data"])
+            self.db.set_account_active(e["data"]["id"], True)
         else:
-            self._delete_category(e["data"])
+            self.db.set_category_active(e["data"]["id"], True)
+        self.refresh(focus=_key(e))
+
+    def _reactivate(self, acct):
+        self._reactivate_entry({"kind": "account", "data": acct})
+
+    def _delete_account(self, acct):
+        self._delete_entry({"kind": "account", "data": acct})
+
+    def _delete_category(self, cat):
+        self._delete_entry({"kind": "category", "data": cat})
+
+    # ── add / edit ────────────────────────────────────────────────────────────
 
     def _add(self):
         dlg = NewAccountTypeDialog(self)
@@ -457,7 +790,7 @@ class AccountsPage(QWidget):
             cd = CategoryDialog(self.db, parent=self, top_level=True, category_type=atype)
             if cd.exec() == QDialog.DialogCode.Accepted:
                 saved = self.db.save_category(cd.get_data())
-                self.refresh()
+                self.refresh(focus=("category", saved.get("id")))
                 self._flash(saved.get("id"))
 
     def _add_sub(self):
@@ -474,7 +807,7 @@ class AccountsPage(QWidget):
         dlg = CategoryDialog(self.db, parent_id=preset, parent=self, require_parent=True)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             saved = self.db.save_category(dlg.get_data())
-            self.refresh()
+            self.refresh(focus=("category", saved.get("id")))
             self._flash(saved.get("id"))
 
     def _edit_account(self, acct):
@@ -490,7 +823,7 @@ class AccountsPage(QWidget):
             self.db.save_account(data)
         except ValueError as err:
             QMessageBox.warning(self, "Can't Save", str(err))
-        self.refresh()
+        self.refresh(focus=("account", data.get("id")) if data.get("id") else None)
 
     def _edit_category(self, cat):
         from ui.pages.categories import CategoryDialog
@@ -500,41 +833,16 @@ class AccountsPage(QWidget):
                 self.db.save_category(dlg.get_data())
             except ValueError as err:
                 QMessageBox.warning(self, "Can't Save", str(err))
-            self.refresh()
-
-    def _reactivate(self, acct):
-        self.db.set_account_active(acct["id"], True)
-        self.refresh()
-
-    def _delete_account(self, acct):
-        reply = QMessageBox.question(
-            self, "Delete Account",
-            f"Delete '{acct['name']}'?\n\nTransactions will remain in the system.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            self.db.delete_account(acct["id"])
-            self.refresh()
-
-    def _delete_category(self, cat):
-        reply = QMessageBox.question(
-            self, "Delete",
-            f"Delete '{cat['name']}'? Transactions assigned to it will become "
-            "uncategorized.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            self.db.delete_category(cat["id"])
-            self.refresh()
+            self.refresh(focus=("category", cat.get("id")))
 
     def _flash(self, cat_id):
         from ui.pages.categories import flash_tree_item
-        target = None
-        for i in range(self._tree.topLevelItemCount()):
-            it = self._tree.topLevelItem(i)
-            e = self._entry(it)
-            if e and e["kind"] == "category" and e["data"].get("id") == cat_id:
-                target = it
-                break
-        flash_tree_item(self, self._tree, target, self._anims)
+        target = self._items.get(("category", cat_id))
+        if target is not None:
+            # flash_tree_item clears the selection; keep the new row current.
+            flash_tree_item(self, self._tree, target, self._anims)
+            self._tree.setCurrentItem(target)
+            self._tree.scrollToItem(target, QAbstractItemView.ScrollHint.PositionAtCenter)
 
 
 def _money(v: float) -> str:

@@ -444,7 +444,7 @@ class ImportPage(QWidget):
             w.blockSignals(False)
 
     def _render_preview(self, new_txns, dup_txns, fix_txns=()):
-        cats = {c["id"]: c["name"] for c in self.db.get_categories()}
+        cats = {c["id"]: c["name"] for c in self.db.get_categories(include_inactive=True)}
         accts = {a["id"]: a["name"] for a in self.db.get_accounts(active=None)}
         index = {id(t): i for i, t in enumerate(self._parsed)}
 

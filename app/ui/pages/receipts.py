@@ -836,7 +836,7 @@ class ReceiptsPage(QWidget):
             return
         rows = self.db.search_receipt_items(q, self._i_from.date().toString("yyyy-MM-dd"),
                                             self._i_to.date().toString("yyyy-MM-dd"))
-        cats = {c["id"]: c["name"] for c in self.db.get_categories()}
+        cats = {c["id"]: c["name"] for c in self.db.get_categories(include_inactive=True)}
         t = self._items
         t.clear_rows()
         t.setRowCount(len(rows))

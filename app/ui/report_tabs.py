@@ -166,7 +166,7 @@ class ScheduleCTab(GridTab):
     def build(self, start, end, cls):
         from business_categories import TAX_LINES
         from reports_export import _line_sort
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         sc = RP.schedule_c(self.db.report_rows(start, end), cats)
         self.header = ["Schedule C line", "Book amount", "Deductible"]
         for code, v in sorted(sc["lines"].items(), key=lambda kv: _line_sort(kv[0])):
@@ -185,7 +185,7 @@ class CashFlowTab(GridTab):
            "the card is paid."
 
     def build(self, start, end, cls):
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         cf = RP.cash_flow(self.db.get_accounts(active=None), self.db.get_transactions(), cats,
                           start, end)
         self.header = ["Cash flow", "Amount"]
@@ -213,7 +213,7 @@ class BudgetTab(GridTab):
 
     def build(self, start, end, cls):
         self._last = (start, end, cls)
-        cats = {c["id"]: c for c in self.db.get_categories()}
+        cats = self.db.category_map()
         out = RP.budget_vs_actual(self._rows(start, end, cls), self.db.get_budgets(), cats, start, end)
         self.header = ["Category", "Budget", "Actual", "Variance", "% used"]
         for r in out:
