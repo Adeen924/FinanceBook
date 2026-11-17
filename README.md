@@ -12,6 +12,84 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New in v1.18.0: accounts, navigation, import and reports
+
+> **Update every computer that shares a database.** v1.18 adds a *Cost of
+> Goods Sold* account type. An older FinanceBook still opens the database and
+> treats those accounts as ordinary expenses (net income is the same), but it
+> won't show them in their own section or let you pick the type — so update
+> FinanceBook on each computer that opens the file. There is no database-format
+> change, and nothing is deleted or rewritten except what's listed below.
+
+**Accounts**
+
+- **An account that's in use can't be deleted — make it inactive instead.**
+  Deleting a bank, card, income or expense account that has transactions (or a
+  rule, recurring item, loan, budget, contact default, inventory / asset link or
+  sub-account pointing at it) now says how many transactions use it and offers
+  **Make Inactive** or **Cancel**. An account nothing uses is deleted for real,
+  after you confirm. Before 1.18, "deleting" an income / expense account only
+  hid it, and its transactions showed as *⚠ Uncategorized*.
+- **Inactive income and expense accounts.** They're hidden from account lists
+  and the Chart of Accounts, but every existing transaction keeps them — by
+  name — in the register, reports and exports (never "Uncategorized"). They're
+  listed with bank and card accounts on the **Inactive Accounts** tab, with
+  **Reactivate** (and right-click Make Inactive on the chart).
+- **Parents first.** An account with active sub-accounts can't be made inactive
+  or deleted until its sub-accounts are moved or made inactive — the message
+  names them.
+- **Accounts deleted by an earlier version come back as inactive,** with their
+  name, if anything still uses them (one-time, on first open; no transaction
+  changes). Ones nothing used are removed for good.
+- **The list stays where you were.** After you edit, add, move, make inactive
+  or reactivate an account, the Chart of Accounts keeps that row selected and in
+  view instead of jumping back to the top (same on the Inactive tab).
+- **Search the Chart of Accounts.** A search box above the list filters as you
+  type — by name, type, institution or Schedule C line. A matching sub-account
+  keeps its parent (dimmed) and group heading; ✕ clears it; **Ctrl+F** jumps to
+  it; the filter stays after an edit.
+- **New account type: Cost of Goods Sold.** Its own group between Income and
+  Expense. On the Profit & Loss: Income → Cost of Goods Sold → **Gross
+  Profit** → Expenses → Net Operating Income → Other Income / Other Expense →
+  Net Income. Inventory's computed cost of goods sold goes in that section;
+  Schedule C puts it on line 4. Business books: the built-in *Cost of Goods
+  Sold* account (Materials, Purchases for Resale, Freight-in) is switched to the
+  new type once, if it's still an Expense — net income doesn't change.
+
+**Navigation**
+
+- **Transfers is no longer a page.** It's gone from the sidebar (Personal) and
+  the Transactions tabs (Business). To find transfer pairs already in your books
+  — or unlink one — use **Find Transfers…** on the Transactions page. Old links
+  to "Transfers" open Transactions.
+
+**Import**
+
+- **Duplicates are announced.** When a file has rows you've already imported, a
+  popup says *"N duplicate transaction(s) were found and won't be imported"*;
+  **Show Details…** lists each one (date, payee, amount and the account it's
+  already in). If everything is a duplicate it says *"Nothing new to import"*
+  and Import stays off. The Import Complete message counts the duplicates too.
+
+**Reports**
+
+- **Sub-accounts on every report.** The Profit & Loss lists every level of your
+  Chart of Accounts, expanded, with **Expand all / Collapse all**. A parent that
+  also has its own transactions shows them as *Parent (other)*, and each parent
+  has a *Total* row. By Class, Budget vs Actual and the CSV exports indent
+  sub-accounts the same way.
+- **Columns over time.** A **Columns:** dropdown next to the dates: Day, Week
+  (Monday–Sunday), Month, Quarter, Year or Total. The Profit & Loss shows one
+  column per period plus Total — the old *By Month* tab is now simply the P&L
+  with Month columns. By Class / Project, By Vendor and Cash Flow use the same
+  choice; the Balance Sheet stays point-in-time. A first or last period the
+  dates cut short is labelled with its real dates (e.g. *Nov 12–15*).
+  Depreciation and inventory cost of goods sold land in the period they belong
+  to (depreciation is worked out by month). More than 60 columns asks first;
+  the account names stay on the left while you scroll across. **Export CSV**
+  writes the same columns. (The P&L export is now the report as shown; the
+  year-end package still has every transaction.)
+
 ## New in v1.17: the Match column on imports
 
 No database upgrade in this release.

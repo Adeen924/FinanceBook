@@ -89,14 +89,15 @@ ui/
                          Chart of Accounts / Inactive Accounts / Classes
     loans.py             Loan list + amortization schedule viewer
     transactions.py      Full transaction list with filters, quick-categorize
-    transfers.py         Auto-detect & link transfers between own accounts
+    transfers.py         Potential / linked transfers (TransfersPage widgets); since
+                         v1.18 shown by Transactions → Find Transfers… (no page)
     import_page.py       File import (QFX/QBO/CSV/XLSX) with rule auto-apply; detected bank
                          format, money in/out totals, Flip all signs
     rules.py             Bank rules list (conditions text, double-click to edit)
     categories.py        CategoryDialog, ClassDialog, ClassesPanel (no page of its own
                          since v1.14 — the old "Categories" id is an alias of Accounts)
     reconcile.py         Bank statement reconciliation with live diff counter
-    reports.py           P&L and Balance Sheet with CSV export
+    reports.py           P&L (sub-accounts, period columns) and Balance Sheet, CSV
     settings.py          QuickBooks migration (IIF + Excel), DB rename,
                          Reset Database (requires typing "DELETE")
   dialogs/
@@ -259,7 +260,8 @@ The lock is best-effort across computers (sync delay); see the README.
 - Categories: `Database.get_categories_for_book()` is what pickers use; it hides
   personal-default categories (matched to `default_categories.py`, no tax line)
   in business books unless used, kept, or setting `show_personal_categories`.
-  Lookups/reports keep using `get_categories()`.
+  Lookups/reports use `get_categories(include_inactive=True)` / `category_map()`
+  (v1.18 — inactive accounts keep their name).
 - Tests: `test_pdf_text.py`, `test_receipt_vendors.py` (an optional class runs
   `_private_samples/` when present — never commit that folder),
   `test_receipt_booking.py`, `test_categories_book.py`, `test_receipt_ui.py`.
@@ -370,7 +372,8 @@ matches. Three callers, so they always agree:
 - **`bulk_save_transactions`** (no preview: QuickBooks import, tests) still
   auto-adopts mirrors, now via `find_matches(..., kinds=(MIRROR,))`, and keeps
   `match_existing=True` for rule transfers.
-- **Transfers page** `_detect` → `find_transfer_pairs(db)` (same rules as the
+- **Find Transfers… dialog** (TransfersPage) `_detect` → `find_transfer_pairs(db)`
+  (same rules as the
   TRANSFER kind, one-to-one; `txn_a` is the money-out side).
 
 Engine rules (`find_matches`):
@@ -517,8 +520,8 @@ The loan dialog displays and accepts it as a percentage (`6.5 %`) and divides by
   `HubPage` (main_window.py): a row of `HubTab` buttons over a stack of the real
   page widgets. `mw.page(name)` returns the page itself; `mw.current_page_widget()`
   is the page on screen (use it instead of `_stack.currentWidget()`, which may be
-  a hub). Hub ids: Accounts (+Loans), Transactions (+Import, Reconcile, Transfers,
-  Recurring), Invoices & Bills (+Contacts), Categories & Rules.
+  a hub). Hub ids: Accounts (+Loans), Transactions (+Import, Reconcile,
+  Recurring — Transfers was removed in v1.18), Invoices & Bills (+Contacts), Rules.
 - Contacts is never hidden (transaction Vendor/customer field, inventory vendors,
   1099 flags, By Vendor report): a tab of Invoices & Bills, or its own item when
   the Invoices module is off.
@@ -610,8 +613,9 @@ The loan dialog displays and accepts it as a percentage (`6.5 %`) and divides by
   imported, non-transfer, non-split rows with amount > 0 on a spending type or
   < 0 on an income type. Per-row "Flip sign" and "Flip All Selected"; locked
   rows are disabled; read-only disables everything. Sets `sign_check_done`.
-- **Uncategorized** = not a transfer and category_id empty or not an active
-  category (`ledger.is_uncategorized`). Used by Apply to All, the Dashboard
+- **Uncategorized** = not a transfer and category_id empty or pointing to no
+  category (`ledger.is_uncategorized`; since v1.18 an inactive category still
+  counts as a category). Used by Apply to All, the Dashboard
   alert (which opens Transactions → "⚠ Uncategorized only") and the filter.
 - **Transactions filters** apply on change: combos / checkbox at once; search
   and dates through a 300 ms single-shot `_filter_timer`. `_quiet` suppresses
@@ -737,6 +741,98 @@ regexes, a blank-payee template, quirks (for the docs), `verified` and `fixture`
 Tests: `test_bank_formats.py` (fixtures, registry, doc, generic fallback, card
 sanity check, v1.15 key compatibility), `test_import_page_ui.py` (preview, flip
 memory, warnings, re-import, correcting v1.15 Capital One imports).
+
+## v1.18 accounts, navigation, import, reports (no schema change)
+
+**Usage / inactive / delete** (`sheets/client.py`, "usage, inactive, delete"):
+- `account_usage(id)` / `category_usage(id)` → `{key: count}` of every reference:
+  transactions (split lines and transfer sides are rows), rules (category_id,
+  transfer_account_id, `rule_conditions` field `account`), recurring templates
+  (JSON `account_id` / `category_id`), loans (account / interest category),
+  contacts' default category, budgets (non-zero), inventory items' income
+  category, assets' expense category, receipt / invoice / bill lines, document
+  and payroll payments, reconciliations, sub-accounts (active or not).
+  `usage_total()`, `describe_usage()` ("12 transactions, 2 bank rules and …").
+- `delete_account` / `delete_category` now DELETE the row, and raise ValueError
+  when anything uses it (or it has active subs). `make_account_inactive()`,
+  `set_category_active(id, bool)` (refuses a parent with active subs;
+  reactivating a sub reactivates its parent), `active_sub_accounts(kind, id)`,
+  `get_inactive_categories()`.
+- **Inactive categories** (active=0): `get_categories()` = active only (pickers);
+  `get_categories(include_inactive=True)` / `category_map()` for anything that
+  turns an id into a name or type (register, reports, exports, dashboard,
+  `uncategorized_txns`). `get_categories_for_book(keep_ids=[…])` keeps an inactive
+  id listed (named "X (inactive)") so editing its transaction never drops it.
+- `repair_deleted_categories()` (once, setting `inactive_categories_repaired`;
+  new files are marked done): categories "deleted" before 1.18 (active=0) that
+  something uses stay as inactive accounts; unused ones are deleted.
+- Accounts page: `_delete_entry` → blocked by subs (names them) / in use →
+  `_ask(title, text, ["Make Inactive", "Cancel"])` / unused → `["Delete",
+  "Cancel"]` (tests patch `_ask`). The Inactive tab lists accounts + categories
+  (`inactive_entries()`, `_reactivate_entry`). `refresh(focus=(kind, id))`
+  re-selects the entry (else the current item) and centres it, or restores the
+  scroll position when it's gone; same for the Inactive tab. Search box
+  (`_search`, ✕ `_search_clear`, Ctrl+F `_find_shortcut` → `focus_search()`,
+  "No accounts match" `_no_match`) filters the name / type / detail columns;
+  a match's displayed ancestors stay visible, dimmed (`visible_entries()`).
+
+**Cost of Goods Sold type** (`"cogs"`): `ledger.COGS_TYPE`, `SPENDING_TYPES`
+(category_sign −1), `pnl_section()` → "cogs", `pnl_bucket()` → "expense" (net
+income). `COA.GROUPS` group "cogs" between Other Income and Expense;
+`CATEGORY_TYPES`; `reports.pnl_rows` rows carry `cogs` (also the computed
+inventory COGS line); `pnl_section_label` → "Cost of Goods Sold";
+`PNL_SECTION_ORDER` = Income, COGS, Expense, Other Income, Other Expense.
+Schedule C: a cogs row without a line → "4". Cash flow line "Cash paid for cost
+of goods sold" (`CASH_FLOW_LINE_ORDER`). `BUSINESS_CATEGORIES["cogs"]` seeds new
+books; `convert_cogs_categories()` (in `ensure_business_setup`, once:
+`cogs_type_converted`) turns the built-in "Cost of Goods Sold" root and its subs
+still typed "expense" into "cogs". Older apps read "cogs" as expense, so every
+computer sharing a database should update (README).
+
+**Navigation**: `PAGE_ALIASES["Transfers"] = "Transactions"`; Transfers is out
+of `_PERSONAL`, the Transactions hub, `ALL_PAGES` and `_page_constructors()`.
+`nav_config.RETIRED_NAMES` are dropped from the saved `nav_modules` on save
+(there is no other saved sidebar layout). `TransactionsPage._find_transfers_btn`
+→ `FindTransfersDialog` (holds `TransfersPage(embedded=True)` as `.transfers`;
+`links_changed` → the register reloads).
+
+**Import duplicates**: `ImportPage._parse` → `_show_duplicates(dups,
+nothing_new)` unless re-parsing for Flip all signs: a window-modal QMessageBox
+(`open()`, kept in `_dup_box`, counted in `dup_popups_shown`) with
+`duplicate_report()` text and details (`Database.transactions_by_import_hash`).
+Import Complete adds "N duplicates skipped (already imported)".
+
+**Reports** (`utils/reports.py`):
+- `period_buckets(start, end, period)` → `[Bucket(key, label, start, end,
+  partial)]` for day / week / month / quarter / year / total; `period_key(date,
+  period)` (= the period's first day; `TOTAL` for total); `WEEK_START` = 0
+  (Monday); `MANY_COLUMNS` = 60; `period_choices()`. Labels "Nov 16", "Wk of
+  Nov 10", "Nov 26", "Q4 26", "2026"; partial periods show their dates; days and
+  weeks add the year when the range spans several. `months_between` is kept.
+- `pnl_report(rows, cats, columns, col_of, memo_rows=(), signed=False)` → blocks
+  (sections with nested nodes for every account level via `account_path`;
+  summaries Gross Profit / Net Operating Income / Net Income; the Other group;
+  memo sections from `memo_rows(txns, cats)`). `pnl_lines(report)` flattens it
+  (kinds section / parent / leaf / other / total / section_total / summary /
+  group; `level` = depth within the section). Used by the P&L tree, By Class and
+  the CSV exports (`reports_export.pnl_csv_rows(rows, cats)`, `pnl_grid_rows`).
+- `db.report_rows(start, end, with_computed, period)` dates computed lines per
+  column: gains and inventory COGS per bucket; depreciation per bucket for month
+  and longer, per calendar month for day / week (`computed_segments` — it is
+  worked out by whole month). `computed_pnl_lines(start, end, kinds)`.
+- `budget_vs_actual` rows carry `depth`; subs (budget None) and "(other)" rows
+  follow their top-level account.
+- Reports page: `_period_combo` (remembered per tab in `_tab_period`;
+  `period()`), tabs with `supports_period` (P&L, By Class, By Vendor, Cash Flow),
+  `_confirm_columns(n)` above MANY_COLUMNS (declined → previous choice),
+  `show_report(name)` with `REPORT_ALIASES` ("By Month" / "By Period" → P&L with
+  Month columns; the By Month tab is gone). P&L tree headings keep their
+  collapsed totals in `_COLLAPSED` item data; `expand_all()` / `collapse_all()`.
+  `ui.widgets.FrozenColumn(view)` overlays column 0 (tree or table), enabled only
+  when there are period / many columns.
+- Tests: `test_account_usage.py`, `test_accounts_page_ui.py`, `test_cogs_type.py`,
+  `test_nav_transfers.py`, `test_import_duplicates_ui.py`,
+  `test_reports_periods.py`, `test_dropdowns_ui.py` (the Columns popup).
 
 ## Known issues / things to watch
 
