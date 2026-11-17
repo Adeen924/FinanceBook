@@ -50,12 +50,13 @@ the same money is never recorded twice.
 - **To unmatch before importing,** untick the box (or choose *Don't match*): the
   row is imported as an ordinary new transaction.
 - **To undo a transfer link afterwards,** right-click either side in
-  Transactions → **Unlink Transfer** (or use ✕ in Transfers → Linked
-  Transfers). Both entries stay, as ordinary uncategorized transactions.
+  Transactions → **Unlink Transfer** (or use ✕ in Transactions → **Find
+  Transfers…** → Linked Transfers). Both entries stay, as ordinary
+  uncategorized transactions.
 - **All or nothing.** An import is saved in one step: if anything goes wrong,
   nothing from that file is saved or half-linked.
-- **Transfers → Potential Transfers uses the same rules,** so it suggests the
-  same pairs the import would, each entry once.
+- **Potential Transfers (Transactions → Find Transfers…) uses the same
+  rules,** so it suggests the same pairs the import would, each entry once.
 
 ## New in v1.16: bank CSV formats, Capital One fix, Flip signs
 
@@ -202,7 +203,8 @@ and appear as **tabs** across the top of the page, and the business features
 you don't use can be hidden.
 
 - **Grouped pages.** *Accounts* has a **Loans** tab; *Transactions* has
-  **Import**, **Reconcile**, **Transfers** and **Recurring** tabs; *Invoices &
+  **Import**, **Reconcile**, **Transfers** and **Recurring** tabs (since v1.18
+  Transfers is the **Find Transfers…** button on Transactions); *Invoices &
   Bills* has a **Contacts** tab (customers and vendors); *Categories & Rules* is
   one item with two tabs. (Since v1.14 categories live on the Accounts page and
   this item is just *Rules*.)

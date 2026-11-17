@@ -1,4 +1,8 @@
-"""Transfer detection & management."""
+"""Transfer detection & management: potential transfer pairs already in the
+books (from the matching engine) and linked transfers.
+
+Since v1.18 this isn't a page of its own: the Transactions page's "Find
+Transfers…" button shows it in a dialog (embedded=True)."""
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLabel, QMessageBox, QTabWidget, QHeaderView)
 from PyQt6.QtCore import Qt
@@ -8,18 +12,24 @@ from ui.styles  import WARNING, SUCCESS
 
 
 class TransfersPage(QWidget):
-    def __init__(self, db, parent=None):
+    def __init__(self, db, parent=None, embedded: bool = False):
         super().__init__(parent)
         self.db = db
+        self._embedded = embedded
         self._potential: list[dict] = []
         self._linked: list[dict] = []
+        self.links_changed = 0          # links / unlinks made here (the caller reloads)
         self._build()
 
     def _build(self):
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 24, 28, 24)
+        if self._embedded:
+            lay.setContentsMargins(0, 0, 0, 0)
+        else:
+            lay.setContentsMargins(28, 24, 28, 24)
         lay.setSpacing(14)
-        lay.addWidget(PageTitle("Transfers Between Accounts"))
+        if not self._embedded:
+            lay.addWidget(PageTitle("Transfers Between Accounts"))
 
         info = QLabel(
             "Transfers are excluded from P&L reports. "
@@ -154,6 +164,7 @@ class TransfersPage(QWidget):
     def _link(self, row: int):
         p = self._potential[row]
         self.db.link_transfer(p["txn_a"]["id"], p["txn_b"]["id"])
+        self.links_changed += 1
         self.refresh()
 
     def _unlink(self, txn_id: str):
@@ -162,4 +173,5 @@ class TransfersPage(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             self.db.unlink_transfer(txn_id)
+            self.links_changed += 1
             self.refresh()

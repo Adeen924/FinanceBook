@@ -29,7 +29,8 @@ STEPS = [
          body=lambda mw: (
              "Every page lives here. Click any item to jump to it; related pages share "
              "an item and appear as <b>tabs</b> across the top (Transactions has Import, "
-             "Reconcile, Transfers and Recurring). <b>Settings</b> (at the bottom) holds "
+             "Reconcile and Recurring; <b>Find Transfers…</b> is a button on the "
+             "Transactions tab). <b>Settings</b> (at the bottom) holds "
              "the import wizard and this guide." if mw.db.is_business() else
              "Every page lives here. Click any item to jump to it. "
              "<b>Settings</b> (at the bottom) holds the import wizard and this guide.")),

@@ -596,7 +596,8 @@ class ImportPage(QWidget):
             if res["linked"] or res["merged"] or res["adopted"]:
                 msg += "\n\n" + " · ".join(done_bits) + "."
                 msg += ("\n\nTo undo a transfer link, right-click it in Transactions → "
-                        "Unlink Transfer (or Transfers → Linked Transfers).")
+                        "Unlink Transfer (or Transactions → Find Transfers… → "
+                        "Linked Transfers).")
             if outcome["fixed"]:
                 msg += (f"\n\nCorrected the sign of {outcome['fixed']} transaction(s) an "
                         "earlier import had the wrong way round.")

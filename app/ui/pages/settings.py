@@ -246,8 +246,8 @@ class SettingsPage(QWidget):
 
         locked = QLabel(
             "🔒 Always shown: Dashboard, Accounts (your chart of accounts, including "
-            "income and expense accounts), Transactions (with Import, Reconcile, "
-            "Transfers and Recurring tabs), Contacts, Reports, Rules and Settings.")
+            "income and expense accounts), Transactions (with Import, Reconcile and "
+            "Recurring tabs, and Find Transfers…), Contacts, Reports, Rules and Settings.")
         locked.setObjectName("Muted")
         locked.setWordWrap(True)
         locked.setTextFormat(Qt.TextFormat.RichText)
