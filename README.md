@@ -12,6 +12,91 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New in v1.19.0: splits are one transaction, Payees, BMO, report drill-down
+
+> No database-format change and no data is rewritten. If another computer
+> opens the same file with an older FinanceBook it still works, but shows each
+> split as separate rows (as before) — update it when you can.
+
+**Splits are one transaction**
+
+- **A split is now ONE transaction**, the way QuickBooks shows it: one row in
+  the register for the full amount, with **-Split- (N)** in the Account column,
+  one running-balance step, and the lines in a tooltip and in a strip under the
+  register when the row is selected. Reports still count every line in its own
+  account (Profit & Loss, By Class, budgets, Schedule C, cash flow).
+- **Split inside the Transaction window.** Tick *Split* and a lines grid
+  (Account · Memo · Class · Amount) appears under the date, account, payee and
+  total, with **Remaining: $x**. Save stays off until the lines add up. A new
+  line starts with the remaining amount, and the last line keeps taking up the
+  remainder while you change the others (until you type in it); **→ rest** and
+  **Fill remaining** still work. A negative line goes the other way (a coupon on
+  a receipt).
+- **Opening any line opens the whole transaction**; changing its date, bank
+  account, payee, notes or reconciled mark changes every line. **Remove
+  split…** (in the window or by right-click) asks which one account the whole
+  amount goes under.
+- **Everything acts on the whole split**: delete, re-file (*Set Account* replaces
+  the split), attach a receipt, reconcile (one row), the audit log (one entry),
+  the dashboard's recent list, and imports — re-importing the bank's row is
+  still a duplicate, and the Match column can match an imported bank row to a
+  split you entered by hand (same account, same total). A part of a split moved
+  to another of your accounts shows there as *Part of a split from <account> ·
+  <payee>*; opening it opens the split.
+- **Existing splits** — your own, receipt itemizations, invoice payments and
+  older loan principal / interest splits — show as one row automatically.
+
+**Payees (personal and business books)**
+
+- **Personal books have a Payees page** (MONEY → Payees); business books have a
+  **Payees** tab on Contacts — the same list. Each payee shows its number of
+  transactions, total spent / received and when it was last used; double-click
+  opens Transactions filtered to that payee. Add, rename, merge and make
+  inactive.
+- **Unlinked payee names** lists the payee texts on transactions that aren't
+  linked to a payee yet, grouped so case, spacing and store numbers don't
+  matter (*WALMART #1234* and *Walmart Store 5678* are one name). **Create payee
+  & link N transactions** shows them first. Future imports link automatically.
+- **In the Transaction window** (both book types) the Payee field suggests your
+  payees as you type, still takes any text, and offers **Add as new payee**.
+  Personal books get a **Class** field.
+- **Recall the last transaction.** On a new transaction, choosing a payee fills
+  in the account (or split lines), class, memo and amount from that payee's most
+  recent one — highlighted, with **Undo autofill**. Fields you already filled
+  are never changed, and editing never autofills.
+
+**Transaction screen and Accounts**
+
+- **Typing a new account name** in any Account picker asks *"'X' isn't an
+  account. Add it / Discard"* (on Enter, leaving the field or Save). Add opens
+  the new-account window with the name filled in (Expense for money out, Income
+  for money in) and picks it.
+- **+ Add Transaction starts in the account you're viewing** when the account
+  filter isn't *All Accounts*.
+- **Date To starts blank** (no end date), also after **Clear** and when an
+  account is opened, so future-dated entries show.
+- Account names on the Accounts page are links without the underline (pointer
+  cursor, hover colour, *Open register* tooltip).
+
+**Import**
+
+- **BMO (U.S.) checking** CSV exports are recognised (formerly BMO Harris / Bank
+  of the West): the CREDIT/DEBIT column decides money in / out, and lines above
+  the header, padded headers and YYYYMMDD dates are handled. See **Supported
+  banks…**.
+- Preview dates show as MM/DD/YYYY. Step 2 (column mapping) is two columns, and
+  Step 3's buttons sit beside it, so the preview starts higher.
+
+**Reports**
+
+- **Double-click (or Enter) any amount** to see the transactions behind it: the
+  account and its sub-accounts, that column's period (or the report's dates),
+  the class, and the payee on By Vendor. Balance Sheet lines (personal Net Worth
+  and business layouts) open the account's register up to the as-of date. A
+  *Filtered from report: … ✕* chip shows what's filtered. Computed lines
+  (depreciation, inventory cost of goods sold) say there are no transactions
+  behind them and offer their page.
+
 ## New in v1.18.0: accounts, navigation, import and reports
 
 > **Update every computer that shares a database.** v1.18 adds a *Cost of

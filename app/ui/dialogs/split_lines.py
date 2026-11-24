@@ -54,7 +54,7 @@ class SplitLinesEditor(QWidget):
             if w:
                 lbl.setFixedWidth(w)
             head.addWidget(lbl, 0 if w else 1)
-        head.addSpacing(64 + 28 + 12)
+        head.addSpacing(64 + 34 + 12)
         lay.addLayout(head)
 
         self._rows_host = QWidget()
@@ -141,7 +141,8 @@ class SplitLinesEditor(QWidget):
         row.addWidget(rest_btn)
         rm_btn = QPushButton("✕")
         rm_btn.setObjectName("Secondary")
-        rm_btn.setFixedWidth(28)
+        rm_btn.setFixedWidth(34)
+        rm_btn.setStyleSheet("padding: 6px 0px;")
         rm_btn.setToolTip("Remove this line")
         row.addWidget(rm_btn)
 

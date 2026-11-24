@@ -834,6 +834,92 @@ Import Complete adds "N duplicates skipped (already imported)".
   `test_nav_transfers.py`, `test_import_duplicates_ui.py`,
   `test_reports_periods.py`, `test_dropdowns_ui.py` (the Columns popup).
 
+## v1.19 splits as one transaction, payees, BMO, drill-down (no schema change)
+
+**Split model** (`sheets/client.py`, "splits" — read its header comment):
+- Storage is unchanged: one `transactions` row per LINE sharing
+  `split_group_id`, so every report keeps aggregating per line. What changed is
+  that everything the user sees or acts on treats the group as ONE transaction.
+- Shared fields `SPLIT_SHARED_FIELDS` (date, account_id, payee, contact_id,
+  notes, reconciled, reconcile_id) are kept identical on every line —
+  `update_split_shared(gid, fields)`; `import_hash` sits on exactly one line.
+- `split_header(lines)` → the transaction: first line's fields, `amount` = total,
+  `reconciled` only if all lines are, the import hash, plus `is_split`,
+  `line_count`, `lines`, `line_ids`. `get_transaction_with_lines(id)` →
+  `{"header", "lines"}` for any line id (a plain txn is its own single line).
+- `list_register_rows(account_id, start, end, include_transfers, category_ids,
+  uncategorized, search, class_id, contact_id, payee)` — the register: one row
+  per transaction. Line filters (categories / uncategorized / class, `NO_CLASS`
+  = lines with no class) keep a split when ANY line matches and add
+  `match_amount` (the matching lines' total, which the register shows). With
+  `include_transfers=False` transfer lines never match. `contact_id` (id or set)
+  and `payee` (text, only for rows with no contact) combine with OR — the By
+  Vendor grouping. Transfer rows that are the other side of a split line carry
+  `split_source` = (source account id, payee). Use it in all UI code; don't list
+  split lines with `get_transactions` in anything the user reads.
+- `split_transaction(base, lines, transfer_to="", signed=False)`: the lines
+  REUSE the ids of the rows they replace (the original transaction's id for the
+  first line) — attachments, audit history and keep-selection follow.
+  `signed=True` (the Transaction window's grid): each line amount is the stored
+  signed amount; a line with `transfer_to` sends the opposite to that account.
+  Receipts / invoice payments / legacy transfer splits keep the old sign rules.
+- `remove_split(gid, target)` → one transaction for the total (target: category
+  id, `acct:<id>` for a transfer, or "" uncategorized); first line keeps its id,
+  attachments / receipts are moved to it, split-line mirrors detached.
+- `running_balances()` takes a split's total as one step (every line gets the
+  balance after it). Line order is `created_at, rowid` (`get_transactions` also
+  orders by rowid now).
+- Match engine (`utils/matching._pool`): a split group is one candidate (total,
+  first line's id), MANUAL only (same account, same total, no hash, nothing
+  reconciled); `_check_import_match` / `_merge_import` handle it (bank date on
+  every line, hash on the first). Never a transfer candidate / Find Transfers pair.
+- UI: `ui/pages/transactions.py` (register, `-Split- (N)`, tooltip + detail
+  strip, `_open_target()` opens the whole group, delete / re-file / attach act
+  on the group), `ui/dialogs/split_lines.py` (`SplitLinesEditor`, remainder
+  rules), `TransactionDialog(start_split=…)` loads the group, `_save_split()`,
+  `ask_remove_split_target()`. `split_dialog.py` is gone. Reconcile: one row per
+  group (`ReconcilePage.ids_for`); audit log: `collapse_split_entries()`.
+
+**Payees** (`sheets/sales_store.py`, "payees"): contacts in both book types.
+`payee_summary()`, `normalize_payee()` / `payee_display_name()` (case, spaces,
+store and reference numbers ignored), `unlinked_payee_names()`,
+`transactions_for_payee_key()`, `link_payee()` (all split lines),
+`create_payee_and_link()`, `add_payee()`, `find_payee_by_name()`,
+`merge_payees()`, `last_payee_transaction()` (P2 recall). UI:
+`ui/pages/payees.py` — `PayeesPanel` (shared), `PayeesPage` (personal sidebar,
+MONEY → Payees), Contacts page tab "Payees" (business). `nav_config.locate`:
+"Payees" → Contacts in business books, "Contacts" → Payees in personal books.
+Transaction window: payee `QCompleter` (both books), `_linked_contact_id()`,
+"Add as new payee" checkbox, `apply_autofill()` / `undo_autofill()` (new
+transactions only, empty fields only), Class field for personal books.
+
+**Transaction screen**: `AccountPicker` asks "Add it / Discard" for unknown
+text (`ask_new_account`, `create_account_named` — module functions so tests can
+patch them; `money_direction` callable guesses expense / income);
+`DateField(allow_empty=True)` (`is_empty()`, `iso()`, `clear()`), Date To blank
+by default; `+ Add` uses the filtered account.
+
+**Reports drill-down (R1)**: `TransactionsPage.show_filtered(category_ids,
+account_id, start, end, class_id, contact_id, payee, label, transfers)` + the
+"Filtered from report" chip (`clear_report_filter()`). `utils/reports.py`: nodes
+and `pnl_lines()` rows carry `path`; `drill_rows(rows, cats, line)` = the report
+rows behind a line. `ui/report_tabs.drill_target()` → ("register", kwargs) /
+("computed", page, text) / ("empty", …); `GridTab.drill` per row
+(`add_pnl_lines(..., rows, cols)`), By Class / By Vendor fill it.
+`ReportsPage.pnl_drill_target / bs_drill_target / drill_grid / _open_target`
+(P&L tree items carry `_DRILL` data; BS items the line's meta).
+
+**BMO**: `bmo_checking` registry entry (TYPE_DECIDES on CREDIT/DEBIT),
+`tests/fixtures/bank_csv/bmo_checking.csv` (anonymized); hashes equal a
+pre-1.19 generic import.
+
+**Tests**: `tests/book_helper.py` — `BothBooksTestCase.each_book()` yields a
+fresh personal and business Database (assertion messages say which book
+failed); use it for every new test. `test_splits_one_transaction.py`,
+`test_payees.py`, `test_transaction_screen_v119.py`,
+`test_bmo_and_import_page.py`, `test_report_drilldown.py` (every drillable
+cell's register total equals the cell).
+
 ## Known issues / things to watch
 
 - **Button clipping in tables**: All inline action buttons (Edit/Delete/Reconcile)

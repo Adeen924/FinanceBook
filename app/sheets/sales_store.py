@@ -204,6 +204,7 @@ class SalesMixin:
         5678" and "walmart" all give "walmart"."""
         import re
         t = (text or "").lower()
+        t = re.sub(r"\b[a-z]+#:?", " ", t)             # "transaction#:", "conf#"
         t = re.sub(r"#\s*\d+", " ", t)
         t = re.sub(r"\b(store|str|sto|no|nbr|num)\.?\s*\d+\b", " ", t)
         t = re.sub(r"\b[a-z]*\d[\w]*\b", " ", t)      # numbers and codes like t0123, 800-555
