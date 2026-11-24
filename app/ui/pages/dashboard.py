@@ -649,7 +649,9 @@ class DashboardPage(QWidget):
 
     def _load_recent(self):
         start = (date.today() - timedelta(days=30)).isoformat()
-        txns = self.db.get_transactions(start=start, include_transfers=False)[:RECENT_ROWS]
+        # One row per transaction (a split shows once, as "-Split-").
+        txns = list(reversed(self.db.list_register_rows(
+            start=start, include_transfers=False)))[:RECENT_ROWS]
         accts = {a["id"]: a for a in self._accounts}
 
         self._table.clear_rows()
@@ -660,6 +662,8 @@ class DashboardPage(QWidget):
             cat = self._cats.get(t.get("category_id", ""), {})
             parent = self._cats.get(cat.get("parent_id", ""), {})
             cat_name = f"{parent['name']} → {cat['name']}" if parent else cat.get("name", "")
+            if t.get("is_split"):
+                cat_name = f"-Split- ({t.get('line_count', '')})"
             acct_name = accts.get(t.get("account_id", ""), {}).get("name", "—")
             payee = t.get("payee") or t.get("memo") or "—"
 

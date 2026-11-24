@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QPushButton, QLabel, QFrame, QTableWidget,
                               QComboBox, QCompleter, QAbstractItemView, QScroller,
                               QToolTip)
 from PyQt6.QtCore import (Qt, QSize, QDate, QRectF, QPointF, QLineF, pyqtSignal,
-                          QObject, QEvent)
+                          QObject, QEvent, QTimer)
 from PyQt6.QtGui import (QColor, QFont, QPainter, QPainterPath, QPen, QBrush,
                          QIcon, QPixmap, QLinearGradient, QRadialGradient,
                          QFontMetrics, QTextCharFormat)
@@ -278,6 +278,32 @@ class FilterComboBox(QComboBox):
         self.clearEditText()
 
 
+def ask_new_account(parent, text: str) -> str:
+    """“'<text>' isn't an account. Add it / Discard” → "add" | "discard"."""
+    from PyQt6.QtWidgets import QMessageBox
+    box = QMessageBox(parent)
+    box.setWindowTitle("New Account?")
+    box.setText(f"“{text}” isn't an account.")
+    box.setInformativeText("Add it as a new account, or discard what you typed?")
+    add = box.addButton("Add it…", QMessageBox.ButtonRole.AcceptRole)
+    box.addButton("Discard", QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(add)
+    box.exec()
+    return "add" if box.clickedButton() is add else "discard"
+
+
+def create_account_named(db, name: str, category_type: str, parent=None) -> str:
+    """Open the new-account dialog prefilled with name and type; returns the
+    new account's id ("" if cancelled)."""
+    from PyQt6.QtWidgets import QDialog
+    from ui.pages.categories import CategoryDialog
+    dlg = CategoryDialog(db, parent=parent, top_level=True, category_type=category_type)
+    dlg.name_edit.setText(name)
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return ""
+    return db.save_category(dlg.get_data()).get("id", "")
+
+
 class AccountPicker(FilterComboBox):
     """
     The unified "Account" field: income / expense (and other) categories AND
@@ -290,13 +316,69 @@ class AccountPicker(FilterComboBox):
     "Show personal categories" is on). The entry's own account is left out.
     """
     def __init__(self, db, exclude_account_id: str = "", keep_ids=(), parent=None,
-                 placeholder: str = "Type to search accounts…", include_accounts: bool = True):
+                 placeholder: str = "Type to search accounts…", include_accounts: bool = True,
+                 ask_new: bool = True):
         super().__init__(parent, placeholder=placeholder)
         self._db = db
         self._keep_ids = list(keep_ids or ())
         self._include_accounts = include_accounts
         self._exclude = None
         self.set_exclude_account(exclude_account_id)
+        # v1.19: text that names no account → "Add it / Discard" (Enter,
+        # leaving the field, or confirm_text() on Save). money_direction: a
+        # callable returning "out" / "in" so a new account's type is guessed
+        # (expense for money out, income for money in).
+        self.money_direction = None
+        self._ask_new = ask_new
+        self._prompting = False
+        self._last_value = self.current_data()
+        self.currentIndexChanged.connect(self._remember_value)
+        self.lineEdit().editingFinished.connect(self._on_editing_finished)
+
+    def _remember_value(self, *_):
+        v = self.current_data()
+        if v or not self.currentText().strip():
+            self._last_value = v
+
+    def unknown_text(self) -> str:
+        """The typed text when it names no account, else ""."""
+        text = self.currentText().strip()
+        return text if text and not self.current_data() else ""
+
+    def _on_editing_finished(self):
+        if self._ask_new and not self._prompting and self.unknown_text():
+            # Let a completer pick land first, then check again.
+            QTimer.singleShot(0, self.confirm_text)
+
+    def confirm_text(self) -> bool:
+        """If the text names no account, ask "Add it / Discard". Returns True
+        when the field now holds a real account (or is blank)."""
+        text = self.unknown_text()
+        if not text:
+            return True
+        if self._prompting:
+            return False
+        self._prompting = True
+        try:
+            choice = ask_new_account(self.window(), text)
+            if choice == "add":
+                direction = self.money_direction() if callable(self.money_direction) else "out"
+                new_id = create_account_named(self._db, text,
+                                              "income" if direction == "in" else "expense",
+                                              self.window())
+                if new_id:
+                    self._keep_ids.append(new_id)
+                    ex = self._exclude
+                    self._exclude = None
+                    self.set_exclude_account(ex)
+                    self.select_by_data(new_id)
+                    self._last_value = new_id
+                    return True
+            # Discard (or the add was cancelled): back to the previous value.
+            self.select_by_data(self._last_value)
+            return False
+        finally:
+            self._prompting = False
 
     def set_exclude_account(self, account_id: str):
         """Rebuild the list without this account (the transaction's own one),
@@ -1140,11 +1222,16 @@ class DateField(QWidget):
                       "yyyy-MM-dd", "yyyy/MM/dd", "yyyy.MM.dd")
     _DISPLAY_FORMAT = "MM/dd/yyyy"
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, allow_empty: bool = False):
         super().__init__(parent)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
+        # allow_empty: a blank box is a real value ("no date", e.g. no upper
+        # limit on a filter): date() is then an invalid QDate and
+        # dateChanged(QDate()) is emitted when the box is cleared.
+        self._allow_empty = allow_empty
+        self._empty = False
 
         # Last known-good date. date() falls back to this when the box holds a
         # half-typed or unparseable value, so callers always get a valid date.
@@ -1196,21 +1283,37 @@ class DateField(QWidget):
         return parse_date_text(text, self._PARSE_FORMATS)
 
     def _on_text_edited(self, text: str):
+        if self._allow_empty and not text.strip():
+            if not self._empty:
+                self._empty = True
+                self.dateChanged.emit(QDate())
+            return
         d = self._parse(text)
         if d.isValid():
             self._date = d
+            self._empty = False
             self.dateChanged.emit(d)
 
     def _normalize_text(self):
+        if self._allow_empty and not self._edit.text().strip():
+            self._edit.setText("")
+            if not self._empty:
+                self._empty = True
+                self.dateChanged.emit(QDate())
+            return
         # Re-parse in case editing finished on a valid non-canonical form
         # (e.g. "8/4/2026"), then rewrite in the canonical display format.
         d = self._parse(self._edit.text())
         if d.isValid():
             self._date = d
+        was_empty = self._empty
+        self._empty = False
         self._edit.setText(self._date.toString(self._DISPLAY_FORMAT))
+        if was_empty:
+            self.dateChanged.emit(self._date)
 
     def _open_calendar(self):
-        self._cal.setSelectedDate(self.date())
+        self._cal.setSelectedDate(self.date() if self.date().isValid() else self._date)
         self._cal.move(self._btn.mapToGlobal(self._btn.rect().bottomLeft()))
         self._cal.show()
 
@@ -1220,14 +1323,35 @@ class DateField(QWidget):
 
     # ── QDateEdit-compatible API ──
     def date(self) -> QDate:
+        if self._allow_empty and not self._edit.text().strip():
+            return QDate()
         d = self._parse(self._edit.text())
         return d if d.isValid() else self._date
+
+    def is_empty(self) -> bool:
+        return self._allow_empty and not self._edit.text().strip()
+
+    def iso(self) -> str:
+        """yyyy-MM-dd, or "" when the box is blank (allow_empty)."""
+        d = self.date()
+        return d.toString("yyyy-MM-dd") if d.isValid() else ""
+
+    def clear(self):
+        """Blank the box (allow_empty only; otherwise nothing happens)."""
+        if self._allow_empty:
+            self._edit.setText("")
+            if not self._empty:
+                self._empty = True
+                self.dateChanged.emit(QDate())
 
     def setDate(self, d: QDate):
         if isinstance(d, QDate) and d.isValid():
             self._date = d
+            self._empty = False
             self._edit.setText(d.toString(self._DISPLAY_FORMAT))
             self.dateChanged.emit(d)
+        elif self._allow_empty and (d is None or not d.isValid()):
+            self.clear()
 
 
 def fmt_date(iso: str) -> str:

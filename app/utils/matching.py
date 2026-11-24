@@ -21,8 +21,13 @@ account_id and returns one RowMatch per row. Kinds, checked in this order:
                with no candidate the rule still makes the transfer (new mirror).
 
 Everything is within TRANSFER_MATCH_DAYS (3) of the row's date. Never matched:
-reconciled transactions, split lines, anything dated on/before the period lock
-date, and rows whose import_hash is already in the database (duplicates).
+reconciled transactions, anything dated on/before the period lock date, and
+rows whose import_hash is already in the database (duplicates).
+
+A split (v1.19: one transaction with several account lines) is a candidate
+as ONE unit — its total, its first line's id — and only as MANUAL (a
+hand-entered split in the same account with the same total and no import
+hash yet). It is never a transfer or mirror candidate.
 
 One-to-one: each existing transaction is used by at most one row. Every
 (row, candidate) pair is ranked by kind (mirror > manual > transfer), then
@@ -125,22 +130,42 @@ def _score(days: int, hints: int) -> int:
 
 
 def _pool(db, lo: str, hi: str) -> list[dict]:
-    """Transactions in [lo, hi] that may ever be matched: not reconciled, not a
-    split line, after the lock date, in an account that exists."""
+    """Transactions in [lo, hi] that may ever be matched: not reconciled,
+    after the lock date, in an account that exists. A split group is one
+    entry (its total, first line's id, "split_group_id" set); a group with
+    any reconciled line is left out."""
     lock = ""
     try:
         lock = db.lock_date() or ""
     except Exception:
         pass
     q = ("SELECT t.* FROM transactions t JOIN accounts a ON a.id=t.account_id "
-         "WHERE t.date BETWEEN ? AND ? AND COALESCE(t.reconciled,0)=0 "
-         "AND COALESCE(t.split_group_id,'')='' AND ABS(t.amount) >= 0.005")
+         "WHERE t.date BETWEEN ? AND ? ")
     p: list = [lo, hi]
     if lock:
         q += " AND t.date > ?"
         p.append(lock)
+    q += " ORDER BY t.created_at, t.rowid"
     with db._conn() as c:
-        rows = [dict(r) for r in c.execute(q, p).fetchall()]
+        raw = [dict(r) for r in c.execute(q, p).fetchall()]
+    rows, groups = [], {}
+    for r in raw:
+        gid = r.get("split_group_id") or ""
+        if gid:
+            groups.setdefault(gid, []).append(r)
+        elif not int(r.get("reconciled") or 0) and abs(float(r.get("amount") or 0)) >= 0.005:
+            rows.append(r)
+    for gid, lines in groups.items():
+        if any(int(l.get("reconciled") or 0) for l in lines):
+            continue
+        head = dict(lines[0])
+        head["amount"] = round(sum(float(l.get("amount") or 0) for l in lines), 2)
+        if abs(head["amount"]) < 0.005:
+            continue
+        head["import_hash"] = next((l["import_hash"] for l in lines if l.get("import_hash")), "")
+        head["is_transfer"] = 0
+        head["transfer_pair_id"] = ""
+        rows.append(head)
     for r in rows:
         r["is_transfer"] = str(int(r.get("is_transfer") or 0))
         r["reconciled"] = str(int(r.get("reconciled") or 0))
@@ -155,6 +180,11 @@ def _kind_for(row_amt: float, account_id: str, rule_acct: str, t: dict) -> str:
     is_tr = str(t.get("is_transfer", "0")) == "1"
     hashed = bool(t.get("import_hash"))
     amt = _amt(t)
+    if t.get("split_group_id"):
+        # A split matches only as the user's own entry for this bank row.
+        if same_acct and not hashed and abs(amt - row_amt) < 0.005:
+            return MANUAL
+        return ""
     if same_acct:
         if abs(amt - row_amt) >= 0.005 or hashed:
             return ""
@@ -265,7 +295,8 @@ def find_transfer_pairs(db, txns: list[dict] | None = None) -> list[dict]:
     else:
         ids = {t["id"] for t in txns}
         pool = [t for t in _pool(db, "0000-00-00", "9999-99-99") if t["id"] in ids]
-    pool = [t for t in pool if str(t.get("is_transfer", "0")) == "0"]
+    pool = [t for t in pool if str(t.get("is_transfer", "0")) == "0"
+            and not t.get("split_group_id")]
     accounts = {a["id"]: a for a in db.get_accounts(active=None)}
     outs: dict = {}
     for t in pool:

@@ -167,11 +167,18 @@ class ReconcilePage(QWidget):
         if recs:
             self._stmt_bal.setValue(float(recs[0].get("statement_balance") or 0))
 
-        # Load unreconciled transactions
-        self._session_txns = [
-            t for t in self.db.get_transactions(account_id=acct["id"])
-            if str(t.get("reconciled","0")) == "0"
-        ]
+        # Load unreconciled transactions — one row per transaction (a split's
+        # lines are one bank entry, so one row with its total).
+        self._session_txns = []
+        for t in self.db.list_register_rows(account_id=acct["id"]):
+            open_lines = [l for l in t.get("lines") or [t]
+                          if str(l.get("reconciled", "0")) == "0"]
+            if not open_lines:
+                continue
+            row = dict(t)
+            row["amount"] = str(round(sum(float(l.get("amount") or 0) for l in open_lines), 2))
+            row["open_ids"] = [l["id"] for l in open_lines]
+            self._session_txns.append(row)
         self._session_txns.sort(key=lambda t: t.get("date",""))
 
         self._sess_table.clear_rows()
@@ -190,7 +197,10 @@ class ReconcilePage(QWidget):
             self._checkboxes.append(cb)
 
             self._sess_table.set_item(row, 1, fmt_date(t.get("date","")))
-            self._sess_table.set_item(row, 2, t.get("payee") or t.get("memo","—"))
+            payee = t.get("payee") or t.get("memo", "—")
+            if t.get("is_split"):
+                payee = f"{payee}  (-Split- {t.get('line_count', '')})"
+            self._sess_table.set_item(row, 2, payee)
             if amt < 0:
                 self._sess_table.money_item(row, 3, abs(amt))
             else:
@@ -217,17 +227,24 @@ class ReconcilePage(QWidget):
         self._diff_lbl.setStyleSheet(f"font-size:14px; font-weight:bold; color:{color};")
         self._complete_btn.setEnabled(abs(diff) < 0.005)
 
+    @staticmethod
+    def ids_for(rows) -> list:
+        """Every stored row behind the given session rows (all of a split's
+        open lines)."""
+        out = []
+        for t in rows:
+            out.extend(t.get("open_ids") or t.get("line_ids") or [t["id"]])
+        return out
+
     def _check_all(self, state: bool):
         for cb in self._checkboxes:
             cb.setChecked(state)
         self._update_diff()
 
     def _complete(self):
-        cleared_ids = [
-            self._session_txns[i]["id"]
-            for i, cb in enumerate(self._checkboxes)
-            if cb.isChecked()
-        ]
+        cleared_ids = self.ids_for([self._session_txns[i]
+                                    for i, cb in enumerate(self._checkboxes)
+                                    if cb.isChecked()])
         rec = self.db.save_reconciliation({
             "account_id": self._current_account_id,
             "statement_date": self._stmt_date.date().toString("yyyy-MM-dd"),

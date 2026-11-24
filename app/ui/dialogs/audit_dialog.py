@@ -27,6 +27,44 @@ def summarize(entry: dict) -> str:
     return ", ".join(f"{k}={row[k]}" for k in _SHOW if row.get(k) not in (None, ""))[:200]
 
 
+def _split_gid(entry: dict) -> str:
+    if entry.get("table_name") != "transactions":
+        return ""
+    try:
+        d = json.loads(entry.get("details") or "{}")
+    except ValueError:
+        return ""
+    return ((d.get("new") or {}).get("split_group_id")
+            or (d.get("old") or {}).get("split_group_id") or "")
+
+
+def collapse_split_entries(entries: list[dict]) -> list[dict]:
+    """One audit row per split transaction change: entries for the lines of
+    one split (same split group, same moment, same action) become a single
+    entry whose summary says "Split transaction (N lines)"."""
+    out, seen = [], {}
+    for e in entries:
+        gid = _split_gid(e)
+        if not gid:
+            out.append(e)
+            continue
+        key = (gid, e.get("ts"), e.get("op"))
+        if key in seen:
+            seen[key]["_lines"].append(e)
+            continue
+        row = dict(e)
+        row["_lines"] = [e]
+        seen[key] = row
+        out.append(row)
+    for row in out:
+        lines = row.get("_lines")
+        if lines and len(lines) > 1:
+            row["summary"] = (f"Split transaction ({len(lines)} lines): "
+                              + " | ".join(summarize(x) for x in lines))[:400]
+            row["details"] = "\n".join(x.get("details", "") for x in lines)
+    return out
+
+
 class AuditDialog(QDialog):
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -67,8 +105,8 @@ class AuditDialog(QDialog):
         self.refresh()
 
     def refresh(self, *_):
-        self._rows = self.db.get_audit_log(self.table_combo.currentData() or "",
-                                           self.search.text().strip())
+        self._rows = collapse_split_entries(self.db.get_audit_log(
+            self.table_combo.currentData() or "", self.search.text().strip()))
         g = self.grid
         g.clear_rows()
         g.setRowCount(len(self._rows))
@@ -78,7 +116,7 @@ class AuditDialog(QDialog):
             g.set_item(r, 2, e["table_name"])
             g.set_item(r, 3, e["op"], bold=True)
             g.set_item(r, 4, e["row_id"], color=MUTED)
-            item = g.set_item(r, 5, summarize(e))
+            item = g.set_item(r, 5, e.get("summary") or summarize(e))
             item.setToolTip(e.get("details", "")[:2000])
         self.count.setText(f"{len(self._rows)} entries (newest first, up to 2,000 shown)")
 
