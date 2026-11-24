@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem,
 )
 from PyQt6.QtCore import Qt
-from ui.widgets import DataTable
+from ui.widgets import DataTable, fmt_date
 from ui.styles  import SUCCESS, DANGER, MUTED, TEXT
 
 
@@ -423,7 +423,7 @@ class ImportDialog(QDialog):
         self._xl_preview.setRowCount(len(preview))
         for row, t in enumerate(preview):
             split = t.get("_split", "") or "—"
-            self._xl_preview.set_item(row, 0, t.get("date", ""))
+            self._xl_preview.set_item(row, 0, fmt_date(t.get("date", "")))
             self._xl_preview.set_item(row, 1, t.get("_account_name", ""))
             self._xl_preview.set_item(row, 2, t.get("payee") or t.get("memo", "—"))
             self._xl_preview.set_item(row, 3, split,

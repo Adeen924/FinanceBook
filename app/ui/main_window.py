@@ -35,6 +35,7 @@ def _page_constructors() -> dict:
     from ui.pages.assets       import AssetsPage
     from ui.pages.invoices     import InvoicesPage
     from ui.pages.contacts     import ContactsPage
+    from ui.pages.payees       import PayeesPage
     from ui.pages.inventory    import InventoryPage
     from ui.pages.payroll      import PayrollPage
     from ui.pages.taxes        import TaxesPage
@@ -47,6 +48,7 @@ def _page_constructors() -> dict:
         "Settings": SettingsPage, "Owner Investment": OwnerInvestmentPage,
         "Receipts": ReceiptsPage, "Assets": AssetsPage,
         "Invoices & Bills": InvoicesPage, "Contacts": ContactsPage,
+        "Payees": PayeesPage,
         "Inventory": InventoryPage, "People & Payroll": PayrollPage,
         "Taxes": TaxesPage, "Recurring": RecurringPage,
     }

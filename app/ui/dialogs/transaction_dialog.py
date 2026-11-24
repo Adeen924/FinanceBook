@@ -18,12 +18,74 @@ OWNER_TREATMENTS = [
 ]
 
 
+ROW_KEYS = ("lines", "line_ids", "is_split", "line_count", "match_amount",
+            "matched_lines", "split_source")
+
+
+def _clean(txn: dict) -> dict:
+    """A transaction dict without the register / header-only keys."""
+    return {k: v for k, v in dict(txn or {}).items() if k not in ROW_KEYS}
+
+
+def line_target(db, line: dict) -> str:
+    """Account-picker value of a split line: its category, or "acct:<id>" for
+    a line moved to another of the user's accounts."""
+    if str(line.get("is_transfer", "0")) == "1" and line.get("transfer_pair_id"):
+        partner = db.get_transfer_partner(line)
+        if partner:
+            return account_value(partner.get("account_id", ""))
+    return line.get("category_id", "")
+
+
+def ask_remove_split_target(db, header: dict, parent=None):
+    """Remove split: ask which ONE account the whole amount goes under.
+    Returns the picker value ("" = uncategorized) or None if cancelled."""
+    from PyQt6.QtWidgets import QDialog as _D
+    lines = header.get("lines") or db.get_split_group(header.get("split_group_id", ""))
+    biggest = max(lines, key=lambda l: abs(float(l.get("amount") or 0)), default={})
+    dlg = _D(parent)
+    dlg.setWindowTitle("Remove Split")
+    lay = QVBoxLayout(dlg)
+    total = sum(float(l.get("amount") or 0) for l in lines)
+    msg = QLabel(f"File the whole ${abs(total):,.2f} under one account instead of "
+                 f"{len(lines)} lines. Which account?")
+    msg.setWordWrap(True)
+    lay.addWidget(msg)
+    picker = AccountPicker(db, exclude_account_id=header.get("account_id", ""),
+                           keep_ids=[l.get("category_id", "") for l in lines])
+    picker.select_by_data(line_target(db, biggest) if biggest else "")
+    lay.addWidget(picker)
+    btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                            QDialogButtonBox.StandardButton.Cancel)
+    btns.accepted.connect(dlg.accept)
+    btns.rejected.connect(dlg.reject)
+    lay.addWidget(btns)
+    dlg._picker = picker
+    if dlg.exec() != _D.DialogCode.Accepted:
+        return None
+    if picker.unknown_text() and not picker.confirm_text():
+        return None
+    return picker.current_data() or ""
+
+
 class TransactionDialog(QDialog):
     def __init__(self, db, transaction: dict = None, account_id: str = "", parent=None,
-                 preset: dict = None):
+                 preset: dict = None, start_split: bool = False):
         super().__init__(parent)
         self.db = db
         self.transaction = transaction or {}
+        # A split opens as ONE transaction: its header (shared fields, total)
+        # plus its lines, whichever line was clicked.
+        self._split_lines: list[dict] = []
+        if self.transaction.get("id") and self.transaction.get("split_group_id"):
+            full = db.get_transaction_with_lines(self.transaction["id"])
+            if full and full["header"].get("split_group_id"):
+                self.transaction = full["header"]
+                self._split_lines = full["lines"]
+        self._was_split = bool(self._split_lines)
+        self._start_split = bool(start_split) or self._was_split
+        # Set after a save that replaced rows: what the register re-selects.
+        self.result_txn = None
         # preset: initial values for a NEW transaction (e.g. paid_by=owner from
         # the Owner Investment page). Ignored when editing.
         self._preset = {} if transaction else dict(preset or {})
@@ -31,7 +93,6 @@ class TransactionDialog(QDialog):
         # When True, this dialog already persisted the result (a split and/or a
         # transfer), so the caller must NOT re-save get_data() on top of it.
         self.handled = False
-        self._pending_splits: list[dict] | None = None
         self.setWindowTitle("Edit Transaction" if transaction else "Add Transaction")
         self.setMinimumWidth(500)
         self._build(account_id)
@@ -72,10 +133,37 @@ class TransactionDialog(QDialog):
             self.account_combo.currentIndexChanged.connect(self._sync_paid_by_from_account)
             self._init_paid_by()
 
-        # Payee
+        # Payee: free text with an autocomplete of the book's payees (contacts,
+        # both book types). Picking one links it (contact_id); a new name can
+        # be added as a payee on save.
         self.payee_edit = QLineEdit(self.transaction.get("payee",""))
         self.payee_edit.setPlaceholderText("Who paid or was paid")
-        form.addRow("Payee", self.payee_edit)
+        self._payees = self.db.get_contacts()
+        self._orig_payee = self.transaction.get("payee", "") or ""
+        self._orig_contact = self.transaction.get("contact_id", "") or ""
+        from PyQt6.QtWidgets import QCompleter
+        self._payee_completer = QCompleter([c["name"] for c in self._payees], self)
+        self._payee_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._payee_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.payee_edit.setCompleter(self._payee_completer)
+        payee_row = QWidget()
+        pr = QHBoxLayout(payee_row)
+        pr.setContentsMargins(0, 0, 0, 0)
+        pr.setSpacing(8)
+        pr.addWidget(self.payee_edit, 1)
+        self._undo_autofill = QLabel("<a href='undo'>Undo autofill</a>")
+        self._undo_autofill.setToolTip("Clear the fields filled from this payee's last transaction")
+        self._undo_autofill.linkActivated.connect(lambda _l: self.undo_autofill())
+        self._undo_autofill.setVisible(False)
+        pr.addWidget(self._undo_autofill)
+        form.addRow("Payee", payee_row)
+        self._new_payee_chk = QCheckBox("Add as new payee")
+        self._new_payee_chk.setToolTip("Save this name to your payee list and link it")
+        form.addRow("", self._new_payee_chk)
+        self._autofill: dict = {}       # widget key -> value before autofill
+        self._payee_completer.activated.connect(self._on_payee_chosen)
+        self.payee_edit.editingFinished.connect(self._on_payee_chosen)
+        self.payee_edit.textChanged.connect(self._update_new_payee_offer)
 
         # Memo
         self.memo_edit = QLineEdit(self.transaction.get("memo",""))
@@ -175,28 +263,49 @@ class TransactionDialog(QDialog):
             self.contact_combo.select_by_data(self.transaction.get("contact_id", ""))
             form.addRow("Vendor / customer", self.contact_combo)
             self.payee_edit.editingFinished.connect(self._suggest_contact)
+        else:
+            # Personal books tag transactions with a class here (a business
+            # book's "Charged to" covers classes).
+            self.class_combo = QComboBox()
+            self.class_combo.addItem("—", "")
+            for c in self.db.get_classes():
+                self.class_combo.addItem(c.get("name", ""), c["id"])
+            self.class_combo.setCurrentIndex(max(self.class_combo.findData(
+                self.transaction.get("class_id", "") or ""), 0))
+            form.addRow("Class", self.class_combo)
 
         # ── Split section ──────────────────────────────────────────────────────
         sep0 = QFrame(); sep0.setFrameShape(QFrame.Shape.HLine); sep0.setObjectName("Muted")
         form.addRow(sep0)
-        self._split_chk = QCheckBox("Split this transaction across multiple accounts")
+        split_row = QWidget()
+        _sr = QHBoxLayout(split_row)
+        _sr.setContentsMargins(0, 0, 0, 0)
+        self._split_chk = QCheckBox("Split this transaction across several accounts")
         self._split_chk.toggled.connect(self._on_split_toggled)
-        form.addRow("Split", self._split_chk)
+        _sr.addWidget(self._split_chk, 1)
+        self._remove_split_btn = QPushButton("Remove split…")
+        self._remove_split_btn.setObjectName("Secondary")
+        self._remove_split_btn.setToolTip("Make this one transaction filed under one account")
+        self._remove_split_btn.clicked.connect(lambda: self._split_chk.setChecked(False))
+        self._remove_split_btn.setVisible(self._was_split)
+        _sr.addWidget(self._remove_split_btn)
+        form.addRow("Split", split_row)
 
-        self._split_box = QWidget()
-        _sb = QHBoxLayout(self._split_box)
-        _sb.setContentsMargins(0, 0, 0, 0)
-        _sb.setSpacing(8)
-        self._split_btn = QPushButton("Choose accounts && amounts…")
-        self._split_btn.setObjectName("Secondary")
-        self._split_btn.clicked.connect(self._define_split)
-        _sb.addWidget(self._split_btn)
-        self._split_summary = QLabel("No split defined yet.")
-        self._split_summary.setObjectName("Muted")
-        self._split_summary.setWordWrap(True)
-        _sb.addWidget(self._split_summary, 1)
-        form.addRow("", self._split_box)
+        from ui.dialogs.split_lines import SplitLinesEditor
+        self._split_box = SplitLinesEditor(
+            self.db, self.account_combo.currentData() or "", self,
+            money_direction=lambda: self.direction_combo.currentData())
+        self._split_box.setMinimumHeight(200)
+        self._split_box.changed.connect(self._update_ok)
+        self.amount_spin.valueChanged.connect(
+            lambda v: self._split_box.set_total(abs(v)))
+        self.account_combo.currentIndexChanged.connect(
+            lambda _: self._split_box.set_account(self.account_combo.currentData() or ""))
+        self._split_box.set_total(abs(self.amount_spin.value()))
+        form.addRow(self._split_box)
         self._split_box.setVisible(False)
+        # The account a Remove split put the whole amount under (None = not removed).
+        self._removed_split_value = None
 
         # ── Loan Payment section ───────────────────────────────────────────────
         sep = QFrame()
@@ -262,6 +371,8 @@ class TransactionDialog(QDialog):
                                 QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self._accept)
         btns.rejected.connect(self.reject)
+        self._ok_btn = btns.button(QDialogButtonBox.StandardButton.Ok)
+        self._ok_btn.setText("Save")
         # Delete button — only when editing an existing transaction.
         if self.transaction.get("id"):
             self.deleted = False
@@ -275,6 +386,228 @@ class TransactionDialog(QDialog):
         # account, so re-saving keeps both sides exactly as they were.
         self._on_target_changed()
         self._update_loan_lock()
+        if self._start_split and not self.transaction.get("loan_id"):
+            self._split_chk.setChecked(True)
+        self._update_ok()
+        self._update_new_payee_offer()
+
+    # ── payees (P1) and recall (P2) ────────────────────────────────────────────
+
+    def _payee_match(self, text: str = None) -> dict | None:
+        """The payee (contact) whose name is the Payee text, if any."""
+        t = (self.payee_edit.text() if text is None else text).strip().lower()
+        if not t:
+            return None
+        return next((c for c in self._payees if c["name"].strip().lower() == t), None)
+
+    def _linked_contact_id(self) -> str:
+        """contact_id to save: the payee picked / typed, else the one the entry
+        had while its payee text is unchanged, else none."""
+        if self._business and self.contact_combo.current_data():
+            return self.contact_combo.current_data()
+        m = self._payee_match()
+        if m:
+            return m["id"]
+        if self.payee_edit.text().strip() == self._orig_payee.strip():
+            return self._orig_contact
+        return ""
+
+    def _update_new_payee_offer(self, *_):
+        if not hasattr(self, "_new_payee_chk"):
+            return
+        text = self.payee_edit.text().strip()
+        linked = self._business and hasattr(self, "contact_combo") \
+            and bool(self.contact_combo.current_data())
+        show = (bool(text) and self._payee_match() is None and not linked
+                and not (text == self._orig_payee.strip() and self._orig_contact))
+        self._new_payee_chk.setVisible(show)
+        if not show:
+            self._new_payee_chk.setChecked(False)
+        else:
+            self._new_payee_chk.setText(f"Add “{text}” as a new payee")
+
+    def _save_new_payee(self):
+        """“Add as new payee” ticked: create it and link this entry."""
+        if self._new_payee_chk.isHidden() or not self._new_payee_chk.isChecked():
+            return
+        name = self.payee_edit.text().strip()
+        if not name:
+            return
+        kind = "customer" if self.direction_combo.currentData() == "in" else "vendor"
+        payee = self.db.add_payee(name, kind)
+        self._payees.append(payee)
+        if self._business:
+            self.contact_combo.add_option(payee["name"], payee["id"])
+            self.contact_combo.select_by_data(payee["id"])
+
+    def _on_payee_chosen(self, *_):
+        """A payee was picked or typed: link it (business: the Vendor /
+        customer field) and, on a NEW transaction, recall its last one."""
+        m = self._payee_match()
+        if m and self._business and not self.contact_combo.current_data():
+            self.contact_combo.select_by_data(m["id"])
+        self._update_new_payee_offer()
+        if self.transaction.get("id"):
+            return              # never autofill when editing
+        text = self.payee_edit.text().strip()
+        if not text or text == getattr(self, "_autofilled_for", None):
+            return
+        last = self.db.last_payee_transaction(contact_id=(m or {}).get("id", ""), payee=text)
+        if last:
+            self.apply_autofill(last)
+            self._autofilled_for = text
+
+    AUTOFILL_STYLE = "background: #fff4c2;"
+
+    def apply_autofill(self, last: dict):
+        """Fill the empty fields from a payee's last transaction (P2): the
+        account or split lines, class, memo and amount. Fields the user has
+        filled are left alone. Filled fields are highlighted; "Undo autofill"
+        clears them."""
+        if self._autofill:
+            self.undo_autofill()
+        filled = {}
+        lines = last.get("lines") or [last]
+        total = float(last.get("amount") or 0)
+        hl = self.AUTOFILL_STYLE
+        if abs(self.amount_spin.value()) < 0.005 and abs(total) >= 0.005:
+            filled["amount"] = (self.amount_spin.value(), self.direction_combo.currentData(),
+                                self._direction_fixed)
+            self._set_direction("in" if total > 0 else "out")
+            self._direction_fixed = True
+            self.amount_spin.setValue(abs(total))
+            self.amount_spin.setStyleSheet(hl)
+        if not self.memo_edit.text().strip() and last.get("memo") and len(lines) == 1:
+            filled["memo"] = ""
+            self.memo_edit.setText(last["memo"])
+            self.memo_edit.setStyleSheet(hl)
+        if len(lines) > 1:
+            if not self._split_on() and not self.cat_combo.current_data():
+                filled["split"] = True
+                sign = -1 if total < 0 else 1
+                self._split_box.set_lines([
+                    (line_target(self.db, l), l.get("memo", ""), l.get("class_id", ""),
+                     round(float(l.get("amount") or 0) * sign, 2)) for l in lines])
+                self._split_chk.setChecked(True)
+                self._split_box.setStyleSheet("QDoubleSpinBox, QComboBox { " + hl + " }")
+        elif not self.cat_combo.current_data() and not self._split_on():
+            target = line_target(self.db, lines[0])
+            if target:
+                filled["account"] = ""
+                self.cat_combo.select_by_data(target)
+                self.cat_combo.setStyleSheet(hl)
+        cls = lines[0].get("class_id", "") if len(lines) == 1 else ""
+        if cls:
+            if self._business:
+                if not self.charged_combo.current_data():
+                    filled["class"] = ""
+                    self.charged_combo.select_by_data(f"class:{cls}")
+                    self.charged_combo.setStyleSheet(hl)
+            elif not self.class_combo.currentData():
+                filled["class"] = ""
+                self.class_combo.setCurrentIndex(max(self.class_combo.findData(cls), 0))
+                self.class_combo.setStyleSheet(hl)
+        self._autofill = filled
+        self._undo_autofill.setVisible(bool(filled))
+        self._on_target_changed()
+
+    def undo_autofill(self):
+        f, self._autofill = self._autofill, {}
+        if "amount" in f:
+            v, d, fixed = f["amount"]
+            self.amount_spin.setValue(v)
+            self._set_direction(d)
+            self._direction_fixed = fixed
+        if "memo" in f:
+            self.memo_edit.clear()
+        if "account" in f:
+            self.cat_combo.select_by_data("")
+        if "split" in f:
+            self._split_chk.blockSignals(True)
+            self._split_chk.setChecked(False)
+            self._split_chk.blockSignals(False)
+            self._split_box.clear()
+            self._split_box.setVisible(False)
+            self._set_row_visible(self.cat_combo, True)
+        if "class" in f:
+            if self._business:
+                self.charged_combo.setCurrentIndex(0)
+            else:
+                self.class_combo.setCurrentIndex(0)
+        for w in (self.amount_spin, self.memo_edit, self.cat_combo, self._split_box,
+                  getattr(self, "charged_combo", None), getattr(self, "class_combo", None)):
+            if w is not None:
+                w.setStyleSheet("")
+        self._undo_autofill.setVisible(False)
+        self._autofilled_for = None
+        self._update_ok()
+        self._on_target_changed()
+
+    # ── split mode ─────────────────────────────────────────────────────────────
+
+    def _split_on(self) -> bool:
+        return self._split_chk.isChecked()
+
+    def _update_ok(self, *_):
+        """In Split mode Save waits until the lines add up to the total."""
+        if not hasattr(self, "_ok_btn"):
+            return
+        if self._split_on():
+            ok = self._split_box.is_balanced() and self._split_box.line_count() >= 2
+            self._ok_btn.setEnabled(ok)
+            self._ok_btn.setToolTip("" if ok else
+                                    "The lines must add up to the amount (at least two lines).")
+        else:
+            self._ok_btn.setEnabled(True)
+            self._ok_btn.setToolTip("")
+
+    def _fill_split_lines(self):
+        """Seed the grid: an existing split's lines, else the picked account
+        with the full amount plus an empty line."""
+        total = abs(self.amount_spin.value())
+        if self._split_lines and not self._split_box.rows():
+            stored_total = sum(float(l.get("amount") or 0) for l in self._split_lines)
+            sign = -1 if stored_total < 0 else 1
+            self._split_box.set_lines([
+                (line_target(self.db, l), l.get("memo", ""), l.get("class_id", ""),
+                 round(float(l.get("amount") or 0) * sign, 2))
+                for l in self._split_lines])
+        elif not self._split_box.rows():
+            self._split_box.add_line(self.cat_combo.current_data(), "", "", total, typed=True)
+            self._split_box.add_line()
+
+    def _on_split_toggled(self, on: bool):
+        if on:
+            self._fill_split_lines()
+        elif self._was_split and self._removed_split_value is None:
+            # Remove split: ask which one account the whole amount goes under.
+            value = ask_remove_split_target(self.db, self.transaction, self)
+            if value is None:
+                self._force_on_split()
+                return
+            self._removed_split_value = value
+            self.cat_combo.select_by_data(value)
+        elif not on and self._split_box.rows():
+            first = self._split_box.lines()[:1]
+            if first and not self.cat_combo.current_data():
+                self.cat_combo.select_by_data(first[0]["value"])
+        self._split_box.setVisible(on)
+        self._set_row_visible(self.cat_combo, not on)
+        self._remove_split_btn.setVisible(on and self._was_split)
+        if on and self._loan_chk.isChecked():
+            self._force_off(self._loan_chk)
+            self._set_row_visible(self._loan_combo, False)
+            self._loan_preview.setVisible(False)
+        self._update_loan_lock()
+        self._update_ok()
+        if on:
+            self.setMinimumWidth(760)
+        self.adjustSize()
+
+    def _force_on_split(self):
+        self._split_chk.blockSignals(True)
+        self._split_chk.setChecked(True)
+        self._split_chk.blockSignals(False)
 
     # ── attachments ────────────────────────────────────────────────────────────
 
@@ -469,6 +802,10 @@ class TransactionDialog(QDialog):
         if (cat_id or "").startswith("acct:"):
             return -1
         cat = next((c for c in getattr(self, "_cats", []) if c.get("id") == cat_id), None)
+        if cat is None and cat_id:
+            # Added while the window is open (Account picker → Add it…).
+            self._cats = self.db.get_categories(include_inactive=True)
+            cat = next((c for c in self._cats if c.get("id") == cat_id), None)
         return category_sign(cat.get("type")) if cat else 1
 
     def _natural_direction(self, value: str) -> str:
@@ -564,56 +901,14 @@ class TransactionDialog(QDialog):
             self._loan_preview.setVisible(False)
         self._update_loan_lock()
 
-    def _on_split_toggled(self, on: bool):
-        self._split_box.setVisible(on)
-        if on and self._loan_chk.isChecked():
-            self._force_off(self._loan_chk)
-            self._set_row_visible(self._loan_combo, False)
-            self._loan_preview.setVisible(False)
-        self._update_loan_lock()
-
-    def _define_split(self):
-        # Split lines are entered as positive magnitudes; their per-line category
-        # decides each line's sign (see db.split_transaction), so hand the dialog
-        # the magnitude of the total to allocate.
-        total = abs(self.amount_spin.value())
-        if total < 0.005:
-            QMessageBox.warning(self, "Amount Needed",
-                                "Enter the transaction amount first, then set the split.")
-            return
-        base = dict(self.transaction)
-        base["amount"] = str(total)
-        base["account_id"] = self.account_combo.currentData() or base.get("account_id", "")
-        kind, target = self._target()
-        base["category_id"] = target if kind == "category" else ""
-        from ui.dialogs.split_dialog import SplitDialog
-        dlg = SplitDialog(self.db, base, total_amount=total, parent=self,
-                          first_target=self.cat_combo.current_data())
-        if dlg.exec() == SplitDialog.DialogCode.Accepted:
-            self._pending_splits = dlg.get_splits()
-            self._update_split_summary()
-
-    def _update_split_summary(self):
-        if not self._pending_splits:
-            self._split_summary.setText("No split defined yet.")
-            return
-        cats = self.db.category_map()
-        accts = {a["id"]: a for a in self.db.get_accounts(active=None)}
-        parts = []
-        for s in self._pending_splits:
-            if s.get("transfer_to"):
-                nm = "→ " + accts.get(s["transfer_to"], {}).get("name", "account")
-            else:
-                nm = cats.get(s.get("category_id", ""), {}).get("name", "Uncategorized")
-            parts.append(f"{nm}: ${abs(float(s.get('amount') or 0)):,.2f}")
-        self._split_summary.setText("  ·  ".join(parts))
-
     # ── loan helpers ──────────────────────────────────────────────────────────
 
     def _on_loan_toggled(self, checked: bool):
         if checked:
             self._force_off(self._split_chk)
             self._split_box.setVisible(False)
+            self._set_row_visible(self.cat_combo, True)
+            self._update_ok()
         self._set_row_visible(self._loan_combo, checked)
         self._loan_preview.setVisible(checked)
         self._update_loan_lock()
@@ -711,23 +1006,22 @@ class TransactionDialog(QDialog):
             return
 
         split_on = self._split_chk.isChecked()
+        self._save_new_payee()
+
+        # An account name that isn't an account: Add it / Discard (T1).
+        pickers = self._split_box.unknown_pickers() if split_on else (
+            [self.cat_combo] if self.cat_combo.unknown_text() else [])
+        for p in pickers:
+            if not p.confirm_text():
+                p.setFocus()
+                return
         kind, dest = self._target()
 
-        if split_on and (not self._pending_splits or len(self._pending_splits) < 2):
-            QMessageBox.warning(self, "Define the Split",
-                "Click “Choose accounts & amounts…” and set at least two "
-                "lines that add up to the total.")
+        if split_on:
+            self._save_split()
             return
 
-        if not split_on and self.cat_combo.currentText().strip() and not kind:
-            QMessageBox.warning(self, "Pick an Account",
-                f"“{self.cat_combo.currentText().strip()}” isn't in the list. "
-                "Pick an account from the list, or clear the field to leave it "
-                "uncategorized.")
-            self.cat_combo.setFocus()
-            return
-
-        transfer_on = kind == "account" and not split_on
+        transfer_on = kind == "account"
         if transfer_on:
             if dest == self.account_combo.currentData():
                 QMessageBox.warning(self, "Same Account",
@@ -737,16 +1031,14 @@ class TransactionDialog(QDialog):
                 QMessageBox.warning(self, "Amount Needed", "Enter the amount.")
                 return
 
-        # Split (lines may move parts to other accounts)
-        if split_on:
-            data = self.get_data()
-            if self._partner:
-                self.db.detach_transfer_partner(self.transaction)
-                data["is_transfer"], data["transfer_pair_id"] = "0", ""
-            self.db.split_transaction(data, self._pending_splits)
-            self.handled = True
-            self.accept()
-            return
+        # Remove split: the whole amount goes back to one account first; the
+        # usual save below then applies the other edits to that one row.
+        if self._was_split:
+            row = self.db.remove_split(self.transaction["split_group_id"],
+                                       self.cat_combo.current_data())
+            self.transaction = _clean(row or {})
+            self._partner = (self.db.get_transfer_partner(self.transaction)
+                             if self.transaction.get("transfer_pair_id") else None)
 
         # Transfer to / from another of the user's accounts
         if transfer_on:
@@ -770,6 +1062,48 @@ class TransactionDialog(QDialog):
         if self._business and self.paid_by_combo.currentData() == self._owner_id:
             self.db.set_setting("owner_paid_default_treatment",
                                 self.treatment_combo.currentData() or "capital")
+        self.accept()
+
+    def _save_split(self):
+        """Save Split mode: ONE transaction (shared fields, total) with the
+        grid's lines, each stored with its signed amount (db.split_transaction
+        signed=True)."""
+        ed = self._split_box
+        if ed.line_count() < 2 or not ed.is_balanced():
+            QMessageBox.warning(self, "Split Doesn't Add Up",
+                f"The lines must add up to ${ed.total():,.2f} "
+                f"(remaining ${ed.remaining():,.2f}), with at least two lines.")
+            return
+        if ed.missing_account():
+            QMessageBox.warning(self, "Pick an Account",
+                                "Every line with an amount needs an account.")
+            return
+        bank = self.account_combo.currentData() or ""
+        sign = self._direction_sign()
+        splits = []
+        from utils.chart_of_accounts import split_value
+        for ln in ed.lines():
+            kind, target = split_value(ln["value"])
+            if kind == "account" and target == bank:
+                QMessageBox.warning(self, "Same Account",
+                    "A line can't move money to the transaction's own account.")
+                return
+            line = {"category_id": target if kind == "category" else "",
+                    "amount": str(round(ln["amount"] * sign, 2)),
+                    "memo": ln["memo"], "class_id": ln["class_id"]}
+            if kind == "account":
+                line["transfer_to"] = target
+            splits.append(line)
+        data = self.get_data()
+        if self._partner:
+            self.db.detach_transfer_partner(self.transaction)
+            data["is_transfer"], data["transfer_pair_id"] = "0", ""
+        data["category_id"] = ""
+        saved = self.db.split_transaction(data, splits, signed=True)
+        if saved:
+            full = self.db.get_transaction_with_lines(saved[0]["id"])
+            self.result_txn = full["header"] if full else saved[0]
+        self.handled = True
         self.accept()
 
     def _maybe_record_as_draw(self) -> bool:
@@ -805,7 +1139,7 @@ class TransactionDialog(QDialog):
         return True
 
     def get_data(self) -> dict:
-        data = dict(self.transaction)
+        data = _clean(self.transaction)
         kind, target = self._target()
         cat_id = target if kind == "category" else ""
         entered = self.amount_spin.value()
@@ -828,6 +1162,9 @@ class TransactionDialog(QDialog):
             "notes":      self.notes_edit.toPlainText().strip(),
         })
         data.update(self._business_fields())
+        if not self._business:
+            data["class_id"] = self.class_combo.currentData() or ""
+            data["contact_id"] = self._linked_contact_id()
 
         # Loan split
         if self._loan_chk.isChecked():

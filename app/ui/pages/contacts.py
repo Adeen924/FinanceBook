@@ -139,6 +139,21 @@ class ContactsPage(QWidget):
         hdr.addWidget(self._add_btn)
         lay.addLayout(hdr)
 
+        # Contacts | Payees (v1.19): the same contacts, as the payees your
+        # transactions link to — shared with a personal book's Payees page.
+        from PyQt6.QtWidgets import QTabWidget
+        from ui.pages.payees import PayeesPanel
+        self._tabs = QTabWidget()
+        contacts_tab = QWidget()
+        clay = QVBoxLayout(contacts_tab)
+        clay.setContentsMargins(0, 8, 0, 0)
+        self.payees = PayeesPanel(self.db, self)
+        self._tabs.addTab(contacts_tab, "Contacts")
+        self._tabs.addTab(self.payees, "Payees")
+        self._tabs.currentChanged.connect(lambda i: self.payees.refresh() if i == 1 else None)
+        lay.addWidget(self._tabs, 1)
+        lay = clay          # the contacts table goes in its tab
+
         self._table = DataTable(["Name", "Type", "Email / phone", "Terms", "1099",
                                  "Paid / received this year", "Actions"])
         hh = self._table.horizontalHeader()
@@ -155,6 +170,10 @@ class ContactsPage(QWidget):
         self._summary = QLabel("")
         self._summary.setObjectName("Muted")
         lay.addWidget(self._summary)
+
+    def show_payees(self):
+        self._tabs.setCurrentIndex(1)
+        self.payees.refresh()
 
     def refresh(self):
         self._rows = self.db.get_contacts(self._kind.currentData() or "")
@@ -179,6 +198,8 @@ class ContactsPage(QWidget):
             t.setRowHeight(r, ROW_H)
         self._summary.setText(f"{len(self._rows)} contacts · amounts are this year's money in (+) "
                               "and out (−) with each contact")
+        if self._tabs.currentIndex() == 1:
+            self.payees.refresh()
 
     def _actions(self, c) -> QWidget:
         cell = QWidget()

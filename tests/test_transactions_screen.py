@@ -99,15 +99,24 @@ class KeepSelectionTests(unittest.TestCase):
         self.assertEqual(self.selected()["id"], target["id"])
         self.assertEqual(self.selected()["is_transfer"], "1")
 
-        other = self.db.get_transaction(self.ids[7])
-        from ui.dialogs import split_dialog as SD
-        with mock.patch.object(SD.SplitDialog, "exec", lambda d: QDialog.DialogCode.Accepted), \
-                mock.patch.object(SD.SplitDialog, "get_splits", lambda d: [
-                    {"category_id": self.food, "amount": "3"},
-                    {"category_id": self.food, "amount": "5"}]):
+        other = self.db.get_transaction(self.ids[7])     # $8 out
+        from ui.dialogs import transaction_dialog as TD
+
+        def fake_exec(dlg):
+            # Split mode opens with the full amount on line 1 and an empty line 2.
+            r0, r1 = dlg._split_box.rows()
+            r0["acct"].select_by_data(self.food)
+            r0["amount"].setValue(3)
+            r1["acct"].select_by_data(self.food)
+            dlg._accept()
+            return QDialog.DialogCode.Accepted
+        with mock.patch.object(TD.TransactionDialog, "exec", fake_exec):
             self.page._split_txn(other)
         sel = self.selected()
         self.assertTrue(sel["split_group_id"])
+        self.assertTrue(sel["is_split"])
+        self.assertEqual(sel["id"], other["id"])
+        self.assertEqual(float(sel["amount"]), -8.0)
         self.assertEqual(sel["payee"], other["payee"])
 
     def test_no_remembered_row_scrolls_to_bottom(self):

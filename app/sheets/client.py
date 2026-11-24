@@ -206,6 +206,10 @@ _FLOAT_FIELDS = {"amount", "opening_balance", "statement_balance",
                  "original_principal", "annual_rate", "payment_amount",
                  "deduct_pct"}
 
+# list_register_rows(class_id=NO_CLASS): lines with no class (a report's
+# "(no class)" column).
+NO_CLASS = "__no_class__"
+
 BOOK_PERSONAL = "personal"
 BOOK_BUSINESS = "business"
 
@@ -841,7 +845,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             q += " AND date<=?";       p.append(end)
         if not include_transfers:
             q += " AND is_transfer=0"
-        q += " ORDER BY date DESC, created_at DESC"
+        q += " ORDER BY date DESC, created_at DESC, rowid DESC"
         with self._conn() as c:
             return _to_dicts(c.execute(q, p).fetchall())
 
@@ -1006,8 +1010,17 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         """Refuse a preview's match whose transaction changed since then."""
         stale = ValueError("A transaction this import was matched to has changed "
                            "since the preview. Parse the file again.")
-        if (cand is None or str(cand.get("reconciled", "0")) == "1"
-                or cand.get("split_group_id")):
+        if cand is not None and cand.get("split_group_id"):
+            # A split is matched as one transaction (its total), only as the
+            # user's own entry for the bank row.
+            head = self.split_header(self.get_split_group(cand["split_group_id"]))
+            ok = (kind == "manual" and head.get("account_id") == data.get("account_id")
+                  and head.get("reconciled") != "1" and not head.get("import_hash")
+                  and abs(float(head["amount"]) - float(data.get("amount") or 0)) < 0.005)
+            if not ok:
+                raise stale
+            return
+        if cand is None or str(cand.get("reconciled", "0")) == "1":
             raise stale
         amt, camt = float(data.get("amount") or 0), float(cand.get("amount") or 0)
         same = cand.get("account_id") == data.get("account_id")
@@ -1038,6 +1051,20 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         goes into an empty memo so it can still be searched. The audit log keeps
         the entry's values from before the merge.
         """
+        if cand.get("split_group_id"):
+            # A split: the bank's date on every line, its import hash on one
+            # line; the user's payee and lines stay.
+            gid = cand["split_group_id"]
+            lines = self.get_split_group(gid)
+            with self._conn() as c:
+                c.execute("UPDATE transactions SET date=?, updated_at=? WHERE split_group_id=?",
+                          (data.get("date") or cand.get("date", ""), self._now(), gid))
+                c.execute("UPDATE transactions SET import_hash=? WHERE id=?",
+                          (data.get("import_hash", ""), lines[0]["id"]))
+                if not lines[0].get("payee") and data.get("payee"):
+                    c.execute("UPDATE transactions SET payee=? WHERE split_group_id=?",
+                              (data["payee"], gid))
+            return self.get_transaction(lines[0]["id"])
         payee = cand.get("payee") or data.get("payee", "")
         memo = cand.get("memo") or data.get("memo", "")
         bank_payee = data.get("payee") or ""
@@ -1301,21 +1328,255 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             c.execute("DELETE FROM transactions WHERE transfer_pair_id=?", (pair_id,))
 
     # ── splits ────────────────────────────────────────────────────────────────
-    # A "split" lets one real-world payment (e.g. a Costco run) be divided across
-    # several categories. It is stored as N sibling transactions sharing a
-    # split_group_id; they sum to the original amount, so balances and reports
-    # (which aggregate per transaction) keep working with no special handling.
+    # A "split" is ONE transaction (one bank / card entry, one payee, one total)
+    # filed under several accounts — QuickBooks' "-Split-" (e.g. a Costco run
+    # divided between Groceries and Household).
+    #
+    # Storage: one row per LINE in `transactions`, the lines sharing a
+    # split_group_id. Each line carries its own category, class, memo and
+    # signed amount, so reports, budgets, Schedule C and cash flow (which
+    # aggregate per row) count every line in its own account with no special
+    # handling. The fields of the transaction itself — date, bank account,
+    # payee, contact, notes, reconciled — are SHARED and kept identical on every
+    # line (update_split_shared); the bank's import_hash sits on exactly one
+    # line so re-importing the file still finds the duplicate. A line that
+    # moves money to another of the user's accounts is a transfer line whose
+    # mirror lives in that account ("Part of a split from <account> · <payee>").
+    #
+    # Everything the user sees or acts on treats the group as one transaction:
+    # list_register_rows() collapses each group to one row (amount = total,
+    # "-Split- (N)"), get_transaction_with_lines() returns {header, lines} for
+    # the Transaction window, and edit / delete / reconcile / attach / match /
+    # remove_split work on the whole group.
+
+    SPLIT_SHARED_FIELDS = ("date", "account_id", "payee", "contact_id", "notes",
+                           "reconciled", "reconcile_id")
 
     def get_split_group(self, group_id: str) -> list[dict]:
         if not group_id:
             return []
         with self._conn() as c:
             return _to_dicts(c.execute(
-                "SELECT * FROM transactions WHERE split_group_id=? ORDER BY created_at",
+                "SELECT * FROM transactions WHERE split_group_id=? ORDER BY created_at, rowid",
                 (group_id,)).fetchall())
 
+    @staticmethod
+    def split_header(lines: list[dict]) -> dict:
+        """The one transaction a split group's lines make: the first line's
+        shared fields, amount = the lines' total, reconciled only when every
+        line is, the import hash wherever it sits, plus "is_split",
+        "line_count" and "lines" (the line rows)."""
+        lines = list(lines or [])
+        if not lines:
+            return {}
+        head = dict(lines[0])
+        total = round(sum(float(l.get("amount") or 0) for l in lines), 2)
+        head["amount"] = str(total or 0.0)
+        head["reconciled"] = ("1" if all(str(l.get("reconciled", "0")) == "1" for l in lines)
+                              else "0")
+        head["import_hash"] = next((l["import_hash"] for l in lines if l.get("import_hash")), "")
+        head["is_split"] = bool(head.get("split_group_id"))
+        head["line_count"] = len(lines)
+        head["lines"] = lines
+        head["line_ids"] = [l["id"] for l in lines]
+        return head
+
+    def get_transaction_with_lines(self, txn_id: str) -> dict | None:
+        """{"header": the whole transaction, "lines": its lines} for any
+        transaction id — for a split line, the whole split it belongs to (a
+        plain transaction is its own single line)."""
+        t = self.get_transaction(txn_id)
+        if not t:
+            return None
+        lines = self.get_split_group(t.get("split_group_id") or "") or [t]
+        return {"header": self.split_header(lines), "lines": lines}
+
+    def split_mirror_sources(self, txns) -> dict:
+        """{transaction id: (source account id, payee)} for transfer rows in
+        txns that are the other side of a split line in another account."""
+        pairs = {t.get("transfer_pair_id") for t in txns
+                 if str(t.get("is_transfer", "0")) == "1" and t.get("transfer_pair_id")
+                 and not t.get("split_group_id")} - {"", None}
+        if not pairs:
+            return {}
+        found: dict = {}
+        with self._conn() as c:
+            pl = list(pairs)
+            for i in range(0, len(pl), 500):
+                chunk = pl[i:i + 500]
+                for r in c.execute(
+                        "SELECT transfer_pair_id, account_id, payee FROM transactions "
+                        f"WHERE transfer_pair_id IN ({','.join('?' * len(chunk))}) "
+                        "AND COALESCE(split_group_id,'')!=''", chunk):
+                    found[r["transfer_pair_id"]] = (r["account_id"], r["payee"] or "")
+        return {t["id"]: found[t["transfer_pair_id"]] for t in txns
+                if t.get("transfer_pair_id") in found and not t.get("split_group_id")}
+
+    def list_register_rows(self, account_id: str = None, start: str = None, end: str = None,
+                           include_transfers: bool = True, category_ids=None,
+                           uncategorized: bool = False, search: str = "",
+                           class_id: str = "", contact_id: str = "",
+                           payee: str = "") -> list[dict]:
+        """
+        The register: ONE row per transaction, a split group collapsed into
+        its header (split_header: amount = total, "lines" = its lines).
+
+        Filters keep a split when ANY line matches (category_ids — a set or
+        list of category ids —, uncategorized, class_id, search in payee /
+        memo / notes / any line memo). When a line filter is on, a split's row
+        also carries "match_amount": the total of the lines that matched
+        (what the register shows; the full total stays in "amount").
+        contact_id (an id or a set of ids) / payee (case-insensitive exact,
+        for transactions with no payee linked) filter on the transaction; given
+        both, either one matching keeps it (the By Vendor report's grouping).
+        include_transfers=False hides plain transfers and splits whose every
+        line is a transfer, and a line filter then ignores transfer lines. Rows of a split's transfer mirror carry
+        "split_source": (source account id, payee). Order: date, created_at.
+        """
+        txns = self.get_transactions(account_id=account_id, start=start, end=end)
+        groups: dict = {}
+        rows: list = []
+        for t in reversed(txns):                 # oldest first
+            gid = t.get("split_group_id") or ""
+            if gid:
+                if gid not in groups:
+                    groups[gid] = []
+                    rows.append(("g", gid))
+                groups[gid].append(t)
+            else:
+                rows.append(("t", t))
+        ids = cats = None
+        if uncategorized:
+            from utils.ledger import is_uncategorized
+            ids = {c["id"] for c in self.get_categories(include_inactive=True)}
+        cat_set = set(category_ids) if category_ids else None
+        line_filter = bool(cat_set or uncategorized or class_id)
+        needle = (search or "").lower().strip()
+        payee_l = (payee or "").lower().strip()
+        if isinstance(contact_id, (set, list, tuple, frozenset)):
+            contact_ids = {c for c in contact_id if c}
+        else:
+            contact_ids = {contact_id} if contact_id else set()
+
+        def line_ok(l):
+            if not include_transfers and str(l.get("is_transfer", "0")) == "1":
+                return False
+            if cat_set is not None and l.get("category_id") not in cat_set:
+                return False
+            if uncategorized and not is_uncategorized(l, ids):
+                return False
+            if class_id == NO_CLASS:
+                if l.get("class_id"):
+                    return False
+            elif class_id and l.get("class_id") != class_id:
+                return False
+            return True
+
+        out = []
+        for kind, v in rows:
+            lines = groups[v] if kind == "g" else [v]
+            head = self.split_header(lines) if kind == "g" else dict(v)
+            if kind == "t":
+                head["is_split"] = False
+                head["line_count"] = 1
+                head["lines"] = lines
+                head["line_ids"] = [v["id"]]
+            if not include_transfers and all(
+                    str(l.get("is_transfer", "0")) == "1" for l in lines):
+                continue
+            if contact_ids or payee_l:
+                cid = head.get("contact_id") or ""
+                by_contact = bool(cid) and cid in contact_ids
+                by_payee = (bool(payee_l) and not cid
+                            and (head.get("payee") or "").lower().strip() == payee_l)
+                if not (by_contact or by_payee):
+                    continue
+            if needle and not any(
+                    needle in (x or "").lower()
+                    for x in [head.get("payee"), head.get("notes")]
+                    + [l.get("memo") for l in lines]):
+                continue
+            if line_filter:
+                hits = [l for l in lines if line_ok(l)]
+                if not hits:
+                    continue
+                if kind == "g":
+                    head["match_amount"] = str(round(
+                        sum(float(l.get("amount") or 0) for l in hits), 2))
+                    head["matched_lines"] = [l["id"] for l in hits]
+            out.append(head)
+        srcs = self.split_mirror_sources(out)
+        for r in out:
+            if r["id"] in srcs:
+                r["split_source"] = srcs[r["id"]]
+        out.sort(key=lambda r: (r.get("date") or "", r.get("created_at") or ""))
+        return out
+
+    def update_split_shared(self, group_id: str, fields: dict):
+        """Write the transaction-level fields (SPLIT_SHARED_FIELDS present in
+        fields) to every line of a split, so they never drift apart."""
+        keys = [k for k in self.SPLIT_SHARED_FIELDS if k in fields]
+        if not group_id or not keys:
+            return
+        vals = []
+        for k in keys:
+            v = fields.get(k)
+            if k == "reconciled":
+                v = 1 if str(v or "0") == "1" else 0
+            vals.append("" if v is None else v)
+        with self._conn() as c:
+            c.execute(f"UPDATE transactions SET {','.join(k + '=?' for k in keys)} "
+                      "WHERE split_group_id=?", vals + [group_id])
+
+    def remove_split(self, group_id: str, target: str = "") -> dict | None:
+        """
+        Turn a split back into one ordinary transaction for its full amount,
+        filed under target (a category id, "acct:<id>" to make it a transfer
+        to/from that account, or "" for uncategorized). The first line keeps
+        its id (and so its attachments and history); the other lines and
+        every split-line transfer mirror go (a bank entry on the other side is
+        unlinked, never deleted). The import hash, reconciled flag and shared
+        fields are kept. Returns the saved transaction.
+        """
+        from utils.chart_of_accounts import split_value
+        lines = self.get_split_group(group_id)
+        if not lines:
+            return None
+        head = self.split_header(lines)
+        keep = lines[0]
+        pairs = {l.get("transfer_pair_id") for l in lines} - {"", None}
+        with self.atomic():
+            with self._conn() as c:
+                for p in pairs:
+                    for r in c.execute("SELECT * FROM transactions WHERE transfer_pair_id=? "
+                                       "AND COALESCE(split_group_id,'')!=?",
+                                       (p, group_id)).fetchall():
+                        if self._is_bank_entry(dict(r)):
+                            c.execute("UPDATE transactions SET is_transfer=0, "
+                                      "transfer_pair_id='', category_id='' WHERE id=?",
+                                      (r["id"],))
+                        else:
+                            c.execute("DELETE FROM transactions WHERE id=?", (r["id"],))
+                c.execute("DELETE FROM transactions WHERE split_group_id=? AND id!=?",
+                          (group_id, keep["id"]))
+                c.execute("UPDATE attachments SET transaction_id=?, split_group_id='' "
+                          "WHERE split_group_id=?", (keep["id"], group_id))
+                c.execute("UPDATE receipts SET split_group_id='', transaction_id=CASE WHEN "
+                          "COALESCE(transaction_id,'')='' THEN ? ELSE transaction_id END "
+                          "WHERE split_group_id=?", (keep["id"], group_id))
+            kind, ident = split_value(target or "")
+            row = dict(keep)
+            row.update({"amount": head["amount"], "import_hash": head["import_hash"],
+                        "reconciled": head["reconciled"], "split_group_id": "",
+                        "is_transfer": "0", "transfer_pair_id": "",
+                        "category_id": ident if kind == "category" else ""})
+            if kind == "account" and ident != row.get("account_id"):
+                return self.save_transfer_pair(row, ident, keep_sign=True,
+                                               match_existing=True)
+            return self.save_transaction(row)
+
     def split_transaction(self, base_txn: dict, splits: list[dict],
-                          transfer_to: str = "") -> list[dict]:
+                          transfer_to: str = "", signed: bool = False) -> list[dict]:
         """
         Replace base_txn — or, if it is already part of a split, its whole group —
         with the given split lines.
@@ -1342,8 +1603,20 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         transaction is money out, and arrives from it when it is money in (like
         category lines, the line's own sign is ignored). Each destination gets
         one mirror with its own transfer_pair_id.
+
+        signed=True (the Transaction window's split grid): each line's amount
+        is already the signed amount stored in the bank account (negative =
+        money out), whatever its account's type; a line moved to another
+        account sends the opposite amount there. No sign is re-derived.
+
+        The lines keep the ids of the rows they replace (the original
+        transaction's id for the first line), so attachments, the audit log
+        and "keep this row selected" follow the transaction.
         """
-        from utils.ledger import category_sign
+        with self.atomic():
+            return self._split_transaction(base_txn, splits, transfer_to, signed)
+
+    def _split_transaction(self, base_txn, splits, transfer_to, signed):
         gid = base_txn.get("split_group_id") or self._new_id()
         has_dest = bool(transfer_to)
 
@@ -1354,13 +1627,19 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
 
         any_transfer_line = any(_dest(s) for s in splits)
         tcat = self.get_transfer_category_id() if any_transfer_line else ""
-        outflow = self._split_is_outflow(base_txn, splits)
-        stored_sign = 0 if has_dest else self._stored_sign(base_txn)    # before the delete below
+        outflow = False if signed else self._split_is_outflow(base_txn, splits)
+        stored_sign = 0 if (has_dest or signed) else self._stored_sign(base_txn)
         preserved_hash = base_txn.get("import_hash", "") or ""
         old_members = self.get_split_group(base_txn.get("split_group_id") or "")
         old_pairs = {m.get("transfer_pair_id") for m in old_members}
         old_pairs.add(base_txn.get("transfer_pair_id", ""))
         old_pairs -= {"", None}
+        # Row ids the new lines take over, in order: the group's lines, or the
+        # transaction being split.
+        reuse = [m["id"] for m in old_members]
+        if not reuse and base_txn.get("id") and self.get_transaction(base_txn["id"]):
+            reuse = [base_txn["id"]]
+        reuse = reuse[:len(splits)]
         with self._conn() as c:
             if base_txn.get("split_group_id"):
                 for r in c.execute(
@@ -1368,14 +1647,18 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                         (gid,)).fetchall():
                     if r["import_hash"] and not preserved_hash:
                         preserved_hash = r["import_hash"]
-                c.execute("DELETE FROM transactions WHERE split_group_id=?", (gid,))
-            elif base_txn.get("id"):
+                keep_sql = ",".join("?" * len(reuse)) or "''"
+                c.execute("DELETE FROM transactions WHERE split_group_id=? AND id NOT IN "
+                          f"({keep_sql})", [gid] + reuse)
+            elif base_txn.get("id") and not reuse:
                 c.execute("DELETE FROM transactions WHERE id=?", (base_txn["id"],))
             # Remove any prior transfer mirror tied to this entry before rebuilding
             # (a bank entry on the other side is unlinked, never deleted).
             for old_pair in old_pairs:
                 for r in c.execute("SELECT * FROM transactions WHERE transfer_pair_id=?",
                                    (old_pair,)).fetchall():
+                    if r["id"] in reuse:
+                        continue
                     if self._is_bank_entry(dict(r)):
                         c.execute("UPDATE transactions SET is_transfer=0, transfer_pair_id='', "
                                   "category_id='' WHERE id=?", (r["id"],))
@@ -1402,7 +1685,12 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             if dest and dest not in pairs:
                 keep = has_dest and dest == transfer_to and base_txn.get("transfer_pair_id")
                 pairs[dest] = keep or self._new_id()
-            if has_dest and not s.get("transfer_to"):
+            if signed:
+                amt = raw
+                if dest:
+                    moved[dest] = moved.get(dest, 0.0) - amt
+                    cat = tcat
+            elif has_dest and not s.get("transfer_to"):
                 # Legacy transfer split: every line leaves the source account.
                 amt = -abs(raw)
                 if line_is_transfer:
@@ -1417,6 +1705,7 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                 if flip_plain:
                     amt = -amt
             child = {
+                "id":            reuse[i] if i < len(reuse) else "",
                 "date":          base_txn.get("date", ""),
                 "account_id":    base_txn.get("account_id", ""),
                 "payee":         base_txn.get("payee", ""),
@@ -1427,9 +1716,12 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
                 "is_transfer":   "1" if line_is_transfer else "0",
                 "transfer_pair_id": pairs.get(dest, "") if line_is_transfer else "",
                 "reconciled":    base_txn.get("reconciled", "0"),
+                "reconcile_id":  base_txn.get("reconcile_id", "") or "",
                 "notes":         base_txn.get("notes", ""),
                 "import_hash":   preserved_hash if i == 0 else "",
                 "split_group_id": gid,
+                # A line has no loan of its own (a loan payment is one entry).
+                "loan_id": "", "principal_amount": "0", "interest_amount": "0",
             }
             # Owner/person attribution is shared by every line; a line may
             # override who it's charged to (e.g. a receipt item for a project).
@@ -1501,8 +1793,8 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         return float(base_txn.get("amount") or 0) <= 0
 
     def delete_split_group(self, group_id: str):
-        """Delete every line of a split and the other side of any part of it that
-        moved to another account."""
+        """Delete the whole split transaction — every line and the other side
+        of any part of it that moved to another account."""
         pairs = {m.get("transfer_pair_id") for m in self.get_split_group(group_id)} - {"", None}
         with self._conn() as c:
             c.execute("DELETE FROM transactions WHERE split_group_id=?", (group_id,))
@@ -1967,9 +2259,24 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         out: dict = {}
         with self._conn() as c:
             rows = c.execute(
-                "SELECT id, amount FROM transactions WHERE account_id=? "
-                "ORDER BY date ASC, created_at ASC", (account_id,)).fetchall()
+                "SELECT id, amount, COALESCE(split_group_id,'') FROM transactions "
+                "WHERE account_id=? ORDER BY date ASC, created_at ASC, rowid ASC",
+                (account_id,)).fetchall()
+        # A split is one transaction: its whole total is one step, taken where
+        # its first line falls, and every line shows the balance after it.
+        totals: dict = {}
         for r in rows:
+            if r[2]:
+                totals[r[2]] = totals.get(r[2], 0.0) + float(r[1] or 0)
+        done: dict = {}
+        for r in rows:
+            gid = r[2]
+            if gid:
+                if gid not in done:
+                    bal += totals[gid]
+                    done[gid] = bal
+                out[r[0]] = done[gid]
+                continue
             bal += float(r[1] or 0)
             out[r[0]] = bal
         return out
