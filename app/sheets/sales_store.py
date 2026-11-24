@@ -169,6 +169,189 @@ class SalesMixin:
                     t["category_id"] = ct["default_category_id"]
         return txns
 
+    # ── payees (v1.19, personal and business) ────────────────────────────────
+    # A payee is a contact: the same table and transactions.contact_id in both
+    # book types. Personal books show them on the Payees page, business books
+    # on Contacts → Payees.
+
+    def payee_summary(self, include_inactive: bool = False) -> list[dict]:
+        """Contacts with their activity: "n_txns" (a split counts once),
+        "spent" (money out, positive), "received" (money in), "last_used"
+        (latest date). Transfers between the user's own accounts don't count."""
+        with self._conn() as c:
+            stats = {r[0]: r for r in c.execute(
+                "SELECT contact_id, COUNT(DISTINCT CASE WHEN COALESCE(split_group_id,'')='' "
+                "THEN id ELSE split_group_id END), "
+                "COALESCE(SUM(CASE WHEN amount<0 THEN -amount ELSE 0 END),0), "
+                "COALESCE(SUM(CASE WHEN amount>0 THEN amount ELSE 0 END),0), MAX(date) "
+                "FROM transactions WHERE COALESCE(contact_id,'')!='' AND is_transfer=0 "
+                "GROUP BY contact_id").fetchall()}
+        out = []
+        for ct in self.get_contacts(active_only=not include_inactive):
+            r = stats.get(ct["id"])
+            ct = dict(ct)
+            ct["n_txns"] = int(r[1]) if r else 0
+            ct["spent"] = round(float(r[2]), 2) if r else 0.0
+            ct["received"] = round(float(r[3]), 2) if r else 0.0
+            ct["last_used"] = (r[4] or "") if r else ""
+            out.append(ct)
+        return out
+
+    @staticmethod
+    def normalize_payee(text: str) -> str:
+        """Matching key for a bank payee text: case, spacing, punctuation and
+        store / reference numbers ignored — "WALMART #1234", "Walmart  Store
+        5678" and "walmart" all give "walmart"."""
+        import re
+        t = (text or "").lower()
+        t = re.sub(r"#\s*\d+", " ", t)
+        t = re.sub(r"\b(store|str|sto|no|nbr|num)\.?\s*\d+\b", " ", t)
+        t = re.sub(r"\b[a-z]*\d[\w]*\b", " ", t)      # numbers and codes like t0123, 800-555
+        t = re.sub(r"[^a-z&' ]+", " ", t)
+        return re.sub(r"\s+", " ", t).strip()
+
+    @classmethod
+    def payee_display_name(cls, text: str) -> str:
+        key = cls.normalize_payee(text)
+        return " ".join(w if w in ("&",) else w[:1].upper() + w[1:] for w in key.split())
+
+    def unlinked_payee_names(self) -> list[dict]:
+        """Payee texts on transactions with no payee linked, grouped by their
+        normalized key: [{"key", "name" (suggested), "variants" (the texts, most
+        used first), "count" (transactions; a split once), "ids" (every row
+        id, all split lines included)}], most used first. Transfers between
+        the user's own accounts are left out."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, payee, COALESCE(split_group_id,'') FROM transactions "
+                "WHERE COALESCE(contact_id,'')='' AND COALESCE(payee,'')!='' "
+                "AND is_transfer=0").fetchall()
+        groups: dict = {}
+        for rid, payee, gid in rows:
+            key = self.normalize_payee(payee)
+            if not key:
+                continue
+            g = groups.setdefault(key, {"key": key, "variants": {}, "units": set(), "ids": []})
+            g["variants"][payee] = g["variants"].get(payee, 0) + 1
+            g["units"].add(gid or rid)
+            g["ids"].append(rid)
+        out = []
+        for g in groups.values():
+            out.append({"key": g["key"], "name": self.payee_display_name(g["key"]),
+                        "variants": sorted(g["variants"], key=lambda v: -g["variants"][v]),
+                        "count": len(g["units"]), "ids": g["ids"]})
+        out.sort(key=lambda g: (-g["count"], g["key"]))
+        return out
+
+    def transactions_for_payee_key(self, key: str) -> list[dict]:
+        """Unlinked transactions whose payee normalizes to key (the preview
+        before "Create payee & link")."""
+        ids = next((g["ids"] for g in self.unlinked_payee_names() if g["key"] == key), [])
+        if not ids:
+            return []
+        with self._conn() as c:
+            rows = []
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                rows += [dict(r) for r in c.execute(
+                    f"SELECT * FROM transactions WHERE id IN ({','.join('?' * len(chunk))}) "
+                    "ORDER BY date", chunk).fetchall()]
+        return rows
+
+    def link_payee(self, contact_id: str, txn_ids) -> int:
+        """Link transactions to a payee (a split's every line). Returns how many
+        transactions (a split once) were linked."""
+        ids = list(dict.fromkeys(txn_ids or ()))
+        if not ids or not contact_id:
+            return 0
+        units = set()
+        with self._conn() as c:
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                q = f"({','.join('?' * len(chunk))})"
+                for r in c.execute(f"SELECT id, COALESCE(split_group_id,'') FROM transactions "
+                                   f"WHERE id IN {q}", chunk).fetchall():
+                    units.add(r[1] or r[0])
+                c.execute(f"UPDATE transactions SET contact_id=? WHERE id IN {q}",
+                          [contact_id] + chunk)
+                c.execute(f"UPDATE transactions SET contact_id=? WHERE COALESCE(split_group_id,'')"
+                          f"!='' AND split_group_id IN (SELECT split_group_id FROM transactions "
+                          f"WHERE id IN {q})", [contact_id] + chunk)
+        return len(units)
+
+    def create_payee_and_link(self, name: str, key: str) -> tuple[dict, int]:
+        """Create a payee named name (matching bank texts that normalize to key
+        on future imports) and link the unlinked transactions with that key.
+        Returns (payee, number of transactions linked)."""
+        txns = self.transactions_for_payee_key(key)
+        out_money = sum(float(t.get("amount") or 0) for t in txns)
+        payee = self.save_contact({"name": name.strip() or self.payee_display_name(key),
+                                   "kind": "customer" if out_money > 0 else "vendor",
+                                   "match_text": key if len(key) >= 3 else "",
+                                   "terms_days": 30, "active": "1"})
+        return payee, self.link_payee(payee["id"], [t["id"] for t in txns])
+
+    def add_payee(self, name: str, kind: str = "vendor") -> dict:
+        """A new payee named name (or the existing active one with that name)."""
+        name = (name or "").strip()
+        existing = self.find_payee_by_name(name)
+        if existing:
+            return existing
+        return self.save_contact({"name": name, "kind": kind, "terms_days": 30,
+                                  "active": "1"})
+
+    def find_payee_by_name(self, name: str) -> dict | None:
+        n = (name or "").strip().lower()
+        if not n:
+            return None
+        return next((c for c in self.get_contacts() if c["name"].strip().lower() == n), None)
+
+    def merge_payees(self, keep_id: str, other_ids) -> int:
+        """Merge payees into keep_id: their transactions, invoices, bills,
+        inventory vendors and people move to it; they become inactive.
+        Returns the number of transactions moved."""
+        others = [o for o in dict.fromkeys(other_ids or ()) if o and o != keep_id]
+        if not others or not self.get_contact(keep_id):
+            return 0
+        q = f"({','.join('?' * len(others))})"
+        with self.atomic():
+            with self._conn() as c:
+                moved = c.execute(f"SELECT COUNT(*) FROM transactions WHERE contact_id IN {q}",
+                                  others).fetchone()[0]
+                c.execute(f"UPDATE transactions SET contact_id=? WHERE contact_id IN {q}",
+                          [keep_id] + others)
+                for table, col in (("invoices", "contact_id"), ("bills", "contact_id"),
+                                   ("items", "default_vendor_id"), ("people", "contact_id")):
+                    try:
+                        c.execute(f"UPDATE {table} SET {col}=? WHERE {col} IN {q}",
+                                  [keep_id] + others)
+                    except Exception:
+                        pass        # a table this book doesn't have
+                for o in others:
+                    c.execute("UPDATE contacts SET active=0 WHERE id=?", (o,))
+        return int(moved or 0)
+
+    def last_payee_transaction(self, contact_id: str = "", payee: str = "",
+                               exclude_id: str = "") -> dict | None:
+        """The payee's most recent transaction as a split header (with
+        "lines"), by contact, else by payee text (case-insensitive) — what a
+        new transaction for that payee recalls (P2)."""
+        with self._conn() as c:
+            if contact_id:
+                r = c.execute("SELECT id FROM transactions WHERE contact_id=? AND id!=? "
+                              "ORDER BY date DESC, created_at DESC, rowid DESC LIMIT 1",
+                              (contact_id, exclude_id or "")).fetchone()
+            else:
+                r = None
+            if r is None and (payee or "").strip():
+                r = c.execute("SELECT id FROM transactions WHERE LOWER(TRIM(payee))=? AND id!=? "
+                              "ORDER BY date DESC, created_at DESC, rowid DESC LIMIT 1",
+                              (payee.strip().lower(), exclude_id or "")).fetchone()
+        if r is None:
+            return None
+        full = self.get_transaction_with_lines(r[0])
+        return full["header"] if full else None
+
     def contact_activity(self, cid: str, start: str = "", end: str = "") -> list[dict]:
         q = "SELECT * FROM transactions WHERE contact_id=?"
         p: list = [cid]

@@ -32,7 +32,7 @@ from ui.dialogs import receipt_dialog as RD
 
 YES, NO, OK = (QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No,
                QMessageBox.StandardButton.Ok)
-PERSONAL_SIDEBAR = ["Dashboard", "Accounts", "Transactions", "Import", "Reconcile",
+PERSONAL_SIDEBAR = ["Dashboard", "Accounts", "Transactions", "Payees", "Import", "Reconcile",
                     "Loans", "Recurring", "Rules", "Reports", "Settings"]
 OLD_PAGE_NAMES = ["Dashboard", "Accounts", "Transactions", "Transfers", "Import", "Reconcile",
                   "Loans", "Recurring", "Rules", "Categories", "Owner Investment", "Receipts",

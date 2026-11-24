@@ -26,7 +26,7 @@ class NavConfigTests(unittest.TestCase):
     def test_gone_from_personal_sidebar(self):
         labels = [it.label for it in NC.visible_items("personal")]
         self.assertNotIn("Transfers", labels)
-        self.assertEqual(labels, ["Dashboard", "Accounts", "Transactions", "Import",
+        self.assertEqual(labels, ["Dashboard", "Accounts", "Transactions", "Payees", "Import",
                                   "Reconcile", "Loans", "Recurring", "Rules", "Reports"])
 
     def test_gone_from_business_hub(self):

@@ -192,12 +192,14 @@ def _plain(name, icon, label=None):
 
 
 # Personal books: the list they have always had, minus Transfers (v1.18 —
-# "Find Transfers…" on the Transactions page now opens that view).
+# "Find Transfers…" on the Transactions page now opens that view), plus
+# Payees (v1.19 — the contacts a personal book's transactions link to).
 _PERSONAL = (
     ("OVERVIEW", (_plain("Dashboard", "dashboard"),)),
     ("MONEY", (
         _plain("Accounts", "accounts"),
         _plain("Transactions", "transactions"),
+        _plain("Payees", "contacts"),
         _plain("Import", "import"),
         _plain("Reconcile", "reconcile"),
         _plain("Loans", "loans"),
@@ -210,7 +212,7 @@ _PERSONAL = (
 # Every page the app can show (Settings lives in the sidebar footer).
 ALL_PAGES = (
     "Dashboard", "Accounts", "Loans", "Transactions", "Import", "Reconcile",
-    "Recurring", "Receipts", "Invoices & Bills", "Contacts",
+    "Recurring", "Receipts", "Invoices & Bills", "Contacts", "Payees",
     "Inventory", "Assets", "People & Payroll", "Owner Investment", "Taxes",
     "Reports", "Rules", "Settings",
 )
@@ -221,6 +223,8 @@ ALL_PAGES = (
 # "Find Transfers…" dialog on Transactions. Saved links, the tour and code may
 # use them.
 PAGE_ALIASES = {
+    "Payee": "Payees",
+    "Vendors": "Contacts",
     "Categories": "Accounts",
     "Categories & Rules": "Rules",
     "Transfers": "Transactions",
@@ -288,6 +292,12 @@ def locate(name: str, book_type: str, enabled=ALL_MODULES):
     if name == "Settings":
         return None, "Settings"
     name = PAGE_ALIASES.get(name, name)
+    # Payees and Contacts are one list (v1.19): a personal book's Payees page,
+    # a business book's Contacts page (with its Payees tab).
+    if book_type == "business" and name == "Payees":
+        name = "Contacts"
+    elif book_type != "business" and name in ("Contacts", "Vendors"):
+        name = "Payees"
     for it in visible_items(book_type, enabled):
         if name in it.pages:
             return it, name

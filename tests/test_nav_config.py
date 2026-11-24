@@ -12,7 +12,7 @@ from sheets.client import Database
 
 # The sidebar a Personal book has always had (v1.18: minus Transfers, now the
 # Find Transfers… button on Transactions).
-PERSONAL_ORDER = ["Dashboard", "Accounts", "Transactions", "Import",
+PERSONAL_ORDER = ["Dashboard", "Accounts", "Transactions", "Payees", "Import",
                   "Reconcile", "Loans", "Recurring", "Rules", "Reports"]
 
 

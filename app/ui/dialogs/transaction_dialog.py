@@ -133,10 +133,37 @@ class TransactionDialog(QDialog):
             self.account_combo.currentIndexChanged.connect(self._sync_paid_by_from_account)
             self._init_paid_by()
 
-        # Payee
+        # Payee: free text with an autocomplete of the book's payees (contacts,
+        # both book types). Picking one links it (contact_id); a new name can
+        # be added as a payee on save.
         self.payee_edit = QLineEdit(self.transaction.get("payee",""))
         self.payee_edit.setPlaceholderText("Who paid or was paid")
-        form.addRow("Payee", self.payee_edit)
+        self._payees = self.db.get_contacts()
+        self._orig_payee = self.transaction.get("payee", "") or ""
+        self._orig_contact = self.transaction.get("contact_id", "") or ""
+        from PyQt6.QtWidgets import QCompleter
+        self._payee_completer = QCompleter([c["name"] for c in self._payees], self)
+        self._payee_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._payee_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.payee_edit.setCompleter(self._payee_completer)
+        payee_row = QWidget()
+        pr = QHBoxLayout(payee_row)
+        pr.setContentsMargins(0, 0, 0, 0)
+        pr.setSpacing(8)
+        pr.addWidget(self.payee_edit, 1)
+        self._undo_autofill = QLabel("<a href='undo'>Undo autofill</a>")
+        self._undo_autofill.setToolTip("Clear the fields filled from this payee's last transaction")
+        self._undo_autofill.linkActivated.connect(lambda _l: self.undo_autofill())
+        self._undo_autofill.setVisible(False)
+        pr.addWidget(self._undo_autofill)
+        form.addRow("Payee", payee_row)
+        self._new_payee_chk = QCheckBox("Add as new payee")
+        self._new_payee_chk.setToolTip("Save this name to your payee list and link it")
+        form.addRow("", self._new_payee_chk)
+        self._autofill: dict = {}       # widget key -> value before autofill
+        self._payee_completer.activated.connect(self._on_payee_chosen)
+        self.payee_edit.editingFinished.connect(self._on_payee_chosen)
+        self.payee_edit.textChanged.connect(self._update_new_payee_offer)
 
         # Memo
         self.memo_edit = QLineEdit(self.transaction.get("memo",""))
@@ -236,6 +263,16 @@ class TransactionDialog(QDialog):
             self.contact_combo.select_by_data(self.transaction.get("contact_id", ""))
             form.addRow("Vendor / customer", self.contact_combo)
             self.payee_edit.editingFinished.connect(self._suggest_contact)
+        else:
+            # Personal books tag transactions with a class here (a business
+            # book's "Charged to" covers classes).
+            self.class_combo = QComboBox()
+            self.class_combo.addItem("—", "")
+            for c in self.db.get_classes():
+                self.class_combo.addItem(c.get("name", ""), c["id"])
+            self.class_combo.setCurrentIndex(max(self.class_combo.findData(
+                self.transaction.get("class_id", "") or ""), 0))
+            form.addRow("Class", self.class_combo)
 
         # ── Split section ──────────────────────────────────────────────────────
         sep0 = QFrame(); sep0.setFrameShape(QFrame.Shape.HLine); sep0.setObjectName("Muted")
@@ -352,6 +389,159 @@ class TransactionDialog(QDialog):
         if self._start_split and not self.transaction.get("loan_id"):
             self._split_chk.setChecked(True)
         self._update_ok()
+        self._update_new_payee_offer()
+
+    # ── payees (P1) and recall (P2) ────────────────────────────────────────────
+
+    def _payee_match(self, text: str = None) -> dict | None:
+        """The payee (contact) whose name is the Payee text, if any."""
+        t = (self.payee_edit.text() if text is None else text).strip().lower()
+        if not t:
+            return None
+        return next((c for c in self._payees if c["name"].strip().lower() == t), None)
+
+    def _linked_contact_id(self) -> str:
+        """contact_id to save: the payee picked / typed, else the one the entry
+        had while its payee text is unchanged, else none."""
+        if self._business and self.contact_combo.current_data():
+            return self.contact_combo.current_data()
+        m = self._payee_match()
+        if m:
+            return m["id"]
+        if self.payee_edit.text().strip() == self._orig_payee.strip():
+            return self._orig_contact
+        return ""
+
+    def _update_new_payee_offer(self, *_):
+        if not hasattr(self, "_new_payee_chk"):
+            return
+        text = self.payee_edit.text().strip()
+        linked = self._business and hasattr(self, "contact_combo") \
+            and bool(self.contact_combo.current_data())
+        show = (bool(text) and self._payee_match() is None and not linked
+                and not (text == self._orig_payee.strip() and self._orig_contact))
+        self._new_payee_chk.setVisible(show)
+        if not show:
+            self._new_payee_chk.setChecked(False)
+        else:
+            self._new_payee_chk.setText(f"Add “{text}” as a new payee")
+
+    def _save_new_payee(self):
+        """“Add as new payee” ticked: create it and link this entry."""
+        if self._new_payee_chk.isHidden() or not self._new_payee_chk.isChecked():
+            return
+        name = self.payee_edit.text().strip()
+        if not name:
+            return
+        kind = "customer" if self.direction_combo.currentData() == "in" else "vendor"
+        payee = self.db.add_payee(name, kind)
+        self._payees.append(payee)
+        if self._business:
+            self.contact_combo.add_option(payee["name"], payee["id"])
+            self.contact_combo.select_by_data(payee["id"])
+
+    def _on_payee_chosen(self, *_):
+        """A payee was picked or typed: link it (business: the Vendor /
+        customer field) and, on a NEW transaction, recall its last one."""
+        m = self._payee_match()
+        if m and self._business and not self.contact_combo.current_data():
+            self.contact_combo.select_by_data(m["id"])
+        self._update_new_payee_offer()
+        if self.transaction.get("id"):
+            return              # never autofill when editing
+        text = self.payee_edit.text().strip()
+        if not text or text == getattr(self, "_autofilled_for", None):
+            return
+        last = self.db.last_payee_transaction(contact_id=(m or {}).get("id", ""), payee=text)
+        if last:
+            self.apply_autofill(last)
+            self._autofilled_for = text
+
+    AUTOFILL_STYLE = "background: #fff4c2;"
+
+    def apply_autofill(self, last: dict):
+        """Fill the empty fields from a payee's last transaction (P2): the
+        account or split lines, class, memo and amount. Fields the user has
+        filled are left alone. Filled fields are highlighted; "Undo autofill"
+        clears them."""
+        if self._autofill:
+            self.undo_autofill()
+        filled = {}
+        lines = last.get("lines") or [last]
+        total = float(last.get("amount") or 0)
+        hl = self.AUTOFILL_STYLE
+        if abs(self.amount_spin.value()) < 0.005 and abs(total) >= 0.005:
+            filled["amount"] = (self.amount_spin.value(), self.direction_combo.currentData(),
+                                self._direction_fixed)
+            self._set_direction("in" if total > 0 else "out")
+            self._direction_fixed = True
+            self.amount_spin.setValue(abs(total))
+            self.amount_spin.setStyleSheet(hl)
+        if not self.memo_edit.text().strip() and last.get("memo") and len(lines) == 1:
+            filled["memo"] = ""
+            self.memo_edit.setText(last["memo"])
+            self.memo_edit.setStyleSheet(hl)
+        if len(lines) > 1:
+            if not self._split_on() and not self.cat_combo.current_data():
+                filled["split"] = True
+                sign = -1 if total < 0 else 1
+                self._split_box.set_lines([
+                    (line_target(self.db, l), l.get("memo", ""), l.get("class_id", ""),
+                     round(float(l.get("amount") or 0) * sign, 2)) for l in lines])
+                self._split_chk.setChecked(True)
+                self._split_box.setStyleSheet("QDoubleSpinBox, QComboBox { " + hl + " }")
+        elif not self.cat_combo.current_data() and not self._split_on():
+            target = line_target(self.db, lines[0])
+            if target:
+                filled["account"] = ""
+                self.cat_combo.select_by_data(target)
+                self.cat_combo.setStyleSheet(hl)
+        cls = lines[0].get("class_id", "") if len(lines) == 1 else ""
+        if cls:
+            if self._business:
+                if not self.charged_combo.current_data():
+                    filled["class"] = ""
+                    self.charged_combo.select_by_data(f"class:{cls}")
+                    self.charged_combo.setStyleSheet(hl)
+            elif not self.class_combo.currentData():
+                filled["class"] = ""
+                self.class_combo.setCurrentIndex(max(self.class_combo.findData(cls), 0))
+                self.class_combo.setStyleSheet(hl)
+        self._autofill = filled
+        self._undo_autofill.setVisible(bool(filled))
+        self._on_target_changed()
+
+    def undo_autofill(self):
+        f, self._autofill = self._autofill, {}
+        if "amount" in f:
+            v, d, fixed = f["amount"]
+            self.amount_spin.setValue(v)
+            self._set_direction(d)
+            self._direction_fixed = fixed
+        if "memo" in f:
+            self.memo_edit.clear()
+        if "account" in f:
+            self.cat_combo.select_by_data("")
+        if "split" in f:
+            self._split_chk.blockSignals(True)
+            self._split_chk.setChecked(False)
+            self._split_chk.blockSignals(False)
+            self._split_box.clear()
+            self._split_box.setVisible(False)
+            self._set_row_visible(self.cat_combo, True)
+        if "class" in f:
+            if self._business:
+                self.charged_combo.setCurrentIndex(0)
+            else:
+                self.class_combo.setCurrentIndex(0)
+        for w in (self.amount_spin, self.memo_edit, self.cat_combo, self._split_box,
+                  getattr(self, "charged_combo", None), getattr(self, "class_combo", None)):
+            if w is not None:
+                w.setStyleSheet("")
+        self._undo_autofill.setVisible(False)
+        self._autofilled_for = None
+        self._update_ok()
+        self._on_target_changed()
 
     # ── split mode ─────────────────────────────────────────────────────────────
 
@@ -612,6 +802,10 @@ class TransactionDialog(QDialog):
         if (cat_id or "").startswith("acct:"):
             return -1
         cat = next((c for c in getattr(self, "_cats", []) if c.get("id") == cat_id), None)
+        if cat is None and cat_id:
+            # Added while the window is open (Account picker → Add it…).
+            self._cats = self.db.get_categories(include_inactive=True)
+            cat = next((c for c in self._cats if c.get("id") == cat_id), None)
         return category_sign(cat.get("type")) if cat else 1
 
     def _natural_direction(self, value: str) -> str:
@@ -812,6 +1006,7 @@ class TransactionDialog(QDialog):
             return
 
         split_on = self._split_chk.isChecked()
+        self._save_new_payee()
 
         # An account name that isn't an account: Add it / Discard (T1).
         pickers = self._split_box.unknown_pickers() if split_on else (
@@ -967,6 +1162,9 @@ class TransactionDialog(QDialog):
             "notes":      self.notes_edit.toPlainText().strip(),
         })
         data.update(self._business_fields())
+        if not self._business:
+            data["class_id"] = self.class_combo.currentData() or ""
+            data["contact_id"] = self._linked_contact_id()
 
         # Loan split
         if self._loan_chk.isChecked():
