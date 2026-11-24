@@ -53,7 +53,9 @@ class PresetTests(unittest.TestCase):
 
     def test_every_page_reachable_in_full(self):
         shown = {p for it in NC.visible_items("business") for p in it.pages}
-        self.assertEqual(shown | {"Settings"}, set(NC.ALL_PAGES))
+        # v1.19: a business book's Payees are the Contacts page's Payees tab.
+        self.assertEqual(shown | {"Settings", "Payees"}, set(NC.ALL_PAGES))
+        self.assertIn("Payees", {p for it in NC.visible_items("personal") for p in it.pages})
 
 
 class PersonalTests(unittest.TestCase):
@@ -71,7 +73,7 @@ class PersonalTests(unittest.TestCase):
 
     def test_icons_unchanged(self):
         self.assertEqual([it.icon for it in NC.visible_items("personal")],
-                         ["dashboard", "accounts", "transactions", "import",
+                         ["dashboard", "accounts", "transactions", "contacts", "import",
                           "reconcile", "loans", "calendar", "rules", "reports"])
 
 
@@ -174,7 +176,8 @@ class LayoutTests(unittest.TestCase):
         for name in NC.ALL_PAGES:
             hit = NC.locate(name, "business")
             self.assertIsNotNone(hit, name)
-            self.assertEqual(hit[1], name)
+            # v1.19: Payees open the Contacts page (its Payees tab) in business books.
+            self.assertEqual(hit[1], "Contacts" if name == "Payees" else name)
         item, page = NC.locate("Import", "business")
         self.assertEqual((item.id, page), ("Transactions", "Import"))
         # v1.14: Categories are part of Accounts; the old ids still resolve.
