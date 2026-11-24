@@ -25,6 +25,8 @@ from utils import chart_of_accounts as COA
 ROW_H = 44  # px — tall enough for buttons + padding
 
 COL_NAME, COL_TYPE, COL_DETAIL, COL_BALANCE, COL_ACTIONS = range(5)
+LINK_ROLE = Qt.ItemDataRole.UserRole + 5       # account names open their register
+LINK_HOVER = "#1d4ed8"
 
 NO_MATCH_TEXT = "No accounts match"
 
@@ -175,6 +177,11 @@ class AccountsPage(QWidget):
         self._tree.setRootIsDecorated(False)
         self._tree.setAlternatingRowColors(True)
         self._tree.itemClicked.connect(self._on_item_clicked)
+        # Account names are links: pointer cursor + hover colour.
+        self._tree.setMouseTracking(True)
+        self._tree.itemEntered.connect(self._on_item_entered)
+        self._tree.viewport().installEventFilter(self)
+        self._hover_item = None
         self._tree.itemDoubleClicked.connect(lambda it, _c: self._edit_item(it))
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._context_menu)
@@ -227,6 +234,7 @@ class AccountsPage(QWidget):
         ((kind, id) — the one just edited / added / moved), else the selected
         one, is re-selected and scrolled to the centre; when it's no longer in
         the list the old scroll position is kept. The search filter stays."""
+        self._hover_item = None
         focus = focus or self._focus or _key(self._entry(self._tree.currentItem()))
         self._focus = None
         chart_scroll = self._tree.verticalScrollBar().value()
@@ -319,10 +327,11 @@ class AccountsPage(QWidget):
                                             (d.get("type") or "").title(),
                                             d.get("institution", "") or "—",
                                             _money(bal), ""])
+                    # A link without an underline (v1.19): accent colour, a
+                    # pointer cursor and darker colour on hover (_on_item_entered).
                     item.setForeground(COL_NAME, QColor(ACCENT))
-                    fn = QFont(item.font(COL_NAME)); fn.setUnderline(True)
-                    item.setFont(COL_NAME, fn)
-                    item.setToolTip(COL_NAME, "Click to view this account's transactions")
+                    item.setData(COL_NAME, LINK_ROLE, True)
+                    item.setToolTip(COL_NAME, "Open register")
                     item.setForeground(COL_BALANCE, QColor(SUCCESS if bal >= 0 else DANGER))
                     if abs(bal - own[d["id"]]) >= 0.005:
                         item.setToolTip(COL_BALANCE, "Includes its sub-accounts. This account "
@@ -531,6 +540,36 @@ class AccountsPage(QWidget):
 
     def _entry(self, item):
         return item.data(COL_NAME, Qt.ItemDataRole.UserRole) if item else None
+
+    def is_link(self, item, col) -> bool:
+        return bool(item is not None and col == COL_NAME
+                    and item.data(COL_NAME, LINK_ROLE))
+
+    def _on_item_entered(self, item, col):
+        link = self.is_link(item, col)
+        self._set_hover(item if link else None)
+        self._tree.viewport().setCursor(Qt.CursorShape.PointingHandCursor if link
+                                        else Qt.CursorShape.ArrowCursor)
+
+    def _set_hover(self, item):
+        old = self._hover_item
+        if old is item:
+            return
+        try:
+            if old is not None:
+                old.setForeground(COL_NAME, QColor(ACCENT))
+        except RuntimeError:        # the item was deleted by a refresh
+            pass
+        self._hover_item = item
+        if item is not None:
+            item.setForeground(COL_NAME, QColor(LINK_HOVER))
+
+    def eventFilter(self, obj, ev):
+        from PyQt6.QtCore import QEvent
+        if obj is self._tree.viewport() and ev.type() == QEvent.Type.Leave:
+            self._set_hover(None)
+            self._tree.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+        return super().eventFilter(obj, ev)
 
     def _on_item_clicked(self, item, col):
         e = self._entry(item)
