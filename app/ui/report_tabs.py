@@ -21,6 +21,31 @@ INDENT = "    "
 # pnl_lines() kinds drawn in bold.
 _BOLD_KINDS = ("section", "section_total", "summary", "total", "group", "parent")
 
+# Pages that computed report lines come from (no transactions behind them).
+COMPUTED_SOURCES = {"depreciation": ("Assets", "your fixed assets' depreciation"),
+                    "gain": ("Assets", "fixed-asset sales"),
+                    "cogs": ("Inventory", "inventory sold (cost of goods sold)")}
+
+
+def drill_target(rows, start, end, class_id="", label="", **extra):
+    """What a report line opens (R1). rows: the report rows behind it.
+    Returns ("register", show_filtered kwargs) for lines with transactions,
+    ("computed", page name, explanation) for computed-only lines
+    (depreciation, inventory COGS), or ("empty", None, message)."""
+    computed = [r for r in rows if r.get("computed")]
+    cat_ids = {r.get("category_id", "") or "" for r in rows if not r.get("computed")}
+    if cat_ids:
+        args = dict(category_ids=cat_ids, start=start, end=end, class_id=class_id or None,
+                    label=label, transfers=False)
+        args.update({k: v for k, v in extra.items() if v})
+        return ("register", args)
+    if computed:
+        page, what = COMPUTED_SOURCES.get(computed[0].get("computed", ""),
+                                          ("", "figures FinanceBook works out"))
+        return ("computed", page,
+                f"There are no transactions behind “{label}”: it is worked out from {what}.")
+    return ("empty", None, f"No transactions behind “{label}” for this period.")
+
 
 class GridTab(QWidget):
     """A titled table + note; subclasses fill self.header / self.rows (and the
@@ -46,9 +71,20 @@ class GridTab(QWidget):
             n.setWordWrap(True)
             lay.addWidget(n)
         self.header, self.rows, self.bold = [], [], set()
+        # R1: per row, what a double-click opens — {"rows": report rows,
+        # "line": a pnl_lines() row or None, "cols": {column: {"start", "end",
+        # "class_id", "sections"}}, …}; None = nothing behind the row.
+        self.drill: list = []
+        self.cats: dict = {}
+        self.range = ("", "")
+        self.class_filter = ""
 
     def run(self, start, end, cls="", period="total"):
         self.header, self.rows, self.bold = [], [], set()
+        self.drill = []
+        self.cats = self.db.category_map()
+        self.range = (start, end)
+        self.class_filter = cls or ""
         if self.supports_period:
             self.build(start, end, cls, period)
         else:
@@ -79,9 +115,42 @@ class GridTab(QWidget):
                 else:
                     t.set_item(r, c, "" if v is None else str(v), bold=bold)
         self._frozen.sync(enabled=wide)
+        while len(self.drill) < len(self.rows):
+            self.drill.append(None)
+        tip = "Double-click (or Enter) to see the transactions behind an amount"
+        if any(self.drill):
+            t.setToolTip(tip)
 
     def build(self, start, end, cls, period="total"):   # pragma: no cover — overridden
         pass
+
+    def drill_target(self, row: int, col: int):
+        """drill_target() for a cell of the grid (R1), or None."""
+        if not (0 <= row < len(self.drill)) or not self.drill[row]:
+            return None
+        spec = self.drill[row]
+        colspec = (spec.get("cols") or {}).get(col, {})
+        start = colspec.get("start") or self.range[0]
+        end = colspec.get("end") or self.range[1]
+        cls = colspec.get("class_id", self.class_filter)
+        rows = spec["rows"]
+        if spec.get("line") is not None:
+            rows = RP.drill_rows(rows, self.cats, spec["line"])
+        if colspec.get("class_id") is not None:
+            rows = [r for r in rows if (r.get("class_id") or "") == colspec["class_id"]]
+        if colspec.get("sections"):
+            rows = [r for r in rows if r.get("section") in colspec["sections"]]
+        rows = [r for r in rows if start <= (r.get("date") or "") <= end]
+        label = spec.get("label") or str(self.rows[row][0]).strip()
+        head = self.header[col] if 0 < col < len(self.header) else ""
+        if head and head not in ("Total",):
+            label = f"{label} · {head}"
+        extra = {k: spec.get(k) for k in ("contact_id", "payee") if spec.get(k)}
+        cid = colspec.get("class_id")
+        if cid == "":
+            from sheets.client import NO_CLASS
+            cid = NO_CLASS          # the "(no class)" column
+        return drill_target(rows, start, end, cid if cid else (cls or ""), label, **extra)
 
     def export(self, path):
         """The grid as on screen (same columns), amounts with 2 decimals."""
@@ -96,9 +165,11 @@ class GridTab(QWidget):
         rows = self.db.report_rows(start, end, with_computed=not cls, period=period)
         return [r for r in rows if not cls or r["class_id"] == cls]
 
-    def add_pnl_lines(self, lines, columns):
+    def add_pnl_lines(self, lines, columns, rows=None, cols=None):
         """Append pnl_lines() rows: the account indented by its level, one
-        amount per column (blank for a heading)."""
+        amount per column (blank for a heading). rows: the report rows the
+        lines were built from and cols: {grid column: drill column spec}, so
+        each line can be drilled into (R1)."""
         for ln in lines:
             label = INDENT * ln["depth"] + ln["label"]
             if ln["amounts"] is None:
@@ -108,6 +179,9 @@ class GridTab(QWidget):
             if ln["kind"] in _BOLD_KINDS:
                 self.bold.add(len(self.rows))
             self.rows.append([label] + vals)
+            self.drill.append(None if rows is None or ln["kind"] == "group" else
+                              {"rows": rows, "line": ln, "cols": cols or {},
+                               "label": ln["label"]})
 
 
 class ByClassTab(GridTab):
@@ -129,7 +203,8 @@ class ByClassTab(GridTab):
         if period == "total":
             rep = RP.pnl_report(rows, cats, keys, lambda r: r["class_id"] or "")
             self.header = ["Account"] + [name(k) for k in keys] + ["Total"]
-            self.add_pnl_lines(RP.pnl_lines(rep), rep["columns"])
+            self.add_pnl_lines(RP.pnl_lines(rep), rep["columns"], rows,
+                               {i + 1: {"class_id": k} for i, k in enumerate(keys)})
         else:
             buckets = RP.period_buckets(start, end, period)
             self.header = ["Account"] + [b.label for b in buckets] + ["Total"]
@@ -140,7 +215,11 @@ class ByClassTab(GridTab):
                                     lambda r: RP.period_key(r["date"], period))
                 self.bold.add(len(self.rows))
                 self.rows.append([name(k).upper()] + [""] * (len(col_keys) + 1))
-                self.add_pnl_lines(RP.pnl_lines(rep), rep["columns"])
+                self.drill.append(None)
+                cols = {i + 1: {"start": b.start, "end": b.end, "class_id": k}
+                        for i, b in enumerate(buckets)}
+                cols[len(buckets) + 1] = {"class_id": k}
+                self.add_pnl_lines(RP.pnl_lines(rep), rep["columns"], mine, cols)
         g = RP.pivot(rows, lambda r: r["class_id"] or "", lambda r: r["section"])
         roi = []
         for k in keys:
@@ -164,20 +243,33 @@ class ByVendorTab(GridTab):
         g = RP.pivot(rows, key, lambda r: r["section"])
         items = sorted(((k, v) for k, v in g.items() if k != "__total__"),
                        key=lambda kv: kv[1].get("expense", ZERO))
+
+        def spec(k, cols):
+            mine = [r for r in rows if key(r) == k]
+            ids = {r["contact_id"] for r in mine if r.get("contact_id")}
+            unlinked = any(not r.get("contact_id") for r in mine)
+            return {"rows": mine, "line": None, "cols": cols, "label": k,
+                    "contact_id": ids or None, "payee": k if unlinked else ""}
+        n_fixed = 0
         if period == "total":
             self.header = ["Vendor / customer", "Spent", "Received", "Net"]
-            for k, v in items:
-                self.rows.append([k, -v.get("expense", ZERO), v.get("income", ZERO),
-                                  v["__total__"]])
         else:
             buckets = RP.period_buckets(start, end, period)
             per = RP.pivot(rows, key, lambda r: RP.period_key(r["date"], period))
             self.header = (["Vendor / customer"] + [b.label for b in buckets]
                            + ["Spent", "Received", "Net"])
-            for k, v in items:
-                self.rows.append([k] + [per[k].get(b.key, ZERO) for b in buckets]
-                                 + [-v.get("expense", ZERO), v.get("income", ZERO),
-                                    v["__total__"]])
+            n_fixed = len(buckets)
+        cols = {} if period == "total" else {
+            i + 1: {"start": b.start, "end": b.end} for i, b in enumerate(buckets)}
+        cols[n_fixed + 1] = {"sections": ("expense",)}
+        cols[n_fixed + 2] = {"sections": ("income",)}
+        for k, v in items:
+            tail = [-v.get("expense", ZERO), v.get("income", ZERO), v["__total__"]]
+            if period == "total":
+                self.rows.append([k] + tail)
+            else:
+                self.rows.append([k] + [per[k].get(b.key, ZERO) for b in buckets] + tail)
+            self.drill.append(spec(k, cols))
         self.summary.setText(f"{len(items)} vendors / customers in this period.")
 
 

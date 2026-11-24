@@ -257,14 +257,15 @@ def _tree_sections(rows, cats, col_of, section_of) -> dict:
     return roots
 
 
-def _finish(node, sign: int) -> dict:
-    kids = [_finish(c, sign) for c in sorted(node["children"].values(),
-                                             key=lambda c: c["label"].lower())]
+def _finish(node, sign: int, path: tuple = ()) -> dict:
+    path = path + ((node["label"],) if node.get("label") else ())
+    kids = [_finish(c, sign, path) for c in sorted(node["children"].values(),
+                                                   key=lambda c: c["label"].lower())]
     total = dict(node["own"])
     for k in kids:
         for col, v in k["raw_total"].items():
             _add(total, col, v)
-    return {"label": node.get("label", ""), "children": kids,
+    return {"label": node.get("label", ""), "children": kids, "path": path,
             "raw_total": total,
             "own": {k: cents(v * sign) for k, v in node["own"].items()},
             "total": {k: cents(v * sign) for k, v in total.items()},
@@ -352,18 +353,19 @@ def memo_rows(txns, cats) -> list:
 
 
 def _node_lines(node, depth: int, section: str) -> list:
+    path = node.get("path", (node["label"],))
     if not node["children"]:
         return [{"label": node["label"], "depth": depth, "kind": "leaf",
-                 "amounts": node["total"], "section": section}]
+                 "amounts": node["total"], "section": section, "path": path}]
     out = [{"label": node["label"], "depth": depth, "kind": "parent", "amounts": None,
-            "collapsed": node["total"], "section": section}]
+            "collapsed": node["total"], "section": section, "path": path}]
     for ch in node["children"]:
         out += _node_lines(ch, depth + 1, section)
     if node["has_own"]:
         out.append({"label": f"{node['label']} (other)", "depth": depth + 1, "kind": "other",
-                    "amounts": node["own"], "section": section})
+                    "amounts": node["own"], "section": section, "path": path})
     out.append({"label": f"Total {node['label']}", "depth": depth, "kind": "total",
-                "amounts": node["total"], "section": section})
+                "amounts": node["total"], "section": section, "path": path})
     return out
 
 
@@ -376,6 +378,47 @@ def _section_lines(sec, depth: int) -> list:
             out.append(ln)
     out.append({"label": f"Total {sec['label']}", "depth": depth, "kind": "section_total",
                 "amounts": sec["total"], "section": sec["key"]})
+    return out
+
+
+SUMMARY_KEEP = {
+    "Gross Profit": lambda r: not r.get("other") and (r.get("cogs") or r["section"] == "income"),
+    "Net Operating Income": lambda r: not r.get("other"),
+    "Net Income": lambda r: True,
+}
+
+
+def row_section(r) -> str:
+    """The P&L section key a report row sits in (a memo row's memo label)."""
+    return r.get("memo") or pnl_section_label(r)
+
+
+def drill_rows(rows, cats, line: dict) -> list:
+    """The report rows behind one report line (R1 drill-down). line is a
+    pnl_lines() row, or {"kind", "section", "path", "label"}: a section or
+    its total → every row in the section; an account (parent / its Total /
+    leaf) → its rows and its sub-accounts'; "(other)" → the account's own
+    rows; a summary (Gross Profit, Net Income…) → the rows it adds up. Memo
+    rows ("memo" set) only belong to their memo section."""
+    kind = line.get("kind", "")
+    sec = line.get("section", "")
+    path = tuple(line.get("path") or ())
+    if kind == "summary":
+        keep = SUMMARY_KEEP.get(line.get("label", ""), lambda r: True)
+        return [r for r in rows if not r.get("memo") and keep(r)]
+    out = []
+    for r in rows:
+        if row_section(r) != sec:
+            continue
+        if kind in ("section", "section_total"):
+            out.append(r)
+            continue
+        p = account_path(r, cats)
+        if kind == "other":
+            if p == path:
+                out.append(r)
+        elif p[:len(path)] == path:
+            out.append(r)
     return out
 
 

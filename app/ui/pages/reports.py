@@ -38,6 +38,8 @@ REPORT_ALIASES = {
 DEFAULT_PERIOD = {PNL_LABEL: "total"}
 
 _COLLAPSED = Qt.ItemDataRole.UserRole + 10      # amounts a heading shows when collapsed
+_DRILL = Qt.ItemDataRole.UserRole + 11          # what a double-click on the line opens (R1)
+DRILL_TIP = "Double-click (or Enter) to see the transactions behind an amount"
 
 
 def _money(amt) -> str:
@@ -53,6 +55,8 @@ class ReportsPage(QWidget):
         self._confirmed = None               # (tab, period, start, end) the user OK'd
         self._pnl_report = None
         self._pnl_columns: list = []
+        self._pnl_rows: list = []            # report rows behind the P&L (R1 drill-down)
+        self._pnl_buckets: list = []
         self._build()
 
     def _build(self):
@@ -132,8 +136,14 @@ class ReportsPage(QWidget):
         self._pnl_tree.header().setStretchLastSection(True)
         self._pnl_tree.itemExpanded.connect(self._show_amounts)
         self._pnl_tree.itemCollapsed.connect(self._show_amounts)
+        self._pnl_tree.setToolTip(DRILL_TIP)
+        self._pnl_tree.itemActivated.connect(self._on_pnl_activated)
         pnl_lay.addWidget(self._pnl_tree)
         self._pnl_frozen = FrozenColumn(self._pnl_tree)
+        fv = getattr(self._pnl_frozen, "view", None)
+        if fv is not None and hasattr(fv, "activated"):
+            fv.activated.connect(lambda ix: self._on_pnl_activated(
+                self._pnl_tree.itemFromIndex(ix), 0))
 
         self._pnl_note = QLabel(
             "Expenses and cost of goods sold are shown as positive amounts. Computed "
@@ -163,6 +173,8 @@ class ReportsPage(QWidget):
         self._bs_tree.setColumnWidth(0, 400)
         self._bs_tree.setAlternatingRowColors(True)
         self._bs_tree.header().setStretchLastSection(True)
+        self._bs_tree.setToolTip(DRILL_TIP)
+        self._bs_tree.itemActivated.connect(lambda it, _c: self.drill_bs(it))
         bs_lay.addWidget(self._bs_tree)
         self._tabs.addTab(bs, "Balance Sheet")
 
@@ -170,7 +182,11 @@ class ReportsPage(QWidget):
         from ui.report_tabs import extra_tabs
         self._tabs.setUsesScrollButtons(True)
         for label, cls in extra_tabs(self.db):
-            self._tabs.addTab(cls(self.db), label)
+            tab = cls(self.db)
+            self._tabs.addTab(tab, label)
+            if hasattr(tab, "drill_target"):
+                tab.table.activated.connect(
+                    lambda ix, t=tab: self.drill_grid(t, ix.row(), ix.column()))
 
         self._tabs.currentChanged.connect(self._on_tab_changed)
         lay.addWidget(self._tabs)
@@ -326,9 +342,12 @@ class ReportsPage(QWidget):
             rows = [r for r in rows if r.get("class_id") == cls_filter]
             txns = [t for t in txns if t.get("class_id") == cls_filter]
         cats = self.db.category_map()
+        memo = RP.memo_rows(txns, cats)
         rep = RP.pnl_report(rows, cats, [b.key for b in buckets if b.key != RP.TOTAL],
                             lambda r: RP.period_key(r["date"], period),
-                            memo_rows=RP.memo_rows(txns, cats))
+                            memo_rows=memo)
+        self._pnl_rows = list(rows) + list(memo)
+        self._pnl_buckets = [b for b in buckets if b.key != RP.TOTAL]
         return rep, buckets
 
     def _run_pnl(self):
@@ -376,31 +395,42 @@ class ReportsPage(QWidget):
             it.setData(0, _COLLAPSED, collapsed)
             return it
 
-        def node_item(node):
+        def drill(it, kind, sec, node=None, label=None):
+            it.setData(0, _DRILL, {"kind": kind, "section": sec,
+                                   "path": tuple((node or {}).get("path") or ()),
+                                   "label": label or it.text(0)})
+
+        def node_item(node, sec):
             if not node["children"]:
                 it = QTreeWidgetItem([node["label"]])
                 amounts(it, node["total"])
+                drill(it, "leaf", sec, node)
                 return it
             it = heading(node["label"], node["total"])
+            drill(it, "parent", sec, node)
             for ch in node["children"]:
-                it.addChild(node_item(ch))
+                it.addChild(node_item(ch, sec))
             if node["has_own"]:
                 other = QTreeWidgetItem([f"{node['label']} (other)"])
                 other.setToolTip(0, f"Entries filed under “{node['label']}” itself, not "
                                     "one of its sub-accounts")
                 amounts(other, node["own"])
+                drill(other, "other", sec, node)
                 it.addChild(other)
             tot = QTreeWidgetItem([f"Total {node['label']}"])
             amounts(tot, node["total"], bold=True, color=False)
+            drill(tot, "total", sec, node, node["label"])
             it.addChild(tot)
             return it
 
         def section_item(sec):
             it = heading(sec["label"], sec["total"])
+            drill(it, "section", sec["key"])
             for n in sec["nodes"]:
-                it.addChild(node_item(n))
+                it.addChild(node_item(n, sec["key"]))
             tot = QTreeWidgetItem([f"Total {sec['label']}"])
             amounts(tot, sec["total"], bold=True, color=False, blank_zero=False)
+            drill(tot, "section_total", sec["key"], label=sec["label"])
             it.addChild(tot)
             return it
 
@@ -410,6 +440,7 @@ class ReportsPage(QWidget):
             elif b["type"] == "summary":
                 it = QTreeWidgetItem([b["label"]])
                 amounts(it, b["amounts"], bold=True, blank_zero=False)
+                drill(it, "summary", "")
                 if b["label"] == "Net Income":
                     f = it.font(0); f.setPointSize(f.pointSize() + 1)
                     for c in range(tree.columnCount()):
@@ -518,8 +549,9 @@ class ReportsPage(QWidget):
         bs = self._balance_sheet(as_of)
         # Personal books keep the familiar layout: liabilities as (negative)
         # balances and Net Worth at the bottom.
-        assets = [{"name": n, "balance": float(v)} for n, v, _ in bs["assets"]]
-        liabilities = [{"name": n, "balance": -float(v)} for n, v, _ in bs["liabilities"]]
+        assets = [{"name": n, "balance": float(v), "meta": m} for n, v, m in bs["assets"]]
+        liabilities = [{"name": n, "balance": -float(v), "meta": m}
+                       for n, v, m in bs["liabilities"]]
 
         def _money(amt):
             return f"${amt:,.2f}" if amt >= 0 else f"(${abs(amt):,.2f})"
@@ -534,6 +566,8 @@ class ReportsPage(QWidget):
                 item = QTreeWidgetItem([a["name"], _money(a["balance"])])
                 item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 item.setForeground(1, QColor(SUCCESS if a["balance"] >= 0 else DANGER))
+                item.setData(0, _DRILL, dict(a.get("meta") or {}, label=a["name"],
+                                             as_of=as_of))
                 root.addChild(item)
                 total += a["balance"]
             tot_item = QTreeWidgetItem([f"Total {label}", _money(total)])
@@ -551,12 +585,110 @@ class ReportsPage(QWidget):
 
         equity = total_assets + total_liab
         eq_item = QTreeWidgetItem(["Net Worth / Equity", _money(equity)])
+        eq_item.setData(0, _DRILL, {"label": "Net Worth / Equity", "as_of": as_of,
+                                    "computed": True})
         eq_item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         eq_item.setForeground(1, QColor(SUCCESS if equity >= 0 else DANGER))
         f = eq_item.font(0); f.setBold(True); f.setPointSize(f.pointSize()+2)
         eq_item.setFont(0, f); eq_item.setFont(1, f)
         self._bs_tree.addTopLevelItem(eq_item)
         self._bs_tree.expandAll()
+
+    # ── drill-down (R1) ───────────────────────────────────────────────────────
+
+    def _on_pnl_activated(self, item, col):
+        self.drill_pnl(item, col)
+
+    def pnl_drill_target(self, item, col: int):
+        """What double-clicking a P&L / By Period cell opens: the report rows
+        behind the line (its account and sub-accounts, a section, or a
+        summary), the column's period (or the report's dates for Total and
+        the account column), the class filter."""
+        line = item.data(0, _DRILL) if item is not None else None
+        if not line:
+            return None
+        from ui.report_tabs import drill_target
+        start, end = self._dates()
+        cols = self._pnl_columns
+        key = cols[col - 1] if 1 <= col <= len(cols) else RP.TOTAL
+        label = line["label"]
+        if key != RP.TOTAL:
+            b = next((b for b in self._pnl_buckets if b.key == key), None)
+            if b is not None:
+                start, end = b.start, b.end
+                label = f"{label} · {b.label}"
+        rows = RP.drill_rows(self._pnl_rows, self.db.category_map(), line)
+        rows = [r for r in rows if start <= (r.get("date") or "") <= end]
+        cls = self._class_combo.currentData() or ""
+        return drill_target(rows, start, end, cls, label)
+
+    def drill_pnl(self, item, col: int = 0):
+        return self._open_target(self.pnl_drill_target(item, col))
+
+    def drill_grid(self, tab, row: int, col: int):
+        return self._open_target(tab.drill_target(row, col))
+
+    def bs_drill_target(self, item):
+        """What double-clicking a Balance Sheet line opens (personal Net Worth
+        and business layouts): an account → its register up to the as-of
+        date; Net income / Retained earnings → the P&L accounts behind them;
+        computed lines (fixed assets, inventory) → their page."""
+        meta = item.data(0, _DRILL) if item is not None else None
+        if not meta:
+            return None
+        from ui.report_tabs import drill_target
+        as_of = meta.get("as_of") or self._date_to.date().toString("yyyy-MM-dd")
+        label = meta.get("label", "")
+        if meta.get("account_id"):
+            return ("register", dict(account_id=meta["account_id"], start=None, end=as_of,
+                                     label=f"{label} as of {fmt_date(as_of)}",
+                                     transfers=True))
+        fy_start = f"{as_of[:4]}-01-01"
+        if label.startswith("Net income"):
+            rows = self.db.report_rows(fy_start, as_of, with_computed=True)
+            return drill_target(rows, fy_start, as_of, "", f"{label} to {fmt_date(as_of)}")
+        if label.startswith("Retained earnings"):
+            from datetime import date as _d, timedelta
+            before = (_d.fromisoformat(fy_start) - timedelta(days=1)).isoformat()
+            rows = self.db.report_rows("1900-01-01", before, with_computed=True)
+            return drill_target(rows, None, before, "", label)
+        if meta.get("computed"):
+            low = label.lower()
+            page = "Inventory" if "inventory" in low else (
+                "Assets" if "asset" in low or "equipment" in low else "")
+            return ("computed", page,
+                    f"There are no transactions behind “{label}”: FinanceBook works it "
+                    "out" + (f" on the {page} page." if page else " from the other lines."))
+        return ("computed", "",
+                f"“{label}” is worked out from your accounts' balances and opening "
+                "balances, so there are no transactions behind it to list. Double-click "
+                "an account line to see its register.")
+
+    def drill_bs(self, item):
+        return self._open_target(self.bs_drill_target(item))
+
+    def _open_target(self, target):
+        """Act on a drill target: open Transactions filtered (register), or
+        explain a computed line and offer its page."""
+        if not target:
+            return None
+        kind = target[0]
+        mw = getattr(self, "_main_window", None) or self.window()
+        if kind == "register":
+            page = mw.page("Transactions") if hasattr(mw, "page") else None
+            if page is not None and hasattr(page, "show_filtered"):
+                page.show_filtered(**target[1])
+            return target
+        page_name, text = target[1], target[2]
+        if kind == "computed" and page_name and hasattr(mw, "page"):
+            if QMessageBox.question(
+                    self, "No Transactions", f"{text}\n\nOpen {page_name}?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) == QMessageBox.StandardButton.Yes:
+                mw.page(page_name)
+        else:
+            QMessageBox.information(self, "No Transactions", text)
+        return target
 
     def _export_csv(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export Report", "report.csv",
@@ -609,6 +741,7 @@ class ReportsPage(QWidget):
             for name, amt, meta in lines:
                 item = QTreeWidgetItem([name, _money(amt)])
                 item.setTextAlignment(1, right)
+                item.setData(0, _DRILL, dict(meta or {}, label=name, as_of=as_of))
                 if meta.get("plug"):
                     item.setForeground(0, QColor(WARNING))
                     item.setToolTip(0,

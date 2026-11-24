@@ -303,18 +303,20 @@ class TransactionsPage(QWidget):
         self._apply_filter()
 
     def show_filtered(self, category_ids=None, account_id=None, start=None, end=None,
-                      class_id=None, contact_id=None, payee=None, label: str = ""):
+                      class_id=None, contact_id=None, payee=None, label: str = "",
+                      transfers: bool = True):
         """Open the register filtered the way a report line was (drill-down):
         its accounts (category_ids — the line and its sub-accounts), a bank /
         balance-sheet account, the date range (no start = from the beginning,
         no end = no limit), a class and a payee (contact id, or payee text).
         Shows a "Filtered from report: <label> ✕" chip. Splits appear when any
-        line matches, showing the matching lines' amount."""
+        line matches, showing the matching lines' amount. transfers=False
+        (P&L lines) leaves transfers out, as the report does."""
         self._quiet = True
         try:
             self._search_edit.clear()
             self._cat_filter.setCurrentIndex(0)
-            self._show_transfers.setChecked(True)
+            self._show_transfers.setChecked(bool(transfers))
             self._select_account(account_id or "")
             self._date_from.setDate(QDate.fromString(start, "yyyy-MM-dd") if start
                                     else QDate(1900, 1, 1))

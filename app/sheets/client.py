@@ -206,6 +206,10 @@ _FLOAT_FIELDS = {"amount", "opening_balance", "statement_balance",
                  "original_principal", "annual_rate", "payment_amount",
                  "deduct_pct"}
 
+# list_register_rows(class_id=NO_CLASS): lines with no class (a report's
+# "(no class)" column).
+NO_CLASS = "__no_class__"
+
 BOOK_PERSONAL = "personal"
 BOOK_BUSINESS = "business"
 
@@ -1422,9 +1426,11 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         memo / notes / any line memo). When a line filter is on, a split's row
         also carries "match_amount": the total of the lines that matched
         (what the register shows; the full total stays in "amount").
-        contact_id / payee (case-insensitive exact) filter on the transaction.
+        contact_id (an id or a set of ids) / payee (case-insensitive exact,
+        for transactions with no payee linked) filter on the transaction; given
+        both, either one matching keeps it (the By Vendor report's grouping).
         include_transfers=False hides plain transfers and splits whose every
-        line is a transfer. Rows of a split's transfer mirror carry
+        line is a transfer, and a line filter then ignores transfer lines. Rows of a split's transfer mirror carry
         "split_source": (source account id, payee). Order: date, created_at.
         """
         txns = self.get_transactions(account_id=account_id, start=start, end=end)
@@ -1447,13 +1453,22 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
         line_filter = bool(cat_set or uncategorized or class_id)
         needle = (search or "").lower().strip()
         payee_l = (payee or "").lower().strip()
+        if isinstance(contact_id, (set, list, tuple, frozenset)):
+            contact_ids = {c for c in contact_id if c}
+        else:
+            contact_ids = {contact_id} if contact_id else set()
 
         def line_ok(l):
+            if not include_transfers and str(l.get("is_transfer", "0")) == "1":
+                return False
             if cat_set is not None and l.get("category_id") not in cat_set:
                 return False
             if uncategorized and not is_uncategorized(l, ids):
                 return False
-            if class_id and l.get("class_id") != class_id:
+            if class_id == NO_CLASS:
+                if l.get("class_id"):
+                    return False
+            elif class_id and l.get("class_id") != class_id:
                 return False
             return True
 
@@ -1469,10 +1484,13 @@ class Database(ReceiptsMixin, AssetsMixin, ComputedMixin, SalesMixin, InventoryM
             if not include_transfers and all(
                     str(l.get("is_transfer", "0")) == "1" for l in lines):
                 continue
-            if contact_id and (head.get("contact_id") or "") != contact_id:
-                continue
-            if payee_l and (head.get("payee") or "").lower().strip() != payee_l:
-                continue
+            if contact_ids or payee_l:
+                cid = head.get("contact_id") or ""
+                by_contact = bool(cid) and cid in contact_ids
+                by_payee = (bool(payee_l) and not cid
+                            and (head.get("payee") or "").lower().strip() == payee_l)
+                if not (by_contact or by_payee):
+                    continue
             if needle and not any(
                     needle in (x or "").lower()
                     for x in [head.get("payee"), head.get("notes")]
