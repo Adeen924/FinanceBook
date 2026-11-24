@@ -20,6 +20,7 @@ FinanceBook recognises these exports from the file's header row and reads the si
 | Bank of America | checking | Signed amount (negative = money out) | Summary block (beginning / ending balance, totals) above the header is skipped<br>"Beginning balance as of …" row with no amount is skipped | N | `tests/fixtures/bank_csv/bankofamerica_checking.csv` | 1.16.0 |
 | Bank of America | credit card | Signed amount (negative = money out) | Reference Number and Address are not imported | N | `tests/fixtures/bank_csv/bankofamerica_credit.csv` | 1.16.0 |
 | Apple Card | credit card | Purchases positive, payments negative (reversed) | Purchases are positive and payments / credits negative — signs are reversed<br>Payee is the clean Merchant name; the bank's raw Description goes to the memo<br>Type (Purchase / Payment / Credit / Installment) is checked against the sign | N | `tests/fixtures/bank_csv/applecard_credit.csv` | 1.16.0 |
+| BMO (U.S.) | checking | Unsigned amount + type column (Debit / Credit) | BMO U.S. (formerly BMO Harris / Bank of the West) checking export: Type is "DDA Debit" / "DDA Deposit" / "DDA Credit"<br>Amount is signed, and the CREDIT/DEBIT column decides the sign anyway, so an export with unsigned amounts reads right too<br>Runs of spaces in descriptions ("PPD  ACME PAYROLL") are collapsed<br>Reference numbers, Currency and Original Amount are not imported<br>Lines of text above the header row are skipped; YYYYMMDD dates are read<br>Windows (CRLF) line endings | Y | `tests/fixtures/bank_csv/bmo_checking.csv` | 1.19.0 |
 
 ## Adding a bank
 

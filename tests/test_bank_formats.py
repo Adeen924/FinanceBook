@@ -42,6 +42,21 @@ def _chase_credit_expected():
 
 # fixture -> (registry id, [(date, amount, payee, memo), ...] for every row)
 FIXTURE_EXPECTATIONS = {
+    "bmo_checking.csv": ("bmo_checking", [
+        ('2026-11-10', -500.0, 'ZELLE TO ALEX SAMPLE', ''),
+        ('2026-11-10', 500.0, 'PPD JORDAN SAMPLE CO PAYROLL', ''),
+        ('2026-11-04', -550.0, 'ZELLE TO ALEX SAMPLE', ''),
+        ('2026-11-03', 550.0, 'PPD JORDAN SAMPLE CO PAYROLL', ''),
+        ('2026-11-02', -3000.0, 'ZELLE TO ALEX SAMPLE', ''),
+        ('2026-11-02', -500.0, 'ZELLE TO JORDAN SAMPLE', ''),
+        ('2026-11-02', -370.0, 'ZELLE TO ALEX SAMPLE', ''),
+        ('2026-10-30', -650.0, 'ZELLE TO ALEX SAMPLE', ''),
+        ('2026-10-30', -550.0, 'ZELLE TO JORDAN SAMPLE', ''),
+        ('2026-10-30', -300.0, 'ZELLE TO ALEX SAMPLE', ''),
+        ('2026-10-29', -250.0, 'ZELLE TO CASEY EXAMPLE', ''),
+        ('2026-10-16', 5600.0, 'DDA DEPOSIT', ''),
+        ('2026-10-13', 25.0, 'PC TRANSFER CREDIT', ''),
+    ]),
     "applecard_credit.csv": ("applecard_credit", [
         ('2026-10-30', -42.18, "Trader Joe's", "TRADER JOE'S #021 8657 VILLA LA JOLLA DR SAN DIEGO 92037 CA USA"),
         ('2026-10-29', 500.0, 'Ach Deposit Internet Transfer From Account Ending In 9921', 'ACH DEPOSIT INTERNET TRANSFER FROM ACCOUNT ENDING IN 9921'),

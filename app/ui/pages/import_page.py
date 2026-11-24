@@ -2,7 +2,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QComboBox, QLabel, QFileDialog, QMessageBox,
                               QGroupBox, QFormLayout, QLineEdit,
-                              QHeaderView, QTableWidgetItem, QCheckBox)
+                              QHeaderView, QTableWidgetItem, QCheckBox, QGridLayout)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 from ui.widgets import PageTitle, DataTable, fmt_date
@@ -74,31 +74,44 @@ class ImportPage(QWidget):
         grp1_lay.addRow("File:", file_row)
         lay.addWidget(grp1)
 
-        # ── Step 2: Column mapping (CSV/XLSX only) ──
+        # ── Step 2 (column mapping, two columns) and Step 3's controls share
+        # one line so the preview table starts higher (v1.19).
+        step23 = QHBoxLayout()
+        step23.setSpacing(16)
         self._col_grp = QGroupBox(
             "Step 2 — Column Mapping  (CSV/XLSX only, leave blank to auto-detect)")
-        col_lay = QFormLayout(self._col_grp)
-        col_lay.setSpacing(8)
+        col_lay = QGridLayout(self._col_grp)
+        col_lay.setHorizontalSpacing(10)
+        col_lay.setVerticalSpacing(8)
         self._col_date   = QLineEdit(); self._col_date.setPlaceholderText("e.g. Date")
         self._col_payee  = QLineEdit(); self._col_payee.setPlaceholderText("e.g. Description")
         self._col_amount = QLineEdit(); self._col_amount.setPlaceholderText(
-            "e.g. Amount  (or leave blank and use Debit/Credit below)")
+            "e.g. Amount  (or use Debit / Credit)")
         self._col_debit  = QLineEdit(); self._col_debit.setPlaceholderText("e.g. Debit / Withdrawal")
         self._col_credit = QLineEdit(); self._col_credit.setPlaceholderText("e.g. Credit / Deposit")
-        col_lay.addRow("Date column:",   self._col_date)
-        col_lay.addRow("Payee column:",  self._col_payee)
-        col_lay.addRow("Amount column:", self._col_amount)
-        col_lay.addRow("Debit column:",  self._col_debit)
-        col_lay.addRow("Credit column:", self._col_credit)
+        # Left: Date / Payee / Amount.  Right: Debit / Credit.
+        for row, (label, edit) in enumerate((("Date column:", self._col_date),
+                                             ("Payee column:", self._col_payee),
+                                             ("Amount column:", self._col_amount))):
+            col_lay.addWidget(QLabel(label), row, 0)
+            col_lay.addWidget(edit, row, 1)
+        for row, (label, edit) in enumerate((("Debit column:", self._col_debit),
+                                             ("Credit column:", self._col_credit))):
+            col_lay.addWidget(QLabel(label), row, 2)
+            col_lay.addWidget(edit, row, 3)
+        col_lay.setColumnStretch(1, 1)
+        col_lay.setColumnStretch(3, 1)
         self._col_grp.setEnabled(False)
-        lay.addWidget(self._col_grp)
+        step23.addWidget(self._col_grp, 1)
 
-        # ── Step 3: Preview & Import ──
-        step3_hdr = QHBoxLayout()
+        # ── Step 3: Preview & Import (title + controls, right of Step 2) ──
+        self._step3_box = QWidget()
+        s3 = QVBoxLayout(self._step3_box)
+        s3.setContentsMargins(0, 6, 0, 0)
+        s3.setSpacing(8)
         self._preview_label = QLabel("Step 3 — Preview & Import")
         self._preview_label.setStyleSheet("font-weight:bold; font-size:14px;")
-        step3_hdr.addWidget(self._preview_label)
-        step3_hdr.addStretch()
+        s3.addWidget(self._preview_label)
 
         self._flip = QCheckBox("Flip all signs")
         self._flip.setToolTip(
@@ -107,18 +120,24 @@ class ImportPage(QWidget):
             "purchase as 42.10), tick this. FinanceBook remembers the choice for "
             "this account and bank format.")
         self._flip.toggled.connect(self._flip_toggled)
-        step3_hdr.addWidget(self._flip)
+        s3.addWidget(self._flip)
 
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
         parse_btn = QPushButton("Parse File")
         parse_btn.clicked.connect(self._parse)
-        step3_hdr.addWidget(parse_btn)
+        self._parse_btn = parse_btn
+        btn_row.addWidget(parse_btn)
 
         self._import_btn = QPushButton("Import All")
         self._import_btn.setObjectName("Success")
         self._import_btn.clicked.connect(self._import)
         self._import_btn.setEnabled(False)
-        step3_hdr.addWidget(self._import_btn)
-        lay.addLayout(step3_hdr)
+        btn_row.addWidget(self._import_btn)
+        s3.addLayout(btn_row)
+        s3.addStretch()
+        step23.addWidget(self._step3_box, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(step23)
 
         summary = QHBoxLayout()
         self._format_label = QLabel("")
@@ -564,7 +583,7 @@ class ImportPage(QWidget):
                 cat_name = cats.get(t.get("category_id", ""), "")
                 if t.get("_transfer_to"):
                     cat_name = "⇄ Transfer · " + accts.get(t["_transfer_to"], "account")
-                self._table.set_item(row, 0, t.get("date", ""))
+                self._table.set_item(row, 0, fmt_date(t.get("date", "")))
                 text = t.get("payee") or t.get("memo", "—")
                 if t.get("payee") and t.get("memo"):
                     text = f"{t['payee']}  ·  {t['memo']}"

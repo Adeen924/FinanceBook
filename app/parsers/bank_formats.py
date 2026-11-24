@@ -226,6 +226,22 @@ REGISTRY: tuple[BankFormat, ...] = (
                 "Payee is the clean Merchant name; the bank's raw Description goes to the memo",
                 "Type (Purchase / Payment / Credit / Installment) is checked against the sign"),
         verified=False, fixture="applecard_credit.csv"),
+    BankFormat(
+        id="bmo_checking", bank="BMO (U.S.)", kind="checking",
+        headers=("posted date", "description", "amount", "currency",
+                 "transaction reference number", "fi transaction reference", "type",
+                 "credit/debit", "original amount"),
+        date="posted date", payee="description", amount="amount", type="credit/debit",
+        date_formats=("%m/%d/%Y", "%Y%m%d", "%Y-%m-%d"), sign=TYPE_DECIDES,
+        quirks=("BMO U.S. (formerly BMO Harris / Bank of the West) checking export: "
+                "Type is \"DDA Debit\" / \"DDA Deposit\" / \"DDA Credit\"",
+                "Amount is signed, and the CREDIT/DEBIT column decides the sign anyway, "
+                "so an export with unsigned amounts reads right too",
+                "Runs of spaces in descriptions (\"PPD  ACME PAYROLL\") are collapsed",
+                "Reference numbers, Currency and Original Amount are not imported",
+                "Lines of text above the header row are skipped; YYYYMMDD dates are read",
+                "Windows (CRLF) line endings"),
+        verified=True, fixture="bmo_checking.csv", added="1.19.0"),
 )
 
 BY_ID = {f.id: f for f in REGISTRY}
