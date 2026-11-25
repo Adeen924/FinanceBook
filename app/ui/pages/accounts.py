@@ -21,6 +21,7 @@ from PyQt6.QtGui import QColor, QFont, QShortcut, QKeySequence, QBrush
 from ui.widgets import PageTitle, DataTable, SecondaryButton
 from ui.styles import SUCCESS, DANGER, ACCENT, MUTED
 from utils import chart_of_accounts as COA
+from utils.platform_paths import shortcut_label
 
 ROW_H = 44  # px — tall enough for buttons + padding
 
@@ -133,7 +134,7 @@ class AccountsPage(QWidget):
         search_row.setSpacing(6)
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search accounts — name, type, institution or "
-                                        "Schedule C line  (Ctrl+F)")
+                                        "Schedule C line  (" + shortcut_label("Ctrl+F") + ")")
         self._search.setToolTip("Filters the Chart of Accounts as you type")
         self._search.textChanged.connect(self._apply_search)
         search_row.addWidget(self._search, 1)

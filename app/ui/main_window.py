@@ -1,6 +1,7 @@
 """Main application window — sidebar navigation + stacked content pages."""
 import os
 import re
+import sys
 import time
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
@@ -204,8 +205,70 @@ class MainWindow(QMainWindow):
         self._status_timer.timeout.connect(
             lambda: self._status_label.setText(f"● {os.path.basename(self.db.db_path)}"))
         self._build()
+        if sys.platform == "darwin":
+            self._build_mac_menu()
         self._update_lock_state()
         self._nav_to("Dashboard")
+
+    def _build_mac_menu(self):
+        """macOS menu bar. Qt moves actions with these roles into the
+        application menu ("FinanceBook ▸ About / Settings… / Quit"), and the
+        standard keys become ⌘, and ⌘Q. Windows has no menu bar."""
+        from PyQt6.QtGui import QAction, QKeySequence
+        bar = self.menuBar()
+        app_menu = bar.addMenu("FinanceBook")
+
+        about = QAction("About FinanceBook", self)
+        about.setMenuRole(QAction.MenuRole.AboutRole)
+        about.triggered.connect(self._show_about)
+        app_menu.addAction(about)
+
+        updates = QAction("Check for Updates…", self)
+        updates.setMenuRole(QAction.MenuRole.ApplicationSpecificRole)
+        updates.triggered.connect(self._check_updates_now)
+        app_menu.addAction(updates)
+
+        prefs = QAction("Settings…", self)
+        prefs.setMenuRole(QAction.MenuRole.PreferencesRole)
+        prefs.setShortcut(QKeySequence(QKeySequence.StandardKey.Preferences))
+        prefs.triggered.connect(lambda: self._nav_to("Settings"))
+        app_menu.addAction(prefs)
+
+        quit_act = QAction("Quit FinanceBook", self)
+        quit_act.setMenuRole(QAction.MenuRole.QuitRole)
+        quit_act.setShortcut(QKeySequence(QKeySequence.StandardKey.Quit))
+        quit_act.triggered.connect(self.close)
+        app_menu.addAction(quit_act)
+
+        win_menu = bar.addMenu("Window")
+        mini = QAction("Minimize", self)
+        mini.setShortcut(QKeySequence("Ctrl+M"))        # ⌘M
+        mini.triggered.connect(self.showMinimized)
+        win_menu.addAction(mini)
+        self._mac_actions = {"about": about, "updates": updates, "settings": prefs,
+                             "quit": quit_act, "minimize": mini}
+
+    def _show_about(self):
+        from updater import read_local_version
+        QMessageBox.about(self, "About FinanceBook",
+                          f"<b>FinanceBook</b> {read_local_version()}<br><br>"
+                          "Personal and small-business bookkeeping.<br>"
+                          "github.com/Adeen924/FinanceBook")
+
+    def _check_updates_now(self):
+        from PyQt6.QtWidgets import QApplication
+        from updater import check_for_updates, _show_update_dialog, read_local_version
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            info = check_for_updates()
+        finally:
+            QApplication.restoreOverrideCursor()
+        if info is None:
+            QMessageBox.information(self, "Check for Updates",
+                                    f"FinanceBook {read_local_version()} is up to date "
+                                    "(or GitHub couldn't be reached).")
+        else:
+            _show_update_dialog(self, info)
 
     def _build(self):
         root = GlassBackground()

@@ -66,10 +66,10 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 # The app icon ships inside app/ (so it's swappable and available at runtime);
 # fall back to a repo-root assets/icon.ico if you prefer to keep it there.
-if os.path.exists("app\\assets\\icon.ico"):
-    _icon = "app\\assets\\icon.ico"
-elif os.path.exists("assets\\icon.ico"):
-    _icon = "assets\\icon.ico"
+if os.path.exists(os.path.join("app", "assets", "icon.ico")):
+    _icon = os.path.join("app", "assets", "icon.ico")
+elif os.path.exists(os.path.join("assets", "icon.ico")):
+    _icon = os.path.join("assets", "icon.ico")
 else:
     _icon = None
 

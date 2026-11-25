@@ -8,16 +8,15 @@ def _get_data_dir() -> str:
     Return FinanceBook's own settings folder, and the suggested default
     location for a new database (the user can pick any other folder instead).
 
-    - Installed build (PyInstaller frozen):  %APPDATA%\\FinanceBook\\
-      This keeps app settings in a writable, user-owned location so they
+    - Installed build (PyInstaller frozen):  %APPDATA%\\FinanceBook\\ on
+      Windows, ~/Library/Application Support/FinanceBook on a Mac (see
+      utils.platform_paths). A writable, user-owned location, so settings
       survive reinstalls and aren't blocked by UAC / Program Files rules.
     - Running from source (development):  same folder as main.py
     """
     if getattr(sys, "frozen", False):
-        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-        path = os.path.join(appdata, "FinanceBook")
-        os.makedirs(path, exist_ok=True)
-        return path
+        from utils.platform_paths import app_data_dir
+        return app_data_dir()
     return os.path.dirname(os.path.abspath(__file__))
 
 
@@ -134,7 +133,102 @@ def _offer_update_for_newer_database(db_path: str):
             "github.com/Adeen924/FinanceBook/releases.")
 
 
+_SELF_TEST_CSV = (
+    "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
+    "DEBIT,11/12/2026,\"COSTCO WHSE #1234\",-84.12,DEBIT_CARD,1915.88,,\n"
+    "CREDIT,11/10/2026,\"PAYROLL ACME INC\",2000.00,ACH_CREDIT,2000.00,,\n")
+
+
+def self_test() -> int:
+    """
+    `FinanceBook --self-test`: a smoke test of the installed program. Uses a
+    temporary database and settings folder (the real ones are never touched),
+    opens the main window offscreen, visits every page, imports a small bank
+    CSV, runs the Profit & Loss report and exits 0 — or prints the failure and
+    exits 1. FINANCEBOOK_SELFTEST_SHOTS=<folder> also saves a picture of each page.
+    """
+    import tempfile
+    import traceback
+    tmp = tempfile.mkdtemp(prefix="FinanceBook-selftest-")
+    os.environ["FINANCEBOOK_SETTINGS_DIR"] = os.path.join(tmp, "settings")
+    shots = os.environ.get("FINANCEBOOK_SELFTEST_SHOTS", "")
+    if not shots:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    step = "start"
+    try:
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        app.setApplicationName("FinanceBook")
+        # Never block on a dialog: every message box answers with its default.
+        for name in ("information", "warning", "critical", "question"):
+            setattr(QMessageBox, name, staticmethod(
+                lambda *a, **k: QMessageBox.StandardButton.Yes))
+        QMessageBox.exec = lambda self: int(QMessageBox.StandardButton.Yes)
+
+        step = "theme"
+        from ui.styles import apply_theme
+        apply_theme(app)
+
+        step = "database"
+        from sheets.client import Database
+        from utils import nav_config
+        db = Database(os.path.join(tmp, "selftest.db"), book_type="business")
+        db.set_setting("database_name", "Self-test")
+        nav_config.save_modules(db, nav_config.ALL_MODULES)
+
+        step = "import CSV"
+        from parsers.spreadsheet import parse_spreadsheet
+        acct = db.save_account({"name": "Checking", "type": "checking"})["id"]
+        rows, _warn = parse_spreadsheet(_SELF_TEST_CSV.encode("utf-8"),
+                                        "chase_checking.csv", acct)
+        if len(rows) != 2:
+            raise RuntimeError(f"CSV import parsed {len(rows)} rows, expected 2")
+        db.import_transactions(rows)
+        if len(db.get_transactions()) != 2:
+            raise RuntimeError("imported transactions were not saved")
+
+        step = "main window"
+        from ui.main_window import MainWindow, _page_constructors
+        window = MainWindow(db, None)
+        window.show()
+        app.processEvents()
+        if shots:
+            os.makedirs(shots, exist_ok=True)
+        for name in _page_constructors():
+            step = f"page {name}"
+            window._nav_to(name)
+            app.processEvents()
+            if shots:
+                window.grab().save(os.path.join(shots, name.replace(" ", "_")
+                                                .replace("&", "and") + ".png"))
+            print(f"  ok  page {name}")
+
+        step = "report"
+        rp = window.page("Reports")
+        rp.refresh()
+        rp._run()
+        app.processEvents()
+        print("  ok  Profit & Loss report")
+
+        step = "close"
+        window.close()
+        app.processEvents()
+        from updater import read_local_version
+        print(f"  ok  version {read_local_version()} from {os.path.dirname(os.path.abspath(__file__))}")
+        print("SELF-TEST OK")
+        return 0
+    except Exception:
+        print(f"SELF-TEST FAILED at {step}:")
+        traceback.print_exc()
+        return 1
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
     from PyQt6.QtWidgets import QApplication, QMessageBox
     from PyQt6.QtGui import QIcon
     from PyQt6.QtCore import Qt
@@ -165,6 +259,17 @@ def main():
 
     from ui.styles import apply_theme
     apply_theme(app)
+
+    # macOS launcher: an updated app/ that got this far (its code imports and
+    # Qt runs) has started; from here a crash in main() is reported to the
+    # launcher by the exception itself. Clearing it now means quitting at the
+    # welcome or "database not found" dialog isn't mistaken for a failure.
+    marker = os.environ.pop("FINANCEBOOK_BOOT_MARKER", "")
+    if marker:
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
 
     from db_config import get_active_db_path, register_database, DEFAULT_DB_PATH
 
@@ -260,6 +365,10 @@ def main():
     from ui.main_window import MainWindow
     window = MainWindow(db, lock)
     window.show()
+    # macOS launcher: a rolled-back update is explained here (see launcher.py).
+    note = os.environ.pop("FINANCEBOOK_LAUNCH_NOTE", "")
+    if note:
+        QMessageBox.warning(window, "Update Rolled Back", note)
     if posted:
         QMessageBox.information(window, "Recurring Items Posted",
                                 f"{len(posted)} recurring transaction(s) / bill(s) that came due "

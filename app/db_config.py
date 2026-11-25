@@ -18,8 +18,8 @@ def _settings_dir() -> str:
     if override:
         path = override
     elif getattr(sys, "frozen", False):
-        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-        path = os.path.join(appdata, "FinanceBook")
+        from utils.platform_paths import app_data_dir
+        path = app_data_dir(create=False)
     else:
         path = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(path, exist_ok=True)
@@ -56,7 +56,16 @@ def get_known_databases() -> list:
 
 
 def _same_path(a: str, b: str) -> bool:
-    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+    if os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b)):
+        return True
+    # A Mac's disk is usually case-insensitive too, but normcase() only folds
+    # case on Windows: ask the file system whether both names are one file.
+    if sys.platform == "darwin":
+        try:
+            return os.path.samefile(a, b)
+        except OSError:
+            return False
+    return False
 
 
 def register_database(path: str, make_active: bool = False):
@@ -169,4 +178,4 @@ def ai_settings() -> dict:
 
 def set_ai_api_key(key: str):
     from utils.secret_store import protect
-    set_value("ai_receipts_key", protect(key.strip()))
+    set_value("ai_receipts_key", protect(key.strip(), name="ai_receipts_key"))

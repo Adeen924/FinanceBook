@@ -26,11 +26,18 @@ _PLACEHOLDER_ATTRS = (_FILE_ATTRIBUTE_OFFLINE | _FILE_ATTRIBUTE_RECALL_ON_OPEN
 
 _SQLITE_HEADER = b"SQLite format 3\x00"
 
-# OneDrive names a conflict copy "<name>-<COMPUTERNAME>.db" (computer names are
-# upper case, e.g. DESKTOP-AB12CD, optionally followed by -2, -3…); Google
-# Drive uses "<name> (1).db".
+# macOS marks a cloud file whose contents are still in the cloud (iCloud Drive,
+# OneDrive / Google Drive through File Provider) with this st_flags bit.
+_SF_DATALESS = 0x40000000
+
+# OneDrive names a conflict copy "<name>-<COMPUTERNAME>.db" (Windows computer
+# names are upper case, e.g. DESKTOP-AB12CD, optionally followed by -2, -3…;
+# a Mac's are mixed case, e.g. Adeens-MacBook-Pro); Google Drive uses
+# "<name> (1).db" and iCloud Drive "<name> 2.db".
 _MACHINE_SUFFIX = re.compile(r"^(?=[A-Z0-9_-]*[A-Z])[A-Z0-9][A-Z0-9_-]{2,}(-\d+)?$")
+_MAC_MACHINE_SUFFIX = re.compile(r"^([A-Za-z0-9][A-Za-z0-9'’_ -]{2,}?)(-\d+)?$")
 _NUMBERED_SUFFIX = re.compile(r"^ \(\d+\)$")
+_ICLOUD_SUFFIX = re.compile(r"^ \d{1,2}$")
 
 SYNC_HINT = ("If the database is in OneDrive, wait for OneDrive to finish syncing, or "
              "right-click its folder and choose “Always keep on this device”, then try again.")
@@ -51,15 +58,18 @@ class ConnectCheck:
 
 
 def onedrive_dir() -> str:
-    """The user's OneDrive folder if one is set up, else their home folder."""
-    for var in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
-        path = os.environ.get(var)
-        if path and os.path.isdir(path):
-            return path
-    return os.path.expanduser("~")
+    """The user's OneDrive folder if one is set up (on a Mac, else another
+    synced folder such as iCloud Drive), else their home folder."""
+    from utils.platform_paths import default_cloud_dir
+    return default_cloud_dir()
 
 
 def is_cloud_placeholder(path: str) -> bool:
+    if sys.platform == "darwin":
+        try:
+            return bool(getattr(os.stat(path), "st_flags", 0) & _SF_DATALESS)
+        except OSError:
+            return False
     if sys.platform != "win32":
         return False
     try:
@@ -69,9 +79,25 @@ def is_cloud_placeholder(path: str) -> bool:
     return bool(attrs & _PLACEHOLDER_ATTRS)
 
 
+def _looks_like_mac_name(name: str) -> bool:
+    """A Mac's computer name as OneDrive writes it: mixed case, and either
+    naming a Mac model (MacBook, iMac, Mac-mini…) or this very computer."""
+    m = _MAC_MACHINE_SUFFIX.match(name)
+    if not m:
+        return False
+    base = m.group(1)
+    if "mac" in base.lower():
+        return True
+    me = db_lock.machine_name().replace(" ", "-").replace("'", "").replace("’", "")
+    return base.lower() == me.lower()
+
+
 def _looks_like_copy_suffix(suffix: str) -> bool:
-    return bool(_NUMBERED_SUFFIX.match(suffix)) or (
-        suffix.startswith("-") and bool(_MACHINE_SUFFIX.match(suffix[1:])))
+    if _NUMBERED_SUFFIX.match(suffix) or _ICLOUD_SUFFIX.match(suffix):
+        return True
+    if not suffix.startswith("-"):
+        return False
+    return bool(_MACHINE_SUFFIX.match(suffix[1:])) or _looks_like_mac_name(suffix[1:])
 
 
 def conflict_original(path: str) -> str:

@@ -46,8 +46,10 @@ RADIUS_PANEL   = 16
 RADIUS_INPUT   = 10
 GUTTER         = 20
 
-FONT_STACK     = '"Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", sans-serif'
-FONT_DISPLAY   = '"Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", sans-serif'
+# Segoe on Windows, the system font on a Mac (see utils.platform_paths).
+from utils.platform_paths import css_font_stack as _css_font_stack
+FONT_STACK     = _css_font_stack()
+FONT_DISPLAY   = _css_font_stack(display=True)
 
 # ── Legacy names other modules import ────────────────────────────────────────
 ACCENT       = PRIMARY
@@ -784,13 +786,21 @@ def apply_theme(app) -> None:
     """Install fonts, palette and stylesheet on the QApplication."""
     from PyQt6.QtGui import QFont, QFontDatabase, QPalette, QColor
 
-    families = set(QFontDatabase.families())
-    for fam in ("Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI"):
-        if fam in families:
-            font = QFont(fam, 10)
-            break
+    from utils.platform_paths import ui_font_families, base_font_point_size, is_mac
+    size = base_font_point_size()
+    if is_mac():
+        # The system font isn't listed by name; ask Qt for it directly.
+        from PyQt6.QtGui import QFontDatabase as _FDB
+        font = _FDB.systemFont(_FDB.SystemFont.GeneralFont)
+        font.setPointSize(size)
     else:
-        font = QFont("Segoe UI", 10)
+        families = set(QFontDatabase.families())
+        for fam in ui_font_families():
+            if fam in families:
+                font = QFont(fam, size)
+                break
+        else:
+            font = QFont("Segoe UI", size)
     font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     app.setFont(font)
 

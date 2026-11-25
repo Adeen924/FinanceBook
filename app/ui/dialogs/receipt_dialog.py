@@ -90,6 +90,13 @@ class ReceiptReviewDialog(QDialog):
                             else "Review Receipt")
         self.resize(1480, 800)
         self.setMinimumSize(1040, 620)
+        # Fit smaller screens (e.g. a 13" laptop): never open wider/taller than it.
+        scr = self.screen()
+        if scr is not None:
+            g = scr.availableGeometry()
+            if g.width() < 1520 or g.height() < 840:
+                self.resize(max(1040, min(1480, g.width() - 40)),
+                            max(620, min(800, g.height() - 40)))
         self._pack_notes: list[str] = []
         self._pack_declined: set = set()
         items = db.get_receipt_items(receipt["id"])

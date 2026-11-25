@@ -15,6 +15,13 @@ Design (see UPDATE_PLAN.md):
     never touched, so Windows' self-overwrite lock problem disappears.
   - A "runtime update" (rare: changed deps / launcher) ships no app payload; we
     fall back to opening the release page for a full re-download.
+  - macOS (personal build from build_mac.sh): the SAME app-<ver>.zip is unpacked
+    to ~/Library/Application Support/FinanceBook/app.new, swapped in as …/app
+    (previous one kept as …/app.bak) and the app reopens with `open -n`. The
+    launcher prefers that folder when it is newer than the copy inside the
+    .app; nothing inside the .app is written. A release whose requirements.txt
+    differs from the one the .app was built with needs a rebuild instead
+    (update_mac.sh). No PowerShell is involved.
 
 The check runs on a daemon thread so it never blocks the GUI. Any failure
 (no internet, rate limit, bad data) is swallowed and the app continues normally.
@@ -58,6 +65,93 @@ def read_local_version() -> str:
 def _is_frozen() -> bool:
     """True when running from the packaged thin launcher (PyInstaller)."""
     return bool(getattr(sys, "frozen", False))
+
+
+def _is_mac() -> bool:
+    return sys.platform == "darwin"
+
+
+# ── macOS personal build ─────────────────────────────────────────────────────────
+
+MAC_REBUILD_MESSAGE = ("This update needs a rebuild: run update_mac.sh in your FinanceBook "
+                       "folder (in Terminal: cd to the folder, then ./update_mac.sh).")
+
+
+def mac_support_dir() -> str:
+    return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "FinanceBook")
+
+
+def mac_bundle_path() -> str:
+    """The running FinanceBook.app (executable is …/FinanceBook.app/Contents/MacOS/x)."""
+    exe = os.path.abspath(sys.executable)
+    bundle = os.path.dirname(os.path.dirname(os.path.dirname(exe)))
+    return bundle if bundle.endswith(".app") else "/Applications/FinanceBook.app"
+
+
+def _norm_requirements(text: str) -> list[str]:
+    out = []
+    for ln in (text or "").splitlines():
+        ln = ln.split("#", 1)[0].strip().replace(" ", "").lower()
+        if ln:
+            out.append(ln)
+    return sorted(out)
+
+
+def mac_needs_rebuild(tag: str, built_requirements: str | None = None,
+                      fetch=None) -> bool:
+    """
+    True when the release's requirements.txt differs from the one this .app
+    was built with (Contents/Resources/requirements.txt, copied there by
+    build_mac.sh): new libraries need a new build, not just a new app/.
+    Unknown either way → False (an app/ that then fails to start is rolled
+    back by the launcher).
+    """
+    if built_requirements is None:
+        path = os.path.join(mac_bundle_path(), "Contents", "Resources", "requirements.txt")
+        try:
+            with open(path, encoding="utf-8") as f:
+                built_requirements = f.read()
+        except OSError:
+            return False
+    try:
+        if fetch is None:
+            import requests
+            url = (f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/requirements.txt")
+            r = requests.get(url, timeout=_REQUEST_TIMEOUT, headers={"User-Agent": _USER_AGENT})
+            r.raise_for_status()
+            release_requirements = r.text
+        else:
+            release_requirements = fetch(tag)
+    except Exception:
+        return False
+    return _norm_requirements(release_requirements) != _norm_requirements(built_requirements)
+
+
+def mac_install_app(support: str, new_app_dir: str) -> str:
+    """
+    Swap a verified, unpacked app/ into place: …/app → …/app.bak, then
+    …/app.new → …/app. Restores the previous app/ if the swap fails.
+    Returns the installed path.
+    """
+    import shutil
+    if not os.path.isfile(os.path.join(new_app_dir, "main.py")):
+        raise RuntimeError("Update payload is missing main.py — aborting.")
+    target = os.path.join(support, "app")
+    backup = os.path.join(support, "app.bak")
+    shutil.rmtree(backup, ignore_errors=True)
+    had_old = os.path.isdir(target)
+    if had_old:
+        os.replace(target, backup)
+    try:
+        os.replace(new_app_dir, target)
+    except OSError:
+        if had_old:
+            shutil.rmtree(target, ignore_errors=True)
+            os.replace(backup, target)
+        raise
+    # A rolled-back attempt at an older update is no longer relevant.
+    shutil.rmtree(target + ".failed", ignore_errors=True)
+    return target
 
 
 # ── Core check ────────────────────────────────────────────────────────────────────
@@ -113,7 +207,10 @@ def check_for_updates() -> dict | None:
                 }
                 break
 
+        needs_rebuild = (_is_mac() and _is_frozen()
+                         and (app_asset is None or mac_needs_rebuild(tag)))
         return {
+            "needs_rebuild": needs_rebuild,
             "latest_version": latest_str,
             "tag": tag,
             "notes": (data.get("body") or "").strip() or "No release notes provided.",
@@ -137,7 +234,9 @@ def _show_update_dialog(parent, info: dict) -> None:
 
     latest = info.get("latest_version", "Unknown")
     notes = info.get("notes", "")
-    can_one_click = bool(info.get("app_asset")) and _is_frozen()
+    can_one_click = (bool(info.get("app_asset")) and _is_frozen()
+                     and not info.get("needs_rebuild"))
+    mac_rebuild = _is_mac() and not can_one_click
 
     dlg = QDialog(parent)
     dlg.setWindowTitle("Update Available")
@@ -164,7 +263,7 @@ def _show_update_dialog(parent, info: dict) -> None:
     lay.addWidget(notes_label)
 
     if not can_one_click:
-        hint = QLabel(
+        hint = QLabel(MAC_REBUILD_MESSAGE if mac_rebuild else
             "This is a major update and must be downloaded manually.")
         hint.setWordWrap(True)
         hint.setObjectName("Muted")
@@ -182,11 +281,16 @@ def _show_update_dialog(parent, info: dict) -> None:
         action_btn = QPushButton("Install Update")
         action_btn.clicked.connect(
             lambda: (dlg.accept(), _perform_update(parent, info)))
+    elif mac_rebuild:
+        # No Mac download exists: the user rebuilds from the repo instead.
+        later_btn.setText("OK")
+        action_btn = None
     else:
         action_btn = QPushButton("Open Download Page")
         action_btn.clicked.connect(
             lambda: (webbrowser.open(info.get("html_url", "")), dlg.accept()))
-    btn_row.addWidget(action_btn)
+    if action_btn is not None:
+        btn_row.addWidget(action_btn)
 
     lay.addLayout(btn_row)
     dlg.exec()
@@ -206,6 +310,10 @@ def _perform_update(parent, info: dict) -> None:
     staging_root = os.path.join(_temp_dir(), "FinanceBook_update_files")
     zip_path = os.path.join(staging_root, asset["name"])
     new_app_dir = os.path.join(staging_root, "app_new")
+    if _is_mac():
+        # Unpack straight beside the folder it replaces (same volume → atomic rename).
+        new_app_dir = os.path.join(mac_support_dir(), "app.new")
+        _safe_rmtree(new_app_dir)
 
     progress = QProgressDialog("Downloading update…", "Cancel", 0, 100, parent)
     progress.setWindowTitle("Updating FinanceBook")
@@ -252,7 +360,10 @@ def _perform_update(parent, info: dict) -> None:
     def _on_done():
         _cleanup()
         try:
-            _launch_helper_and_exit(parent, new_app_dir)
+            if _is_mac():
+                _mac_swap_and_relaunch(parent, new_app_dir)
+            else:
+                _launch_helper_and_exit(parent, new_app_dir)
         except Exception as e:
             QMessageBox.warning(parent, "Update Failed",
                                 f"Could not finish the update:\n\n{e}")
@@ -260,6 +371,8 @@ def _perform_update(parent, info: dict) -> None:
     def _on_failed(msg):
         _cleanup()
         _safe_rmtree(staging_root)
+        if _is_mac():
+            _safe_rmtree(new_app_dir)
         if msg:  # blank means the user cancelled — no need to nag
             QMessageBox.warning(
                 parent, "Update Failed",
@@ -372,6 +485,37 @@ def _launch_helper_and_exit(parent, new_app_dir: str) -> None:
         pass
 
     # Quit cleanly so the .py files unlock for the helper.
+    app = QApplication.instance()
+    if app is not None:
+        app.quit()
+    os._exit(0)
+
+
+def _mac_swap_and_relaunch(parent, new_app_dir: str) -> None:
+    """macOS: swap app.new into Application Support, reopen the .app, quit.
+    The running process already imported its code, so swapping now is safe."""
+    import subprocess
+    from PyQt6.QtWidgets import QApplication, QMessageBox
+
+    mac_install_app(mac_support_dir(), new_app_dir)
+    _safe_rmtree(os.path.join(_temp_dir(), "FinanceBook_update_files"))
+
+    QMessageBox.information(
+        parent, "Restarting to Finish Update",
+        "FinanceBook will now close and reopen on the new version.\n"
+        "Your data is safe — it is stored separately from the app.")
+
+    # Close the database and give up its lock BEFORE the new copy starts.
+    try:
+        if parent is not None and hasattr(parent, "release_database"):
+            parent.release_database()
+        import db_lock
+        db_lock._release_all()
+    except Exception:
+        pass
+    subprocess.Popen(["/usr/bin/open", "-n", mac_bundle_path()], close_fds=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
     app = QApplication.instance()
     if app is not None:
         app.quit()
