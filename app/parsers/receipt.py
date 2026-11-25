@@ -29,6 +29,7 @@ import base64
 import html
 import json
 import re
+import sys
 import zlib
 from datetime import date
 from decimal import Decimal
@@ -46,7 +47,9 @@ _IMAGE_MEDIA = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"
 OCR_EXTS = {".jpg", ".jpeg", ".png", ".gif"}      # what the Windows decoder always reads
 
 MONEY_FIELDS = ("subtotal", "shipping", "discount", "duties", "tax", "tip", "total")
-MSG_IMAGE = "This is an image. Use Read with AI, or type it in."
+MSG_IMAGE = ("Reading text from images isn't available on Mac yet. Use Read with AI, "
+             "or type it in." if sys.platform == "darwin"
+             else "This is an image. Use Read with AI, or type it in.")
 MSG_BAD_PDF = ("This PDF couldn't be read (it may be encrypted or damaged). "
                "Use Read with AI, or type it in.")
 MSG_NO_TEXT_PDF = ("This PDF has no readable text (it may be drawn as shapes). "

@@ -43,3 +43,6 @@ _private_samples/
 
 # Screenshots written by the UI tests (tests/test_dropdowns_ui.py)
 tests/artifacts/
+
+# Mac personal build: local venv
+.venv-mac/

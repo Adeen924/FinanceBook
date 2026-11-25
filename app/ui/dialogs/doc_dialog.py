@@ -12,6 +12,7 @@ from PyQt6.QtGui import QTextDocument, QPdfWriter, QPageSize, QPageLayout
 from ui.widgets import DateField, FilterComboBox, SecondaryButton
 from utils.invoicing import doc_totals, due_date_for
 from utils.money import D, cents, fmt
+from utils.platform_paths import html_font_family
 
 STATUSES = {"invoice": [("draft", "Draft"), ("sent", "Sent"), ("void", "Void")],
             "bill": [("open", "Open"), ("void", "Void")]}
@@ -300,7 +301,7 @@ def invoice_html(db, doc: dict) -> str:
     paid_row = (f"<tr><td colspan='4' align='right'>Paid</td><td align='right'>({fmt(s['paid'])})</td></tr>"
                 if s["paid"] else "")
     return f"""
-    <html><body style="font-family:'Segoe UI',Arial; font-size:10pt; color:#0f1b3d;">
+    <html><body style="font-family:{html_font_family()}; font-size:10pt; color:#0f1b3d;">
     <table width="100%"><tr>
       <td><span style="font-size:20pt; font-weight:700;">{biz}</span><br>{addr}<br>{email}</td>
       <td align="right"><span style="font-size:22pt; color:#2f6bff; font-weight:700;">INVOICE</span><br>

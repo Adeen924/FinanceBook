@@ -12,6 +12,20 @@ import your bank and credit-card activity, sort transactions into categories,
 reconcile against your statements, and print clean Profit & Loss and Balance
 Sheet reports.
 
+## New in v1.20.0: FinanceBook on a Mac (personal build)
+
+- **Runs on macOS** when you build it yourself on your Mac — see
+  [Using FinanceBook on a Mac](#using-financebook-on-a-mac-personal-build). Windows
+  downloads and updates work exactly as before; there is no Mac download.
+- On a Mac, settings live in `~/Library/Application Support/FinanceBook`, your
+  OneDrive, Google Drive and iCloud Drive folders are found automatically, the AI
+  receipt key is kept in the Keychain, the app uses the Mac system font, ⌘
+  shortcuts, and the menu bar has About, Settings… (⌘,), Check for Updates… and Quit (⌘Q).
+- Conflict copies OneDrive makes on a Mac (`finances-Adeens-MacBook-Pro.db`) and
+  iCloud Drive (`finances 2.db`) are now spotted on both systems.
+- Reading text from photos (offline OCR) is Windows-only for now; on a Mac use
+  **Read with AI** or type the receipt in. Text PDFs read the same on both.
+
 ## New in v1.19.0: splits are one transaction, Payees, BMO, report drill-down
 
 > No database-format change and no data is rewritten. If another computer
@@ -691,6 +705,40 @@ When a new version is available, FinanceBook shows an **"Update available"**
 banner when you start it. Click **Install Update** once — the app downloads the
 update, restarts, and reopens on the new version. **Your data is never touched**
 during an update; it lives separately from the app itself.
+
+## Using FinanceBook on a Mac (personal build)
+
+FinanceBook doesn't ship a Mac download, but you can build the app on your own
+Mac in a few minutes. It is built and signed on your computer, so it opens
+without any "unidentified developer" warning, and it keeps updating itself from
+the same GitHub releases as Windows.
+
+1. **Install Apple's free Command Line Tools** (skip if you have Xcode):
+   `xcode-select --install`
+2. **Install Python 3.12** — `brew install python@3.12` with
+   [Homebrew](https://brew.sh), or the installer from python.org.
+3. **Get the code:**
+   `git clone https://github.com/Adeen924/FinanceBook.git ~/FinanceBook`
+4. **Build and install:** `cd ~/FinanceBook && ./build_mac.sh`
+   It builds `FinanceBook.app` for the latest release, checks it, and puts it in
+   **/Applications** (if one is already there you're asked first, and the old
+   copy is kept as `FinanceBook-old.app` until the new one passes its check).
+
+**Updates come automatically.** When a new version is out, FinanceBook offers it
+when it starts (or use **FinanceBook ▸ Check for Updates…**). Click **Install
+Update** and it reopens on the new version — the update is stored in
+`~/Library/Application Support/FinanceBook/app`, never inside the app. If an
+update ever fails to start, FinanceBook goes back to the version you built and
+tells you.
+
+**"This update needs a rebuild"** means the release changed the libraries the
+app is built with. Run `cd ~/FinanceBook && ./update_mac.sh` — it pulls the
+latest code and runs `build_mac.sh` again.
+
+**Sharing one database with a Windows PC through OneDrive:** install OneDrive for
+Mac, then use **Connect Existing Database…** and pick the file in your OneDrive
+folder. The usual rule applies: close FinanceBook on one computer and let
+OneDrive finish syncing before you open it on the other.
 
 ## Questions or problems
 

@@ -1,4 +1,6 @@
 """Settings page — database management and QuickBooks one-time migration."""
+import sys
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QFormLayout, QMessageBox,
@@ -574,8 +576,9 @@ class SettingsPage(QWidget):
             "Text receipts (emails, web pages, text PDFs) are read on your computer. For "
             "photos and scanned PDFs you can let <b>Claude</b> read them: the receipt file "
             "is sent to Anthropic's API using your own API key. Nothing else from your "
-            "books is sent. The key is stored only on this computer (encrypted for your "
-            "Windows account) — never in the database file.")
+            "books is sent. The key is stored only on this computer (" + (
+            "in your Mac's Keychain" if sys.platform == "darwin"
+            else "encrypted for your Windows account") + ") — never in the database file.")
         info.setWordWrap(True)
         info.setTextFormat(Qt.TextFormat.RichText)
         info.setObjectName("Muted")

@@ -47,16 +47,19 @@ def lock_path(db_path: str) -> str:
     return os.path.abspath(db_path) + LOCK_SUFFIX
 
 
+_MACHINE_NAME = None
+
+
 def machine_name() -> str:
     # FINANCEBOOK_MACHINE_NAME is a test-only override for simulating two laptops.
-    name = os.environ.get("FINANCEBOOK_MACHINE_NAME") or os.environ.get("COMPUTERNAME")
-    if not name:
-        try:
-            import socket
-            name = socket.gethostname()
-        except Exception:
-            name = "unknown"
-    return name
+    override = os.environ.get("FINANCEBOOK_MACHINE_NAME")
+    if override:
+        return override
+    global _MACHINE_NAME
+    if _MACHINE_NAME is None:       # a Mac asks scutil; ask once per run
+        from utils.platform_paths import machine_name as _name
+        _MACHINE_NAME = _name()
+    return _MACHINE_NAME
 
 
 def user_name() -> str:

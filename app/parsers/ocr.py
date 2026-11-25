@@ -74,6 +74,15 @@ def available() -> bool:
     return sys.platform == "win32" and bool(_powershell())
 
 
+MAC_UNAVAILABLE = "Reading text from images isn't available on Mac yet."
+
+
+def unavailable_message() -> str:
+    if sys.platform == "darwin":
+        return MAC_UNAVAILABLE
+    return "Offline OCR needs Windows 10 or 11."
+
+
 class _Word:
     __slots__ = ("x", "y", "w", "size", "ch", "rot", "page")
 
@@ -101,7 +110,7 @@ def words_to_text(tsv: str) -> str:
 def ocr_image(path: str, timeout: float = TIMEOUT) -> str:
     """Text of an image file (JPEG/PNG/GIF/BMP/TIFF), laid out in lines."""
     if not available():
-        raise OCRError("Offline OCR needs Windows 10 or 11.")
+        raise OCRError(unavailable_message())
     enc = base64.b64encode(_SCRIPT.encode("utf-16-le")).decode("ascii")
     env = dict(os.environ, FB_OCR_IMAGE=os.path.abspath(path))
     try:

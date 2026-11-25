@@ -81,6 +81,10 @@ jobs:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: FinanceBook ${{ steps.ver.outputs.tag }}
           body: ${{ github.event.inputs.notes }}
+          # A version like 1.20.0-beta.1 is a pre-release: GitHub's "latest
+          # release" (what the in-app updater reads) skips it, so users' apps
+          # never offer it.
+          prerelease: ${{ contains(steps.ver.outputs.version, '-') }}
           files: |
             app-${{ steps.ver.outputs.version }}.zip
             FinanceBook-${{ steps.ver.outputs.version }}.zip

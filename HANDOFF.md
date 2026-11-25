@@ -920,6 +920,65 @@ failed); use it for every new test. `test_splits_one_transaction.py`,
 `test_bmo_and_import_page.py`, `test_report_drilldown.py` (every drillable
 cell's register total equals the cell).
 
+## macOS personal build (v1.20, no schema change)
+
+There is no Mac download: a Mac user builds `FinanceBook.app` locally with
+`build_mac.sh` (ad-hoc signed, never quarantined, so Gatekeeper doesn't prompt;
+no Apple Developer account). Windows builds and updates are unchanged.
+
+**`app/utils/platform_paths.py`** — every Windows/Mac difference goes through it
+(checks `sys.platform` at call time so tests can mock it):
+`app_data_dir()` (`%APPDATA%\\FinanceBook` / `~/Library/Application Support/FinanceBook`,
+used by `main.py` and `db_config.py` when frozen), `cloud_folders()` /
+`default_cloud_dir()` (OneDrive env vars; on a Mac also `~/Library/CloudStorage/OneDrive-*`,
+`GoogleDrive-*`, iCloud Drive), `machine_name()` (Mac: `scutil --get ComputerName`),
+fonts (`css_font_stack`, `base_font_point_size` 10 Windows / 13 Mac,
+`html_font_family`), `shortcut_label("Ctrl+F")` → `⌘F`.
+
+Other Mac pieces: `secret_store` keeps the AI key in the login Keychain via
+`/usr/bin/security -i` (secret on stdin; settings hold `keychain:<name>`);
+`ocr.available()` is False on a Mac and images get "Reading text from images isn't
+available on Mac yet"; `db_connect` treats `SF_DATALESS` files as cloud placeholders
+and recognises Mac-name (`-Adeens-MacBook-Pro`) and iCloud (` 2`) conflict copies;
+`db_config._same_path` uses `samefile` on a Mac (case-insensitive disk);
+`MainWindow._build_mac_menu()` adds About / Check for Updates… / Settings… (⌘,) /
+Quit (⌘Q) / Minimize with Qt menu roles — Windows has no menu bar. `main.py
+--self-test` runs a temp database through every page, a CSV import and the P&L
+(`FINANCEBOOK_SELFTEST_SHOTS=dir` saves page pictures).
+
+**Launcher search order** (`launcher.py`, macOS frozen only; Windows/source unchanged):
+1. `~/Library/Application Support/FinanceBook/app` if its `VERSION` is newer than
+   the bundled one and it hasn't failed;
+2. `FinanceBook.app/Contents/Resources/app` (precompiled by `build_mac.sh`;
+   `sys.dont_write_bytecode` so nothing is written in the signed bundle).
+Rollback: the launcher writes `boot-marker.json` in Application Support before
+running an updated app/; `main.py` deletes it once Qt and the theme are up. If
+`main()` raises, the launcher re-writes it and `execv`s itself; a marker found at
+start means the last start died — that app/ becomes `app.failed`, the bundled one
+runs, and `FINANCEBOOK_LAUNCH_NOTE` makes main.py explain it.
+
+**Mac updater** (`updater.py`): same `releases/latest` check and the same
+`app-<ver>.zip`. It downloads/verifies with the existing code, unpacks to
+`Application Support/FinanceBook/app.new`, `mac_install_app()` swaps it in
+(`app` → `app.bak`, `app.new` → `app`, restores on failure), then releases the
+database lock, runs `open -n <the .app>` and exits. No PowerShell. Files the app
+downloads carry no quarantine attribute. `mac_needs_rebuild()` compares the
+release tag's `requirements.txt` (raw.githubusercontent.com) with the copy
+`build_mac.sh` put in `Contents/Resources/`; a difference (or a release without
+an app zip) shows "This update needs a rebuild: run update_mac.sh".
+
+**Build:** `build_mac.sh` (venv `.venv-mac`, version from the latest `v*` tag or
+`FB_VERSION`, `.icns` from `icon.ico` via sips/iconutil, `FinanceBook-macos.spec`,
+copies git-tracked `app/` files into the bundle, `codesign --force --deep -s -`,
+`--self-test`, installs to /Applications keeping `FinanceBook-old.app` until the
+new one passes). `update_mac.sh` = `git pull` + `build_mac.sh`. Keep the spec's
+`hiddenimports` in step with `FinanceBook.spec`.
+
+**Releases:** `release.yml` marks a version with a hyphen (`1.20.0-beta.1`) as a
+pre-release, which `releases/latest` — and so every updater — ignores.
+
+---
+
 ## Known issues / things to watch
 
 - **Button clipping in tables**: All inline action buttons (Edit/Delete/Reconcile)

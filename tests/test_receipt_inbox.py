@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import string
+import sys
 import tempfile
 import time
 import types
@@ -232,11 +233,12 @@ class ScanTests(InboxCase):
         self.assertIn("wasn't found", res.error)
         with mock.patch.object(I.os, "scandir", side_effect=PermissionError(13, "denied")):
             self.assertIn("permission denied", I.scan_for_db(self.db, self.inbox).error)
-        used = {os.path.splitdrive(p)[0].upper() for p in (self.dir, os.getcwd())}
-        letter = next(f"{c}:" for c in reversed(string.ascii_uppercase)
-                      if f"{c}:" not in used and not os.path.exists(f"{c}:\\"))
-        res = I.scan_for_db(self.db, f"{letter}\\Receipts")
-        self.assertIn("isn't connected", res.error)
+        if sys.platform == "win32":     # drive letters exist only on Windows
+            used = {os.path.splitdrive(p)[0].upper() for p in (self.dir, os.getcwd())}
+            letter = next(f"{c}:" for c in reversed(string.ascii_uppercase)
+                          if f"{c}:" not in used and not os.path.exists(f"{c}:\\"))
+            res = I.scan_for_db(self.db, f"{letter}\\Receipts")
+            self.assertIn("isn't connected", res.error)
         f = self.put("file.txt", TXT)
         self.assertIn("a file, not a folder", I.scan_for_db(self.db, f).error)
 
